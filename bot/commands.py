@@ -11,7 +11,7 @@ import pytz
 from config.settings import TIMEZONE, SCRAPE_URL
 from scrapers import ChronoGenesisScraper
 from services import QuotaCalculator, BombManager, ReportGenerator
-from models import Member, QuotaHistory, Bomb
+from models import Member, QuotaHistory, Bomb, QuotaRequirement
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,141 @@ class QuotaCommands(commands.Cog):
         self.report_generator = ReportGenerator()
         self.timezone = pytz.timezone(TIMEZONE)
     
+    @app_commands.command(name="quota", description="Set the daily quota requirement (from today onwards)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_quota(self, interaction: discord.Interaction, amount: int):
+        """
+        Set the daily quota requirement
+        
+        Args:
+            amount: Daily fan quota (e.g., 1000000 for 1M fans/day)
+        """
+        await interaction.response.defer()
+        
+        try:
+            # Validate amount
+            if amount < 0:
+                await interaction.followup.send("❌ Quota amount must be positive")
+                return
+            
+            if amount > 10_000_000:
+                await interaction.followup.send("❌ Quota amount seems unreasonably high (>10M). Please check your input.")
+                return
+            
+            # Get current date in configured timezone
+            current_datetime = datetime.now(self.timezone)
+            current_date = current_datetime.date()
+            
+            # Create quota requirement
+            set_by = f"{interaction.user.name}#{interaction.user.discriminator}"
+            quota_req = await QuotaRequirement.create(
+                effective_date=current_date,
+                daily_quota=amount,
+                set_by=set_by
+            )
+            
+            # Format amount nicely
+            if amount >= 1_000_000:
+                formatted = f"{amount / 1_000_000:.1f}M"
+            elif amount >= 1_000:
+                formatted = f"{amount / 1_000:.1f}K"
+            else:
+                formatted = str(amount)
+            
+            # Create success embed
+            embed = discord.Embed(
+                title="✅ Quota Updated",
+                description=f"Daily quota has been set to **{formatted} fans/day**",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            embed.add_field(
+                name="Effective Date",
+                value=current_date.strftime('%Y-%m-%d'),
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Exact Amount",
+                value=f"{amount:,} fans",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Set By",
+                value=set_by,
+                inline=True
+            )
+            
+            embed.add_field(
+                name="ℹ️ Important",
+                value="This quota applies **from today onwards**. Previous days are unaffected.",
+                inline=False
+            )
+            
+            await interaction.followup.send(embed=embed)
+            
+            logger.info(f"Quota set to {amount:,} by {set_by} effective {current_date}")
+            
+        except Exception as e:
+            logger.error(f"Error in set_quota: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+    
+    @app_commands.command(name="quota_history", description="View quota history for current month")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def quota_history(self, interaction: discord.Interaction):
+        """View all quota changes for the current month"""
+        await interaction.response.defer()
+        
+        try:
+            current_datetime = datetime.now(self.timezone)
+            current_date = current_datetime.date()
+            
+            # Get all quota requirements for current month
+            quota_reqs = await QuotaRequirement.get_all_current_month(current_date)
+            
+            if not quota_reqs:
+                from config.settings import DAILY_QUOTA
+                embed = discord.Embed(
+                    title="📊 Quota History",
+                    description=f"No quota changes this month. Using default: **{DAILY_QUOTA:,} fans/day**",
+                    color=discord.Color.blue(),
+                    timestamp=discord.utils.utcnow()
+                )
+                await interaction.followup.send(embed=embed)
+                return
+            
+            embed = discord.Embed(
+                title="📊 Quota History - Current Month",
+                description=f"Showing {len(quota_reqs)} quota change(s)",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            for quota_req in quota_reqs:
+                # Format amount
+                amount = quota_req.daily_quota
+                if amount >= 1_000_000:
+                    formatted = f"{amount / 1_000_000:.1f}M"
+                elif amount >= 1_000:
+                    formatted = f"{amount / 1_000:.1f}K"
+                else:
+                    formatted = str(amount)
+                
+                embed.add_field(
+                    name=f"{quota_req.effective_date.strftime('%B %d, %Y')}",
+                    value=f"**{formatted} fans/day** ({amount:,})\n"
+                          f"Set by: {quota_req.set_by or 'Unknown'}",
+                    inline=False
+                )
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in quota_history: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+    
     @app_commands.command(name="force_check", description="Manually trigger a quota check and report")
     @app_commands.checks.has_permissions(administrator=True)
     async def force_check(self, interaction: discord.Interaction):
@@ -38,13 +173,30 @@ class QuotaCommands(commands.Cog):
             current_datetime = datetime.now(self.timezone)
             current_date = current_datetime.date()
             
-            # Scrape
-            await interaction.followup.send("🔄 Scraping website...")
-            scraped_data = await self.scraper.scrape()
-            current_day = self.scraper.get_current_day()
+            # Scrape with retry logic
+            max_retries = 3
+            retry_delay = 10
+            scraped_data = None
+            current_day = None
+            
+            for attempt in range(1, max_retries + 1):
+                try:
+                    await interaction.followup.send(f"🔄 Scraping website (attempt {attempt}/{max_retries})...")
+                    scraped_data = await self.scraper.scrape()
+                    current_day = self.scraper.get_current_day()
+                    
+                    if scraped_data:
+                        break
+                except Exception as e:
+                    if attempt == max_retries:
+                        raise
+                    await interaction.followup.send(f"⚠️ Attempt {attempt} failed, retrying in {retry_delay}s...")
+                    import asyncio
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
             
             if not scraped_data:
-                await interaction.followup.send("❌ Failed to scrape data")
+                await interaction.followup.send("❌ Failed to scrape data after all retries")
                 return
             
             # Process

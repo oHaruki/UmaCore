@@ -5,8 +5,9 @@ from datetime import date, timedelta
 from typing import Dict, List, Tuple
 import logging
 
-from models import Member, QuotaHistory
+from models import Member, QuotaHistory, QuotaRequirement, Bomb
 from config.settings import DAILY_QUOTA
+from config.database import db
 
 logger = logging.getLogger(__name__)
 
@@ -15,17 +16,33 @@ class QuotaCalculator:
     """Handles all quota calculations and tracking"""
     
     @staticmethod
-    def calculate_expected_fans(days_active_in_month: int) -> int:
+    async def calculate_expected_fans(join_day: int, current_day: int, current_date: date) -> int:
         """
-        Calculate expected cumulative fans based on days active this month
+        Calculate expected cumulative fans based on days active and quota history
         
         Args:
-            days_active_in_month: Number of days the member has been in the club this month
+            join_day: What day of the month they joined (1-31)
+            current_day: Current day of the month (1-31)
+            current_date: Current date object
         
         Returns:
-            Expected cumulative fan count
+            Expected cumulative fan count based on quota requirements
         """
-        return days_active_in_month * DAILY_QUOTA
+        if join_day > current_day:
+            return 0
+        
+        total_expected = 0
+        
+        # Calculate for each day the member was active
+        for day in range(join_day, current_day + 1):
+            # Get the date for this day
+            day_date = date(current_date.year, current_date.month, day)
+            
+            # Get the quota that was in effect on that day
+            daily_quota = await QuotaRequirement.get_quota_for_date(day_date)
+            total_expected += daily_quota
+        
+        return total_expected
     
     @staticmethod
     def calculate_days_active_in_month(join_day: int, current_day: int) -> int:
@@ -40,7 +57,6 @@ class QuotaCalculator:
             Number of days active (inclusive of both join and current day)
         """
         if join_day > current_day:
-            # Member joined after today? Shouldn't happen
             return 0
         
         return current_day - join_day + 1
@@ -55,6 +71,65 @@ class QuotaCalculator:
         """
         return actual_fans - expected_fans
     
+    async def _get_previous_cumulative_totals(self) -> Dict[str, int]:
+        """
+        Get the latest cumulative fan counts from database for monthly reset detection
+        
+        Returns:
+            Dict mapping trainer_id/name -> cumulative_fans
+        """
+        query = """
+            SELECT m.trainer_id, m.trainer_name, qh.cumulative_fans
+            FROM members m
+            JOIN quota_history qh ON m.member_id = qh.member_id
+            WHERE qh.date = (SELECT MAX(date) FROM quota_history)
+        """
+        rows = await db.fetch(query)
+        
+        result = {}
+        for row in rows:
+            key = row['trainer_id'] if row['trainer_id'] else row['trainer_name']
+            result[key] = row['cumulative_fans']
+        
+        return result
+    
+    def _detect_monthly_reset_from_scraped(self, scraped_data: Dict[str, Dict], 
+                                           previous_totals: Dict[str, int]) -> bool:
+        """
+        Detect if a monthly reset has occurred by comparing scraped data to previous totals
+        
+        Args:
+            scraped_data: Dict of trainer_id -> {name, trainer_id, fans[], join_day}
+            previous_totals: Dict of trainer_id/name -> previous cumulative fans
+        
+        Returns:
+            True if monthly reset detected, False otherwise
+        """
+        if not previous_totals:
+            logger.info("No previous data found, skipping reset detection")
+            return False
+        
+        if not scraped_data:
+            logger.warning("No scraped data, cannot detect reset")
+            return False
+        
+        # Check if any member has significantly lower fans than before
+        for key, member_data in scraped_data.items():
+            current_fans = member_data["fans"][-1] if member_data["fans"] else 0
+            
+            if key in previous_totals:
+                previous_fans = previous_totals[key]
+                
+                # If current count is less than 50% of previous, it's a reset
+                if current_fans > 0 and current_fans < previous_fans * 0.5:
+                    logger.warning(
+                        f"Monthly reset detected: {member_data['name']} went from "
+                        f"{previous_fans:,} to {current_fans:,} fans"
+                    )
+                    return True
+        
+        return False
+    
     async def process_scraped_data(self, scraped_data: Dict[str, Dict], 
                                    current_date: date, current_day: int) -> Tuple[int, int]:
         """
@@ -68,10 +143,21 @@ class QuotaCalculator:
         Returns:
             Tuple of (new_members_count, updated_members_count)
         """
+        # STEP 1: Check for monthly reset FIRST
+        logger.info("Checking for monthly reset...")
+        previous_totals = await self._get_previous_cumulative_totals()
+        
+        if self._detect_monthly_reset_from_scraped(scraped_data, previous_totals):
+            logger.warning("🔄 MONTHLY RESET DETECTED! Clearing all history...")
+            await QuotaHistory.clear_all()
+            await Bomb.clear_all()
+            await QuotaRequirement.clear_all()
+            logger.info("✅ Monthly reset complete - starting fresh")
+        
+        # STEP 2: Process scraped data normally
         new_members = 0
         updated_members = 0
         
-        # Process each scraped member
         for key, member_data in scraped_data.items():
             trainer_id = member_data.get("trainer_id")
             trainer_name = member_data["name"]
@@ -93,7 +179,6 @@ class QuotaCalculator:
             
             if not member:
                 # New member - calculate their join date based on detected_join_day
-                # Day 1 = November 1, Day 6 = November 6, etc.
                 join_date = date(current_date.year, current_date.month, detected_join_day)
                 
                 member = await Member.create(trainer_name, join_date, trainer_id)
@@ -109,16 +194,15 @@ class QuotaCalculator:
             await member.update_last_seen(current_date)
             
             # Calculate days active this month based on their join date
-            # If they joined 2024-11-06 and today is 2024-11-28, they've been active for 23 days
             if member.join_date.year == current_date.year and member.join_date.month == current_date.month:
-                # They joined this month
                 join_day_from_db = member.join_date.day
             else:
-                # They joined in a previous month, so they've been active since Day 1
                 join_day_from_db = 1
             
             days_active = self.calculate_days_active_in_month(join_day_from_db, current_day)
-            expected_fans = self.calculate_expected_fans(days_active)
+            
+            # Calculate expected fans using dynamic quota system
+            expected_fans = await self.calculate_expected_fans(join_day_from_db, current_day, current_date)
             
             # Calculate deficit/surplus
             deficit_surplus = self.calculate_deficit_surplus(cumulative_fans, expected_fans)

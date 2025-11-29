@@ -134,6 +134,15 @@ class Database:
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
         
+        -- Quota requirements table (NEW - for dynamic quota management)
+        CREATE TABLE IF NOT EXISTS quota_requirements (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            effective_date DATE NOT NULL,
+            daily_quota BIGINT NOT NULL,
+            set_by VARCHAR(100),
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        
         -- Scrape history table
         CREATE TABLE IF NOT EXISTS scrape_history (
             scrape_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -153,6 +162,8 @@ class Database:
             ON members(is_active) WHERE is_active = TRUE;
         CREATE INDEX IF NOT EXISTS idx_members_trainer_id
             ON members(trainer_id);
+        CREATE INDEX IF NOT EXISTS idx_quota_requirements_date
+            ON quota_requirements(effective_date DESC);
         """
         
         try:
