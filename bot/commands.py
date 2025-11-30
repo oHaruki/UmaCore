@@ -205,9 +205,9 @@ class QuotaCommands(commands.Cog):
                 scraped_data, current_date, current_day
             )
             
-            # Bombs
+            # Bombs - FIXED: Pass current_date to update_bomb_countdowns
             newly_activated = await self.bomb_manager.check_and_activate_bombs(current_date)
-            await self.bomb_manager.update_bomb_countdowns()
+            await self.bomb_manager.update_bomb_countdowns(current_date)  # Now passes current_date
             deactivated = await self.bomb_manager.check_and_deactivate_bombs(current_date)
             members_to_kick = await self.bomb_manager.check_expired_bombs()
             

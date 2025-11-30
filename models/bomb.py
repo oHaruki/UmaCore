@@ -21,14 +21,15 @@ class Bomb:
     days_remaining: int
     is_active: bool
     deactivation_date: Optional[date]
+    last_countdown_update: Optional[date]
     
     @classmethod
     async def create(cls, member_id: UUID, activation_date: date, days_remaining: int) -> 'Bomb':
         """Create a new bomb warning"""
         query = """
-            INSERT INTO bombs (member_id, activation_date, days_remaining)
-            VALUES ($1, $2, $3)
-            RETURNING bomb_id, member_id, activation_date, days_remaining, is_active, deactivation_date
+            INSERT INTO bombs (member_id, activation_date, days_remaining, last_countdown_update)
+            VALUES ($1, $2, $3, $1)
+            RETURNING bomb_id, member_id, activation_date, days_remaining, is_active, deactivation_date, last_countdown_update
         """
         row = await db.fetchrow(query, member_id, activation_date, days_remaining)
         logger.warning(f"Bomb activated for member {member_id} with {days_remaining} days remaining")
@@ -38,7 +39,7 @@ class Bomb:
     async def get_active_for_member(cls, member_id: UUID) -> Optional['Bomb']:
         """Get active bomb for a member"""
         query = """
-            SELECT bomb_id, member_id, activation_date, days_remaining, is_active, deactivation_date
+            SELECT bomb_id, member_id, activation_date, days_remaining, is_active, deactivation_date, last_countdown_update
             FROM bombs
             WHERE member_id = $1 AND is_active = TRUE
             ORDER BY activation_date DESC
@@ -53,7 +54,7 @@ class Bomb:
     async def get_all_active(cls) -> List['Bomb']:
         """Get all active bombs"""
         query = """
-            SELECT bomb_id, member_id, activation_date, days_remaining, is_active, deactivation_date
+            SELECT bomb_id, member_id, activation_date, days_remaining, is_active, deactivation_date, last_countdown_update
             FROM bombs
             WHERE is_active = TRUE
             ORDER BY days_remaining ASC, activation_date ASC
@@ -73,16 +74,27 @@ class Bomb:
         self.deactivation_date = deactivation_date
         logger.info(f"Bomb deactivated for member {self.member_id}")
     
-    async def decrement_days(self):
-        """Decrement days remaining"""
+    async def decrement_days(self, current_date: date):
+        """
+        Decrement days remaining only if this is a new day
+        
+        Args:
+            current_date: Current date to check against last update
+        """
+        # Only decrement if we haven't updated today
+        if self.last_countdown_update and self.last_countdown_update >= current_date:
+            logger.debug(f"Bomb for member {self.member_id} already updated today, skipping countdown")
+            return
+        
         if self.days_remaining > 0:
             self.days_remaining -= 1
+            self.last_countdown_update = current_date
             query = """
                 UPDATE bombs
-                SET days_remaining = $1
-                WHERE bomb_id = $2
+                SET days_remaining = $1, last_countdown_update = $2
+                WHERE bomb_id = $3
             """
-            await db.execute(query, self.days_remaining, self.bomb_id)
+            await db.execute(query, self.days_remaining, current_date, self.bomb_id)
             logger.info(f"Bomb countdown for member {self.member_id}: {self.days_remaining} days remaining")
     
     @classmethod

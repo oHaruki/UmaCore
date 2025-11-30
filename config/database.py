@@ -131,8 +131,23 @@ class Database:
             days_remaining INTEGER NOT NULL,
             is_active BOOLEAN DEFAULT TRUE,
             deactivation_date DATE,
+            last_countdown_update DATE,
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
+        
+        -- Migration: Add last_countdown_update column to bombs if it doesn't exist
+        DO $$ 
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='bombs' AND column_name='last_countdown_update'
+            ) THEN
+                ALTER TABLE bombs ADD COLUMN last_countdown_update DATE;
+                -- Set existing bombs' last_countdown_update to their activation_date
+                UPDATE bombs SET last_countdown_update = activation_date WHERE last_countdown_update IS NULL;
+                RAISE NOTICE 'Added last_countdown_update column to bombs table';
+            END IF;
+        END $$;
         
         -- Quota requirements table (NEW - for dynamic quota management)
         CREATE TABLE IF NOT EXISTS quota_requirements (

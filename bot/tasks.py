@@ -153,13 +153,13 @@ class BotTasks:
             await channel.send(embed=error_embed)
             return  # Exit if processing fails
         
-        # STEP 4: Bomb management
+        # STEP 4: Bomb management - FIXED: Pass current_date to update_bomb_countdowns
         try:
             logger.info("💣 Checking for bomb activations...")
             newly_activated_bombs = await self.bomb_manager.check_and_activate_bombs(current_date)
             
             logger.info("⏳ Updating bomb countdowns...")
-            await self.bomb_manager.update_bomb_countdowns()
+            await self.bomb_manager.update_bomb_countdowns(current_date)  # Now passes current_date
             
             logger.info("✅ Checking for bomb deactivations...")
             deactivated_bombs = await self.bomb_manager.check_and_deactivate_bombs(current_date)

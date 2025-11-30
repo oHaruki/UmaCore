@@ -32,8 +32,7 @@ class ChronoGenesisScraper(BaseScraper):
     def _setup_driver(self) -> webdriver.Chrome:
         """Set up Selenium Chrome driver with headless options"""
         chrome_options = Options()
-        # DEBUG MODE - commented out headless so you can see what's happening
-        # chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--headless")
         
         # Anti-detection arguments
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")

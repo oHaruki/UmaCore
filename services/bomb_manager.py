@@ -79,9 +79,12 @@ class BombManager:
         
         return deactivated
     
-    async def update_bomb_countdowns(self) -> List[Bomb]:
+    async def update_bomb_countdowns(self, current_date: date) -> List[Bomb]:
         """
-        Decrement countdown for all active bombs
+        Decrement countdown for all active bombs (only once per day)
+        
+        Args:
+            current_date: Current date for checking if countdown should happen
         
         Returns:
             List of bombs with updated countdowns
@@ -90,7 +93,7 @@ class BombManager:
         updated = []
         
         for bomb in active_bombs:
-            await bomb.decrement_days()
+            await bomb.decrement_days(current_date)
             updated.append(bomb)
         
         return updated
