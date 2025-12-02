@@ -23,16 +23,22 @@ def setup_logging():
         '%(levelname)s: %(message)s'
     )
     
-    # Console handler (stdout)
+    # Console handler (stdout) with UTF-8 encoding
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(simple_formatter)
     
-    # File handler with rotation
+    # Fix for Windows: Force UTF-8 encoding on console
+    if sys.platform == 'win32':
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    
+    # File handler with rotation and UTF-8 encoding
     file_handler = RotatingFileHandler(
         LOG_FILE,
         maxBytes=10 * 1024 * 1024,  # 10 MB
-        backupCount=5
+        backupCount=5,
+        encoding='utf-8'  # Added UTF-8 encoding
     )
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(detailed_formatter)
