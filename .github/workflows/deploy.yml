@@ -7,25 +7,16 @@ on:
 
 jobs:
   deploy:
-    runs-on:
-      group: Default
-
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
-      - name: Create .env file
-        run: |
-          echo "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}" >> .env
-          echo "CHANNEL_ID=${{ secrets.CHANNEL_ID }}" >> .env
-          echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" >> .env
-          echo "LOG_LEVEL=${{ secrets.LOG_LEVEL }}" >> .env
-
+      
       - name: Stop existing containers
         run: docker-compose down || true
-
+      
       - name: Pull latest changes
         run: git pull origin main
-
+      
       - name: Build and deploy Docker containers
         run: docker-compose up -d --build
