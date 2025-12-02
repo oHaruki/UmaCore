@@ -15,6 +15,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Scraping Configuration
 SCRAPE_URL = "https://chronogenesis.net/club_profile?circle_id=Horsecore"
+SELENIUM_GRID_URL = os.getenv("SELENIUM_GRID_URL")
 SCRAPE_TIMEOUT = 60  # seconds
 SCRAPE_RETRY_ATTEMPTS = 3
 SCRAPE_RETRY_DELAY = 5  # seconds

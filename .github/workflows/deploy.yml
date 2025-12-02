@@ -1,0 +1,29 @@
+name: Deploy UmaCore Bot to Raspberry Pi
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on:
+      group: Default
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Stop existing containers
+        run: docker-compose down || true
+      
+      - name: Pull latest changes
+        run: git pull origin main
+      
+      - name: Build and deploy Docker containers
+        run: docker-compose up -d --build
+      
+      - name: Show container status
+        run: docker-compose ps
+      
+      - name: Show recent logs
+        run: docker-compose logs --tail=50 umacore-bot
