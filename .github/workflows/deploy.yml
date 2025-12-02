@@ -21,9 +21,3 @@ jobs:
       
       - name: Build and deploy Docker containers
         run: docker-compose up -d --build
-      
-      - name: Show container status
-        run: docker-compose ps
-      
-      - name: Show recent logs
-        run: docker-compose logs --tail=50 umacore-bot
