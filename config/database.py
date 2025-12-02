@@ -168,6 +168,14 @@ class Database:
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
         
+        -- Bot settings table (for dynamic configuration like channel IDs)
+        CREATE TABLE IF NOT EXISTS bot_settings (
+            setting_key VARCHAR(100) PRIMARY KEY,
+            setting_value TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        
         -- Indexes for performance
         CREATE INDEX IF NOT EXISTS idx_quota_history_member_date 
             ON quota_history(member_id, date DESC);

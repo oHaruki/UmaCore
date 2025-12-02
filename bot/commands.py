@@ -11,7 +11,7 @@ import pytz
 from config.settings import TIMEZONE, SCRAPE_URL
 from scrapers import ChronoGenesisScraper
 from services import QuotaCalculator, BombManager, ReportGenerator
-from models import Member, QuotaHistory, Bomb, QuotaRequirement
+from models import Member, QuotaHistory, Bomb, QuotaRequirement, BotSettings
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,129 @@ class QuotaCommands(commands.Cog):
         self.bomb_manager = BombManager()
         self.report_generator = ReportGenerator()
         self.timezone = pytz.timezone(TIMEZONE)
+    
+    @app_commands.command(name="set_report_channel", description="Set the channel for daily reports")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_report_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        """Set the channel where daily reports will be posted"""
+        await interaction.response.defer()
+        
+        try:
+            await BotSettings.set_report_channel_id(channel.id)
+            
+            embed = discord.Embed(
+                title="✅ Report Channel Updated",
+                description=f"Daily reports will now be posted to {channel.mention}",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            await interaction.followup.send(embed=embed)
+            logger.info(f"Report channel set to {channel.name} ({channel.id}) by {interaction.user}")
+            
+        except Exception as e:
+            logger.error(f"Error in set_report_channel: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+    
+    @app_commands.command(name="set_alert_channel", description="Set the channel for alerts (bombs, kicks)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_alert_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        """Set the channel where alerts (bomb activations, kick warnings) will be posted"""
+        await interaction.response.defer()
+        
+        try:
+            await BotSettings.set_alert_channel_id(channel.id)
+            
+            embed = discord.Embed(
+                title="✅ Alert Channel Updated",
+                description=f"Alerts (bomb warnings, kick notifications) will now be posted to {channel.mention}",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            await interaction.followup.send(embed=embed)
+            logger.info(f"Alert channel set to {channel.name} ({channel.id}) by {interaction.user}")
+            
+        except Exception as e:
+            logger.error(f"Error in set_alert_channel: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+    
+    @app_commands.command(name="channel_settings", description="View current channel configuration")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def channel_settings(self, interaction: discord.Interaction):
+        """View current channel settings"""
+        await interaction.response.defer()
+        
+        try:
+            report_channel_id = await BotSettings.get_report_channel_id()
+            alert_channel_id = await BotSettings.get_alert_channel_id()
+            
+            embed = discord.Embed(
+                title="⚙️ Channel Settings",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            # Report channel
+            if report_channel_id:
+                report_channel = self.bot.get_channel(report_channel_id)
+                if report_channel:
+                    embed.add_field(
+                        name="📊 Daily Reports Channel",
+                        value=f"{report_channel.mention} (ID: {report_channel_id})",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="📊 Daily Reports Channel",
+                        value=f"⚠️ Channel not found (ID: {report_channel_id})",
+                        inline=False
+                    )
+            else:
+                from config.settings import CHANNEL_ID
+                if CHANNEL_ID:
+                    channel = self.bot.get_channel(CHANNEL_ID)
+                    embed.add_field(
+                        name="📊 Daily Reports Channel",
+                        value=f"Using .env fallback: {channel.mention if channel else f'ID: {CHANNEL_ID}'}",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="📊 Daily Reports Channel",
+                        value="❌ Not configured",
+                        inline=False
+                    )
+            
+            # Alert channel
+            if alert_channel_id:
+                alert_channel = self.bot.get_channel(alert_channel_id)
+                if alert_channel:
+                    embed.add_field(
+                        name="🚨 Alerts Channel",
+                        value=f"{alert_channel.mention} (ID: {alert_channel_id})",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="🚨 Alerts Channel",
+                        value=f"⚠️ Channel not found (ID: {alert_channel_id})",
+                        inline=False
+                    )
+            else:
+                embed.add_field(
+                    name="🚨 Alerts Channel",
+                    value="⚠️ Not configured (using reports channel)",
+                    inline=False
+                )
+            
+            embed.set_footer(text="Use /set_report_channel and /set_alert_channel to configure")
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in channel_settings: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
     
     @app_commands.command(name="quota", description="Set the daily quota requirement (from today onwards)")
     @app_commands.checks.has_permissions(administrator=True)
@@ -173,6 +296,28 @@ class QuotaCommands(commands.Cog):
             current_datetime = datetime.now(self.timezone)
             current_date = current_datetime.date()
             
+            # Get channels
+            report_channel_id = await BotSettings.get_report_channel_id()
+            alert_channel_id = await BotSettings.get_alert_channel_id()
+            
+            # Fallback to CHANNEL_ID from .env if not set
+            if not report_channel_id:
+                from config.settings import CHANNEL_ID
+                report_channel_id = CHANNEL_ID
+            
+            if not alert_channel_id:
+                alert_channel_id = report_channel_id
+            
+            report_channel = self.bot.get_channel(report_channel_id)
+            alert_channel = self.bot.get_channel(alert_channel_id)
+            
+            if not report_channel:
+                await interaction.followup.send(f"❌ Report channel not found. Use `/set_report_channel` first.")
+                return
+            
+            if not alert_channel:
+                alert_channel = report_channel
+            
             # Scrape with retry logic
             max_retries = 3
             retry_delay = 10
@@ -205,9 +350,9 @@ class QuotaCommands(commands.Cog):
                 scraped_data, current_date, current_day
             )
             
-            # Bombs - FIXED: Pass current_date to update_bomb_countdowns
+            # Bombs
             newly_activated = await self.bomb_manager.check_and_activate_bombs(current_date)
-            await self.bomb_manager.update_bomb_countdowns(current_date)  # Now passes current_date
+            await self.bomb_manager.update_bomb_countdowns(current_date)
             deactivated = await self.bomb_manager.check_and_deactivate_bombs(current_date)
             members_to_kick = await self.bomb_manager.check_expired_bombs()
             
@@ -221,7 +366,7 @@ class QuotaCommands(commands.Cog):
             
             # Send all report embeds
             for embed in daily_reports:
-                await interaction.followup.send(embed=embed)
+                await report_channel.send(embed=embed)
             
             # Alerts
             if newly_activated:
@@ -230,11 +375,11 @@ class QuotaCommands(commands.Cog):
                     member = await Member.get_by_id(bomb.member_id)
                     bomb_data.append({'bomb': bomb, 'member': member})
                 alert = self.report_generator.create_bomb_activation_alert(bomb_data)
-                await interaction.followup.send(embed=alert)
+                await alert_channel.send(embed=alert)
             
             if members_to_kick:
                 kick_alert = self.report_generator.create_kick_alert(members_to_kick)
-                await interaction.followup.send(embed=kick_alert)
+                await alert_channel.send(embed=kick_alert)
             
             await interaction.followup.send(
                 f"✅ Check complete: {updated_members} members updated, {new_members} new members"

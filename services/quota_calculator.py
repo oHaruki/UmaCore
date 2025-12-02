@@ -2,7 +2,7 @@
 Quota calculation service
 """
 from datetime import date, timedelta
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set
 import logging
 
 from models import Member, QuotaHistory, QuotaRequirement, Bomb
@@ -130,6 +130,30 @@ class QuotaCalculator:
         
         return False
     
+    async def _auto_deactivate_missing_members(self, scraped_trainer_ids: Set[str]):
+        """
+        Auto-deactivate members who are no longer in the scraped data
+        
+        Args:
+            scraped_trainer_ids: Set of trainer_ids (or names) from scraped data
+        """
+        # Get all currently active members
+        active_members = await Member.get_all_active()
+        
+        deactivated_count = 0
+        for member in active_members:
+            # Use trainer_id if available, otherwise use name
+            member_key = member.trainer_id if member.trainer_id else member.trainer_name
+            
+            # If this member is not in the scraped data, they've left the club
+            if member_key not in scraped_trainer_ids:
+                await member.deactivate()
+                deactivated_count += 1
+                logger.info(f"Auto-deactivated member (no longer in club): {member.trainer_name}")
+        
+        if deactivated_count > 0:
+            logger.info(f"Auto-deactivated {deactivated_count} member(s) who left the club")
+    
     async def process_scraped_data(self, scraped_data: Dict[str, Dict], 
                                    current_date: date, current_day: int) -> Tuple[int, int]:
         """
@@ -148,13 +172,17 @@ class QuotaCalculator:
         previous_totals = await self._get_previous_cumulative_totals()
         
         if self._detect_monthly_reset_from_scraped(scraped_data, previous_totals):
-            logger.warning("🔄 MONTHLY RESET DETECTED! Clearing all history...")
+            logger.warning("Monthly reset detected! Clearing all history...")
             await QuotaHistory.clear_all()
             await Bomb.clear_all()
             await QuotaRequirement.clear_all()
-            logger.info("✅ Monthly reset complete - starting fresh")
+            logger.info("Monthly reset complete - starting fresh")
         
-        # STEP 2: Process scraped data normally
+        # STEP 2: Auto-deactivate members who are no longer in the scraped data
+        scraped_trainer_ids = set(scraped_data.keys())
+        await self._auto_deactivate_missing_members(scraped_trainer_ids)
+        
+        # STEP 3: Process scraped data normally
         new_members = 0
         updated_members = 0
         
@@ -189,6 +217,11 @@ class QuotaCalculator:
                 # Existing member - update name if it changed
                 if member.trainer_name != trainer_name:
                     await member.update_name(trainer_name)
+                
+                # Reactivate if they were previously deactivated
+                if not member.is_active:
+                    await member.activate()
+                    logger.info(f"Reactivated returning member: {trainer_name}")
             
             # Update last seen
             await member.update_last_seen(current_date)
