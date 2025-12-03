@@ -46,7 +46,33 @@ class ChronoGenesisScraper(BaseScraper):
         chrome_options.add_argument("--window-size=1920,1080")
         chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
         
-        service = Service(ChromeDriverManager().install())
+        # === FIX FOR RASPBERRY PI / ARM ===
+        import platform
+        import os
+        
+        machine = platform.machine().lower()
+        logger.info(f"Detected CPU architecture: {machine}")
+        
+        if 'arm' in machine or 'aarch64' in machine:
+            # ARM architecture (Raspberry Pi) - use system chromedriver
+            chromedriver_path = '/usr/bin/chromedriver'
+            
+            if os.path.exists(chromedriver_path):
+                logger.info(f"Using system ChromeDriver at {chromedriver_path}")
+                service = Service(chromedriver_path)
+            else:
+                logger.error(f"ChromeDriver not found at {chromedriver_path}")
+                logger.error("Install it with: sudo apt install chromium-chromedriver")
+                raise FileNotFoundError(
+                    f"ChromeDriver not found. Please install chromium-chromedriver:\n"
+                    f"  sudo apt update\n"
+                    f"  sudo apt install chromium-browser chromium-chromedriver"
+                )
+        else:
+            # x86_64 architecture - use webdriver-manager
+            logger.info("Using webdriver-manager for x86_64")
+            service = Service(ChromeDriverManager().install())
+        
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
         # Hide webdriver property
