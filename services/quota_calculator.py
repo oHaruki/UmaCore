@@ -241,7 +241,7 @@ class QuotaCalculator:
             deficit_surplus = self.calculate_deficit_surplus(cumulative_fans, expected_fans)
             
             # Count consecutive days behind
-            days_behind = await self._calculate_days_behind(member.member_id, deficit_surplus)
+            days_behind = await self._calculate_days_behind(member.member_id, deficit_surplus, current_date)
             
             # Create or update quota history
             await QuotaHistory.create(
@@ -261,8 +261,14 @@ class QuotaCalculator:
         logger.info(f"Processed {updated_members} members ({new_members} new)")
         return new_members, updated_members
     
-    async def _calculate_days_behind(self, member_id, current_deficit_surplus: int) -> int:
-        """Calculate how many consecutive days a member has been behind"""
+    async def _calculate_days_behind(self, member_id, current_deficit_surplus: int, current_date: date) -> int:
+        """
+        Calculate how many consecutive days a member has been behind
+        
+        FIXED: 
+        1. Filter out today's date from history (in case /force_check runs multiple times)
+        2. Then count consecutive days before today that were behind
+        """
         if current_deficit_surplus >= 0:
             return 0
         
@@ -270,16 +276,25 @@ class QuotaCalculator:
         recent_history = await QuotaHistory.get_last_n_days(member_id, 10)
         
         if not recent_history:
+            # First day being behind
             return 1
         
-        # Count consecutive days with negative deficit (most recent first)
-        consecutive_days = 1  # Include today
-        for history in recent_history[1:]:  # Skip today (index 0)
+        # CRITICAL: Filter out any records from TODAY
+        # (This happens when /force_check is run multiple times on the same day)
+        recent_history = [h for h in recent_history if h.date < current_date]
+        
+        # Count consecutive days with negative deficit BEFORE today
+        consecutive_days = 1  # Count today
+        
+        # Now loop through past days (yesterday, 2 days ago, etc.)
+        for history in recent_history:
             if history.deficit_surplus < 0:
                 consecutive_days += 1
             else:
+                # Found a day they were on track, stop counting
                 break
         
+        logger.debug(f"Member {member_id}: {consecutive_days} consecutive days behind")
         return consecutive_days
     
     async def get_member_status_summary(self, current_date: date) -> Dict:

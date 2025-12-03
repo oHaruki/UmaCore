@@ -46,7 +46,7 @@ class ChronoGenesisScraper(BaseScraper):
         chrome_options.add_argument("--window-size=1920,1080")
         chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
         
-        # === FIX FOR RASPBERRY PI / ARM ===
+        # === FIX FOR RASPBERRY PI / ARM ARCHITECTURE ===
         import platform
         import os
         
@@ -58,19 +58,19 @@ class ChronoGenesisScraper(BaseScraper):
             chromedriver_path = '/usr/bin/chromedriver'
             
             if os.path.exists(chromedriver_path):
-                logger.info(f"Using system ChromeDriver at {chromedriver_path}")
+                logger.info(f"✓ Using system ChromeDriver at {chromedriver_path}")
                 service = Service(chromedriver_path)
             else:
-                logger.error(f"ChromeDriver not found at {chromedriver_path}")
-                logger.error("Install it with: sudo apt install chromium-chromedriver")
+                logger.error(f"✗ ChromeDriver not found at {chromedriver_path}")
+                logger.error("Install it with: apt-get install chromium-driver")
                 raise FileNotFoundError(
-                    f"ChromeDriver not found. Please install chromium-chromedriver:\n"
-                    f"  sudo apt update\n"
-                    f"  sudo apt install chromium-browser chromium-chromedriver"
+                    f"ChromeDriver not found. Please install chromium-driver:\n"
+                    f"  apt-get update\n"
+                    f"  apt-get install chromium chromium-driver"
                 )
         else:
             # x86_64 architecture - use webdriver-manager
-            logger.info("Using webdriver-manager for x86_64")
+            logger.info("✓ Using webdriver-manager for x86_64")
             service = Service(ChromeDriverManager().install())
         
         driver = webdriver.Chrome(service=service, options=chrome_options)
@@ -112,25 +112,66 @@ class ChronoGenesisScraper(BaseScraper):
             try:
                 time.sleep(3)  # Wait for popup to appear
                 
-                # Try to find and click the "Consent" button
+                # Try to find and click the consent button (multiple possible selectors)
                 selectors = [
+                    # New ez-cookie dialog (2024 update)
+                    "//button[contains(text(), 'Continue with Recommended Cookies')]",
+                    "button.ez-accept-all",
+                    "#ez-cookie-dialog-wrapper button",
+                    ".ez-main-cmp-wrapper button",
+                    
+                    # Old selectors (fallback)
                     "button.fc-cta-consent",
                     "button[class*='consent']",
                     "button[title='Consent']",
-                    "//button[contains(text(), 'Consent')]"
+                    "//button[contains(text(), 'Consent')]",
+                    "//button[contains(text(), 'Accept')]",
                 ]
+                
+                consent_clicked = False
                 for selector in selectors:
                     try:
                         if selector.startswith("//"):
                             consent_button = driver.find_element(By.XPATH, selector)
                         else:
                             consent_button = driver.find_element(By.CSS_SELECTOR, selector)
-                        consent_button.click()
-                        logger.info(f"Clicked consent button: {selector}")
-                        time.sleep(3)
-                        break
-                    except:
+                        
+                        # Make sure element is visible and clickable
+                        if consent_button.is_displayed():
+                            consent_button.click()
+                            logger.info(f"✓ Clicked consent button: {selector}")
+                            consent_clicked = True
+                            time.sleep(5)  # Wait longer for popup to fully disappear
+                            break
+                    except Exception as e:
+                        logger.debug(f"Selector {selector} failed: {e}")
                         continue
+                
+                if not consent_clicked:
+                    logger.warning("⚠️ Could not find or click cookie consent button")
+                    logger.warning("Attempting to remove cookie dialog with JavaScript...")
+                    
+                    # Nuclear option: Remove the cookie dialog completely with JavaScript
+                    try:
+                        driver.execute_script("""
+                            // Remove ez-cookie dialog
+                            var ezDialog = document.getElementById('ez-cookie-dialog-wrapper');
+                            if (ezDialog) ezDialog.remove();
+                            
+                            // Remove any other cookie overlays
+                            var overlays = document.querySelectorAll('[id*="cookie"], [class*="cookie"], [id*="consent"], [class*="consent"]');
+                            overlays.forEach(function(el) {
+                                if (el.style.position === 'fixed' || el.style.zIndex > 100) {
+                                    el.remove();
+                                }
+                            });
+                        """)
+                        logger.info("✓ Forcefully removed cookie dialog with JavaScript")
+                        time.sleep(2)
+                    except Exception as js_error:
+                        logger.error(f"❌ JavaScript removal also failed: {js_error}")
+                        logger.error("The cookie popup may still be blocking the page")
+                    
             except Exception as e:
                 logger.info("No consent popup found or already accepted")
             
@@ -270,6 +311,13 @@ class ChronoGenesisScraper(BaseScraper):
                 logger.error("No 'Day X' columns found in header")
                 header_texts = [h.text.strip() for h in headers]
                 logger.error(f"Headers found: {header_texts}")
+                
+                # Check if headers are empty (cookie popup blocking page)
+                if all(not h for h in header_texts):
+                    logger.error("❌ All headers are empty! Cookie consent popup is likely blocking the page.")
+                    logger.error("The scraper needs to handle the cookie popup before accessing the table.")
+                    raise ValueError("Cookie popup is blocking page access - headers are empty")
+                
                 return {}
             
             logger.info(f"Found {num_days} day columns at indices: {day_columns}")
