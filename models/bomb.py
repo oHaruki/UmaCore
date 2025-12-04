@@ -28,7 +28,7 @@ class Bomb:
         """Create a new bomb warning"""
         query = """
             INSERT INTO bombs (member_id, activation_date, days_remaining, last_countdown_update)
-            VALUES ($1, $2, $3, $1)
+            VALUES ($1, $2, $3, $2)
             RETURNING bomb_id, member_id, activation_date, days_remaining, is_active, deactivation_date, last_countdown_update
         """
         row = await db.fetchrow(query, member_id, activation_date, days_remaining)
