@@ -390,6 +390,7 @@ class QuotaCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
     @app_commands.command(name="member_status", description="View status of a specific member")
+    @app_commands.default_permissions(send_messages=True)
     async def member_status(self, interaction: discord.Interaction, trainer_name: str):
         """Get detailed status for a specific member"""
         await interaction.response.defer()
@@ -418,11 +419,15 @@ class QuotaCommands(commands.Cog):
                 timestamp=discord.utils.utcnow()
             )
             
+            status_text = "✅ Active" if member.is_active else "❌ Inactive"
+            if member.manually_deactivated:
+                status_text += " (Manually Deactivated)"
+            
             embed.add_field(
                 name="📅 Member Info",
                 value=f"**Joined:** {member.join_date.strftime('%Y-%m-%d')}\n"
                       f"**Trainer ID:** {member.trainer_id or 'N/A'}\n"
-                      f"**Status:** {'Active' if member.is_active else 'Inactive'}\n"
+                      f"**Status:** {status_text}\n"
                       f"**Last Seen:** {member.last_seen.strftime('%Y-%m-%d')}",
                 inline=False
             )
@@ -528,10 +533,10 @@ class QuotaCommands(commands.Cog):
             logger.error(f"Error in add_member: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
-    @app_commands.command(name="deactivate_member", description="Deactivate a member")
+    @app_commands.command(name="deactivate_member", description="Manually deactivate a member (won't auto-reactivate)")
     @app_commands.checks.has_permissions(administrator=True)
     async def deactivate_member(self, interaction: discord.Interaction, trainer_name: str):
-        """Deactivate a member"""
+        """Manually deactivate a member"""
         await interaction.response.defer()
         
         try:
@@ -541,11 +546,64 @@ class QuotaCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Member '{trainer_name}' not found")
                 return
             
-            await member.deactivate()
-            await interaction.followup.send(f"✅ Deactivated: {trainer_name}")
+            if not member.is_active:
+                await interaction.followup.send(f"ℹ️ {trainer_name} is already inactive")
+                return
+            
+            # Use manual=True to prevent auto-reactivation
+            await member.deactivate(manual=True)
+            
+            embed = discord.Embed(
+                title="✅ Member Manually Deactivated",
+                description=f"**{trainer_name}** has been deactivated and will not be auto-reactivated.",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.add_field(
+                name="ℹ️ Note",
+                value="This member will stay inactive even if they appear in scraped data. "
+                      "Use `/activate_member` to reactivate them.",
+                inline=False
+            )
+            
+            await interaction.followup.send(embed=embed)
+            logger.info(f"Manually deactivated member: {trainer_name} by {interaction.user}")
             
         except Exception as e:
             logger.error(f"Error in deactivate_member: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+    
+    @app_commands.command(name="activate_member", description="Manually reactivate a deactivated member")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def activate_member(self, interaction: discord.Interaction, trainer_name: str):
+        """Manually reactivate a member"""
+        await interaction.response.defer()
+        
+        try:
+            member = await Member.get_by_name(trainer_name)
+            
+            if not member:
+                await interaction.followup.send(f"❌ Member '{trainer_name}' not found")
+                return
+            
+            if member.is_active:
+                await interaction.followup.send(f"ℹ️ {trainer_name} is already active")
+                return
+            
+            await member.activate()
+            
+            embed = discord.Embed(
+                title="✅ Member Reactivated",
+                description=f"**{trainer_name}** has been reactivated.",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            await interaction.followup.send(embed=embed)
+            logger.info(f"Manually reactivated member: {trainer_name} by {interaction.user}")
+            
+        except Exception as e:
+            logger.error(f"Error in activate_member: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
 

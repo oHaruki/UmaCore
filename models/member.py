@@ -16,10 +16,11 @@ logger = logging.getLogger(__name__)
 class Member:
     """Represents a club member"""
     member_id: Optional[UUID]
-    trainer_id: Optional[str]  # Unique trainer ID from game
+    trainer_id: Optional[str]
     trainer_name: str
     join_date: date
     is_active: bool
+    manually_deactivated: bool
     last_seen: date
     
     @classmethod
@@ -28,7 +29,7 @@ class Member:
         query = """
             INSERT INTO members (trainer_id, trainer_name, join_date, last_seen)
             VALUES ($1, $2, $3, $4)
-            RETURNING member_id, trainer_id, trainer_name, join_date, is_active, last_seen
+            RETURNING member_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
         """
         row = await db.fetchrow(query, trainer_id, trainer_name, join_date, join_date)
         logger.info(f"Created new member: {trainer_name} (ID: {trainer_id})")
@@ -36,9 +37,9 @@ class Member:
     
     @classmethod
     async def get_by_trainer_id(cls, trainer_id: str) -> Optional['Member']:
-        """Get member by trainer ID (preferred method)"""
+        """Get member by trainer ID"""
         query = """
-            SELECT member_id, trainer_id, trainer_name, join_date, is_active, last_seen
+            SELECT member_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
             FROM members
             WHERE trainer_id = $1
         """
@@ -49,9 +50,9 @@ class Member:
     
     @classmethod
     async def get_by_name(cls, trainer_name: str) -> Optional['Member']:
-        """Get member by trainer name (fallback for members without trainer_id)"""
+        """Get member by trainer name"""
         query = """
-            SELECT member_id, trainer_id, trainer_name, join_date, is_active, last_seen
+            SELECT member_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
             FROM members
             WHERE trainer_name = $1
         """
@@ -64,7 +65,7 @@ class Member:
     async def get_by_id(cls, member_id: UUID) -> Optional['Member']:
         """Get member by UUID"""
         query = """
-            SELECT member_id, trainer_id, trainer_name, join_date, is_active, last_seen
+            SELECT member_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
             FROM members
             WHERE member_id = $1
         """
@@ -77,7 +78,7 @@ class Member:
     async def get_all_active(cls) -> list['Member']:
         """Get all active members"""
         query = """
-            SELECT member_id, trainer_id, trainer_name, join_date, is_active, last_seen
+            SELECT member_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
             FROM members
             WHERE is_active = TRUE
             ORDER BY trainer_name
@@ -96,7 +97,7 @@ class Member:
         self.last_seen = last_seen
     
     async def update_name(self, new_name: str):
-        """Update trainer name (in case they changed it)"""
+        """Update trainer name"""
         query = """
             UPDATE members
             SET trainer_name = $1, updated_at = NOW()
@@ -106,24 +107,30 @@ class Member:
         self.trainer_name = new_name
         logger.info(f"Updated trainer name to: {new_name} (ID: {self.trainer_id})")
     
-    async def deactivate(self):
+    async def deactivate(self, manual: bool = False):
         """Deactivate member"""
         query = """
             UPDATE members
-            SET is_active = FALSE, updated_at = NOW()
-            WHERE member_id = $1
+            SET is_active = FALSE, manually_deactivated = $1, updated_at = NOW()
+            WHERE member_id = $2
         """
-        await db.execute(query, self.member_id)
+        await db.execute(query, manual, self.member_id)
         self.is_active = False
-        logger.info(f"Deactivated member: {self.trainer_name}")
+        self.manually_deactivated = manual
+        
+        if manual:
+            logger.info(f"Manually deactivated member: {self.trainer_name}")
+        else:
+            logger.info(f"Auto-deactivated member: {self.trainer_name}")
     
     async def activate(self):
-        """Activate member"""
+        """Activate member and clear manual deactivation flag"""
         query = """
             UPDATE members
-            SET is_active = TRUE, updated_at = NOW()
+            SET is_active = TRUE, manually_deactivated = FALSE, updated_at = NOW()
             WHERE member_id = $1
         """
         await db.execute(query, self.member_id)
         self.is_active = True
+        self.manually_deactivated = False
         logger.info(f"Activated member: {self.trainer_name}")

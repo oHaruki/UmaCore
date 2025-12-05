@@ -147,7 +147,8 @@ class QuotaCalculator:
             
             # If this member is not in the scraped data, they've left the club
             if member_key not in scraped_trainer_ids:
-                await member.deactivate()
+                # UPDATED: Pass manual=False for auto-deactivation
+                await member.deactivate(manual=False)
                 deactivated_count += 1
                 logger.info(f"Auto-deactivated member (no longer in club): {member.trainer_name}")
         
@@ -176,7 +177,11 @@ class QuotaCalculator:
             await QuotaHistory.clear_all()
             await Bomb.clear_all()
             await QuotaRequirement.clear_all()
-            logger.info("Monthly reset complete - starting fresh")
+            
+            # UPDATED: Clear manual deactivation flags on monthly reset
+            query = "UPDATE members SET manually_deactivated = FALSE WHERE manually_deactivated = TRUE"
+            await db.execute(query)
+            logger.info("Monthly reset complete - cleared manual deactivation flags")
         
         # STEP 2: Auto-deactivate members who are no longer in the scraped data
         scraped_trainer_ids = set(scraped_data.keys())
@@ -220,8 +225,13 @@ class QuotaCalculator:
                 
                 # Reactivate if they were previously deactivated
                 if not member.is_active:
-                    await member.activate()
-                    logger.info(f"Reactivated returning member: {trainer_name}")
+                    # UPDATED: Check if manually deactivated before reactivating
+                    if member.manually_deactivated:
+                        logger.info(f"Skipping reactivation of manually deactivated member: {trainer_name}")
+                        continue  # Skip processing this member entirely
+                    else:
+                        await member.activate()
+                        logger.info(f"Reactivated returning member: {trainer_name}")
             
             # Update last seen
             await member.update_last_seen(current_date)
@@ -265,9 +275,8 @@ class QuotaCalculator:
         """
         Calculate how many consecutive days a member has been behind
         
-        FIXED: 
-        1. Filter out today's date from history (in case /force_check runs multiple times)
-        2. Then count consecutive days before today that were behind
+        Filter out today's date from history (in case /force_check runs multiple times)
+        Then count consecutive days before today that were behind
         """
         if current_deficit_surplus >= 0:
             return 0
@@ -279,7 +288,7 @@ class QuotaCalculator:
             # First day being behind
             return 1
         
-        # CRITICAL: Filter out any records from TODAY
+        # Filter out any records from TODAY
         # (This happens when /force_check is run multiple times on the same day)
         recent_history = [h for h in recent_history if h.date < current_date]
         

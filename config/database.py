@@ -64,10 +64,11 @@ class Database:
         -- Members table
         CREATE TABLE IF NOT EXISTS members (
             member_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            trainer_id VARCHAR(50) UNIQUE,  -- Trainer ID from game (unique identifier)
-            trainer_name VARCHAR(100) NOT NULL,  -- Display name (can change, NOT unique)
+            trainer_id VARCHAR(50) UNIQUE,
+            trainer_name VARCHAR(100) NOT NULL,
             join_date DATE NOT NULL,
             is_active BOOLEAN DEFAULT TRUE,
+            manually_deactivated BOOLEAN DEFAULT FALSE,
             last_seen DATE NOT NULL,
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -85,10 +86,21 @@ class Database:
             END IF;
         END $$;
         
+        -- Migration: Add manually_deactivated column if it doesn't exist
+        DO $$ 
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='members' AND column_name='manually_deactivated'
+            ) THEN
+                ALTER TABLE members ADD COLUMN manually_deactivated BOOLEAN DEFAULT FALSE;
+                RAISE NOTICE 'Added manually_deactivated column';
+            END IF;
+        END $$;
+        
         -- Migration: Remove UNIQUE constraint from trainer_name if it exists
         DO $$
         BEGIN
-            -- Drop the unique constraint on trainer_name if it exists
             IF EXISTS (
                 SELECT 1 FROM pg_constraint 
                 WHERE conname = 'members_trainer_name_key'
@@ -143,13 +155,12 @@ class Database:
                 WHERE table_name='bombs' AND column_name='last_countdown_update'
             ) THEN
                 ALTER TABLE bombs ADD COLUMN last_countdown_update DATE;
-                -- Set existing bombs' last_countdown_update to their activation_date
                 UPDATE bombs SET last_countdown_update = activation_date WHERE last_countdown_update IS NULL;
                 RAISE NOTICE 'Added last_countdown_update column to bombs table';
             END IF;
         END $$;
         
-        -- Quota requirements table (NEW - for dynamic quota management)
+        -- Quota requirements table
         CREATE TABLE IF NOT EXISTS quota_requirements (
             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
             effective_date DATE NOT NULL,
@@ -168,7 +179,7 @@ class Database:
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
         
-        -- Bot settings table (for dynamic configuration like channel IDs)
+        -- Bot settings table
         CREATE TABLE IF NOT EXISTS bot_settings (
             setting_key VARCHAR(100) PRIMARY KEY,
             setting_value TEXT NOT NULL,
@@ -199,4 +210,4 @@ class Database:
 
 
 # Global database instance
-db = Database(url="")  # Will be set in main.py
+db = Database(url="")
