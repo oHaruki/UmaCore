@@ -1,7 +1,8 @@
 FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    CHROME_EXTRA_ARGS="--no-sandbox --disable-dev-shm-usage --disable-gpu --single-process --no-zygote"
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \

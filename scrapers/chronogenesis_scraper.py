@@ -62,17 +62,21 @@ class ChronoGenesisScraper(BaseScraper):
     def _setup_driver(self) -> webdriver.Chrome:
         """Set up Selenium Chrome driver with headless options"""
         chrome_options = Options()
-        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--headless=new")
         
         # Anti-detection arguments
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         
-        # Normal browser arguments
+        # Critical flags for Docker + Raspberry Pi ARM to prevent "unkillable" containers
+        # These prevent Chrome from creating processes that Docker cannot kill
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--no-zygote")
+        chrome_options.add_argument("--single-process")
+        chrome_options.add_argument("--disable-software-rasterizer")
         chrome_options.add_argument("--window-size=1920,1080")
         
         # Detect actual Chrome version and set matching user agent
