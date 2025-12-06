@@ -27,7 +27,37 @@ class ChronoGenesisScraper(BaseScraper):
     
     def __init__(self, url: str):
         super().__init__(url)
-        self.current_day_count = 1  # Will be updated based on scraped data
+        self.current_day_count = 1
+    
+    def _get_chrome_version(self) -> str:
+        """Detect the installed Chrome/Chromium version"""
+        import subprocess
+        import re
+        
+        try:
+            result = subprocess.run(['chromium-browser', '--version'], 
+                                  capture_output=True, text=True, timeout=5)
+            version_output = result.stdout
+        except:
+            try:
+                result = subprocess.run(['chromium', '--version'], 
+                                      capture_output=True, text=True, timeout=5)
+                version_output = result.stdout
+            except:
+                try:
+                    result = subprocess.run(['google-chrome', '--version'], 
+                                          capture_output=True, text=True, timeout=5)
+                    version_output = result.stdout
+                except:
+                    logger.warning("Could not detect Chrome version, using fallback 120.0.0.0")
+                    return "120.0.0.0"
+        
+        match = re.search(r'(\d+\.\d+\.\d+\.\d+)', version_output)
+        if match:
+            return match.group(1)
+        
+        logger.warning("Could not parse Chrome version, using fallback 120.0.0.0")
+        return "120.0.0.0"
     
     def _setup_driver(self) -> webdriver.Chrome:
         """Set up Selenium Chrome driver with headless options"""
@@ -44,14 +74,25 @@ class ChronoGenesisScraper(BaseScraper):
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
         
-        # === FIX FOR RASPBERRY PI / ARM ARCHITECTURE ===
+        # Detect actual Chrome version and set matching user agent
         import platform
-        import os
-        
+        chrome_version = self._get_chrome_version()
         machine = platform.machine().lower()
+        
+        logger.info(f"Detected Chrome version: {chrome_version}")
         logger.info(f"Detected CPU architecture: {machine}")
+        
+        if 'arm' in machine or 'aarch64' in machine:
+            user_agent = f"Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36"
+        else:
+            user_agent = f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36"
+        
+        chrome_options.add_argument(f"--user-agent={user_agent}")
+        logger.info(f"Using user agent: {user_agent}")
+        
+        # ChromeDriver selection based on architecture
+        import os
         
         if 'arm' in machine or 'aarch64' in machine:
             # ARM architecture (Raspberry Pi) - use system chromedriver
