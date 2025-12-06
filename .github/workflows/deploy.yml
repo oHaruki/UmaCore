@@ -20,10 +20,10 @@ jobs:
           echo "LOG_LEVEL=${{ secrets.LOG_LEVEL }}" >> .env
 
       - name: Stop existing containers
-        run: sudo docker-compose down --remove-orphans || true
+        run: docker-compose down || true
 
       - name: Pull latest changes
         run: git pull origin main
 
       - name: Build and deploy Docker containers
-        run: sudo docker-compose up -d --build --force-recreate
+        run: docker-compose up -d --build
