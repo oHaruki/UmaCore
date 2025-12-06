@@ -15,9 +15,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Scraping Configuration
 SCRAPE_URL = "https://chronogenesis.net/club_profile?circle_id=Horsecore"
-SCRAPE_TIMEOUT = 60  # seconds
+SCRAPE_TIMEOUT = 90  # seconds
 SCRAPE_RETRY_ATTEMPTS = 3
-SCRAPE_RETRY_DELAY = 5  # seconds
+SCRAPE_RETRY_DELAY = 1  # seconds
 
 # Timezone Configuration
 TIMEZONE = "Europe/Amsterdam"  # CEST

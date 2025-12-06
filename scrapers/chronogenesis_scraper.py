@@ -141,7 +141,7 @@ class ChronoGenesisScraper(BaseScraper):
                             consent_button.click()
                             logger.info(f"✓ Clicked consent button: {selector}")
                             consent_clicked = True
-                            time.sleep(5)  # Wait longer for popup to fully disappear
+                            time.sleep(15)  # Increased for slower Raspberry Pi hardware
                             break
                     except Exception as e:
                         logger.debug(f"Selector {selector} failed: {e}")
@@ -175,6 +175,10 @@ class ChronoGenesisScraper(BaseScraper):
             except Exception as e:
                 logger.info("No consent popup found or already accepted")
             
+            # Extra wait for page to fully render after cookie consent
+            logger.info("Waiting for page to fully render...")
+            time.sleep(5)
+            
             # Wait for chart container to be present
             logger.info("Waiting for chart container to load...")
             wait = WebDriverWait(driver, SCRAPE_TIMEOUT)
@@ -185,8 +189,16 @@ class ChronoGenesisScraper(BaseScraper):
                 )
                 logger.info("Found chart container")
             except TimeoutException:
-                logger.error("Chart container not found")
+                logger.error("Chart container not found after timeout")
+                
+                # Debug: Log page source to see what's actually on the page
+                logger.error("Page source (first 2000 chars):")
+                logger.error(driver.page_source[:2000])
+                
+                # Take screenshot for debugging
                 driver.save_screenshot("debug_no_chart.png")
+                logger.error("Debug screenshot saved as debug_no_chart.png")
+                
                 raise ValueError("Chart container not found on page")
             
             # Switch to "Member Cumulative Fan Count" chart
@@ -196,7 +208,7 @@ class ChronoGenesisScraper(BaseScraper):
                 select = Select(chart_select)
                 select.select_by_value("member_fan_cumulative")
                 logger.info("Selected 'Member Cumulative Fan Count' chart")
-                time.sleep(5)  # Wait for chart to update and render
+                time.sleep(8)  # Increased for slower Raspberry Pi hardware
             except Exception as e:
                 logger.warning(f"Could not switch chart mode: {e}")
             
