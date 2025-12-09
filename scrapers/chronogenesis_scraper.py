@@ -30,60 +30,96 @@ class ChronoGenesisScraper(BaseScraper):
         self.current_day_count = 1
     
     def _get_chrome_version(self) -> str:
-        """Detect the installed Chrome/Chromium version"""
+        """Detect the installed Chrome/Chromium version across platforms"""
         import subprocess
         import re
+        import platform
         
-        try:
-            result = subprocess.run(['chromium-browser', '--version'], 
-                                  capture_output=True, text=True, timeout=5)
-            version_output = result.stdout
-        except:
+        system = platform.system()
+        commands = []
+        
+        if system == "Windows":
+            # Windows Chrome locations
+            commands = [
+                r'reg query "HKEY_CURRENT_USER\Software\Google\Chrome\BLBeacon" /v version',
+                r'reg query "HKLM\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Google Chrome" /v version',
+            ]
+        elif system == "Darwin":  # macOS
+            commands = [
+                ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '--version'],
+                ['chromium', '--version'],
+            ]
+        else:  # Linux
+            commands = [
+                ['chromium-browser', '--version'],
+                ['chromium', '--version'],
+                ['google-chrome', '--version'],
+            ]
+        
+        for cmd in commands:
             try:
-                result = subprocess.run(['chromium', '--version'], 
-                                      capture_output=True, text=True, timeout=5)
+                if isinstance(cmd, str):
+                    # Windows registry command
+                    result = subprocess.run(cmd, capture_output=True, text=True, 
+                                          timeout=5, shell=True)
+                else:
+                    # Direct command
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                
                 version_output = result.stdout
-            except:
-                try:
-                    result = subprocess.run(['google-chrome', '--version'], 
-                                          capture_output=True, text=True, timeout=5)
-                    version_output = result.stdout
-                except:
-                    logger.warning("Could not detect Chrome version, using fallback 120.0.0.0")
-                    return "120.0.0.0"
+                match = re.search(r'(\d+\.\d+\.\d+\.\d+)', version_output)
+                if match:
+                    version = match.group(1)
+                    logger.info(f"Detected Chrome version: {version}")
+                    return version
+            except Exception as e:
+                logger.debug(f"Command failed: {cmd}, error: {e}")
+                continue
         
-        match = re.search(r'(\d+\.\d+\.\d+\.\d+)', version_output)
-        if match:
-            return match.group(1)
-        
-        logger.warning("Could not parse Chrome version, using fallback 120.0.0.0")
-        return "120.0.0.0"
+        logger.warning("Could not detect Chrome version, using fallback 131.0.0.0")
+        return "131.0.0.0"
     
     def _setup_driver(self) -> webdriver.Chrome:
         """Set up Selenium Chrome driver with headless options"""
+        import platform
+        
         chrome_options = Options()
-        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--headless=new")
         
         # Anti-detection arguments
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         
-        # Normal browser arguments
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--window-size=1920,1080")
-        
-        # Detect actual Chrome version and set matching user agent
-        import platform
-        chrome_version = self._get_chrome_version()
+        system = platform.system()
         machine = platform.machine().lower()
         
-        logger.info(f"Detected Chrome version: {chrome_version}")
-        logger.info(f"Detected CPU architecture: {machine}")
+        # Platform-specific arguments
+        if system == "Linux":
+            # Critical flags for Docker + Raspberry Pi ARM to prevent "unkillable" containers
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-gpu")
+            
+            # Only use single-process on ARM (Raspberry Pi)
+            if 'arm' in machine or 'aarch64' in machine:
+                chrome_options.add_argument("--no-zygote")
+                chrome_options.add_argument("--single-process")
         
-        if 'arm' in machine or 'aarch64' in machine:
+        chrome_options.add_argument("--disable-software-rasterizer")
+        chrome_options.add_argument("--window-size=1920,1080")
+        
+        # Detect Chrome version and set matching user agent
+        chrome_version = self._get_chrome_version()
+        logger.info(f"Detected Chrome version: {chrome_version}")
+        logger.info(f"Detected OS: {system}, CPU architecture: {machine}")
+        
+        # Set appropriate user agent based on platform
+        if system == "Windows":
+            user_agent = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36"
+        elif system == "Darwin":
+            user_agent = f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36"
+        elif 'arm' in machine or 'aarch64' in machine:
             user_agent = f"Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36"
         else:
             user_agent = f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36"
@@ -91,18 +127,17 @@ class ChronoGenesisScraper(BaseScraper):
         chrome_options.add_argument(f"--user-agent={user_agent}")
         logger.info(f"Using user agent: {user_agent}")
         
-        # ChromeDriver selection based on architecture
-        import os
-        
-        if 'arm' in machine or 'aarch64' in machine:
+        # ChromeDriver selection based on platform
+        if system == "Linux" and ('arm' in machine or 'aarch64' in machine):
             # ARM architecture (Raspberry Pi) - use system chromedriver
+            import os
             chromedriver_path = '/usr/bin/chromedriver'
             
             if os.path.exists(chromedriver_path):
-                logger.info(f"✓ Using system ChromeDriver at {chromedriver_path}")
+                logger.info(f"Using system ChromeDriver at {chromedriver_path}")
                 service = Service(chromedriver_path)
             else:
-                logger.error(f"✗ ChromeDriver not found at {chromedriver_path}")
+                logger.error(f"ChromeDriver not found at {chromedriver_path}")
                 logger.error("Install it with: apt-get install chromium-driver")
                 raise FileNotFoundError(
                     f"ChromeDriver not found. Please install chromium-driver:\n"
@@ -110,9 +145,14 @@ class ChronoGenesisScraper(BaseScraper):
                     f"  apt-get install chromium chromium-driver"
                 )
         else:
-            # x86_64 architecture - use webdriver-manager
-            logger.info("✓ Using webdriver-manager for x86_64")
-            service = Service(ChromeDriverManager().install())
+            # Windows, Mac, or x86_64 Linux - use webdriver-manager
+            logger.info(f"Using webdriver-manager for {system}")
+            try:
+                service = Service(ChromeDriverManager().install())
+            except Exception as e:
+                logger.error(f"Failed to install ChromeDriver via webdriver-manager: {e}")
+                logger.error("Please ensure Chrome/Chromium is installed and up to date")
+                raise
         
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
@@ -151,7 +191,7 @@ class ChronoGenesisScraper(BaseScraper):
             # Handle cookie consent popup if it exists
             logger.info("Checking for cookie consent popup...")
             try:
-                time.sleep(3)  # Wait for popup to appear
+                time.sleep(3)
                 
                 # Try to find and click the consent button (multiple possible selectors)
                 selectors = [
@@ -177,29 +217,26 @@ class ChronoGenesisScraper(BaseScraper):
                         else:
                             consent_button = driver.find_element(By.CSS_SELECTOR, selector)
                         
-                        # Make sure element is visible and clickable
                         if consent_button.is_displayed():
                             consent_button.click()
-                            logger.info(f"✓ Clicked consent button: {selector}")
+                            logger.info(f"Clicked consent button: {selector}")
                             consent_clicked = True
-                            time.sleep(15)  # Increased for slower Raspberry Pi hardware
+                            time.sleep(15)
                             break
                     except Exception as e:
                         logger.debug(f"Selector {selector} failed: {e}")
                         continue
                 
                 if not consent_clicked:
-                    logger.warning("⚠️ Could not find or click cookie consent button")
+                    logger.warning("Could not find or click cookie consent button")
                     logger.warning("Attempting to remove cookie dialog with JavaScript...")
                     
-                    # Nuclear option: Remove the cookie dialog completely with JavaScript
+                    # Remove the cookie dialog with JavaScript
                     try:
                         driver.execute_script("""
-                            // Remove ez-cookie dialog
                             var ezDialog = document.getElementById('ez-cookie-dialog-wrapper');
                             if (ezDialog) ezDialog.remove();
                             
-                            // Remove any other cookie overlays
                             var overlays = document.querySelectorAll('[id*="cookie"], [class*="cookie"], [id*="consent"], [class*="consent"]');
                             overlays.forEach(function(el) {
                                 if (el.style.position === 'fixed' || el.style.zIndex > 100) {
@@ -207,16 +244,15 @@ class ChronoGenesisScraper(BaseScraper):
                                 }
                             });
                         """)
-                        logger.info("✓ Forcefully removed cookie dialog with JavaScript")
+                        logger.info("Removed cookie dialog with JavaScript")
                         time.sleep(2)
                     except Exception as js_error:
-                        logger.error(f"❌ JavaScript removal also failed: {js_error}")
-                        logger.error("The cookie popup may still be blocking the page")
+                        logger.error(f"JavaScript removal failed: {js_error}")
                     
             except Exception as e:
                 logger.info("No consent popup found or already accepted")
             
-            # Extra wait for page to fully render after cookie consent
+            # Wait for page to fully render after cookie consent
             logger.info("Waiting for page to fully render...")
             time.sleep(5)
             
@@ -231,15 +267,9 @@ class ChronoGenesisScraper(BaseScraper):
                 logger.info("Found chart container")
             except TimeoutException:
                 logger.error("Chart container not found after timeout")
-                
-                # Debug: Log page source to see what's actually on the page
                 logger.error("Page source (first 2000 chars):")
                 logger.error(driver.page_source[:2000])
-                
-                # Take screenshot for debugging
                 driver.save_screenshot("debug_no_chart.png")
-                logger.error("Debug screenshot saved as debug_no_chart.png")
-                
                 raise ValueError("Chart container not found on page")
             
             # Switch to "Member Cumulative Fan Count" chart
@@ -249,7 +279,7 @@ class ChronoGenesisScraper(BaseScraper):
                 select = Select(chart_select)
                 select.select_by_value("member_fan_cumulative")
                 logger.info("Selected 'Member Cumulative Fan Count' chart")
-                time.sleep(8)  # Increased for slower Raspberry Pi hardware
+                time.sleep(8)
             except Exception as e:
                 logger.warning(f"Could not switch chart mode: {e}")
             
@@ -259,22 +289,19 @@ class ChronoGenesisScraper(BaseScraper):
                 expand_button = driver.find_element(By.CSS_SELECTOR, ".expand-button")
                 expand_button.click()
                 logger.info("Clicked 'Show data' button")
-                time.sleep(2)  # Wait for table to appear
+                time.sleep(2)
             except Exception as e:
                 logger.info(f"Could not find/click expand button: {e}")
-                logger.info("Table might already be visible")
             
             # Find the chart data table
             logger.info("Looking for chart data table...")
             chart_table = None
             try:
-                # Look for table inside the chart container
                 chart_table = chart_container.find_element(By.TAG_NAME, "table")
                 logger.info("Found chart data table")
             except NoSuchElementException:
                 logger.warning("No table found in chart container, trying different approach...")
                 
-                # Try to find any table that's not the member list table
                 all_tables = driver.find_elements(By.TAG_NAME, "table")
                 logger.info(f"Found {len(all_tables)} total tables on page")
                 
@@ -296,7 +323,6 @@ class ChronoGenesisScraper(BaseScraper):
             
             if not member_data:
                 logger.error("No data extracted from chart table")
-                # Log table HTML for debugging
                 table_html = chart_table.get_attribute('outerHTML')[:2000]
                 logger.error(f"Chart table HTML: {table_html}")
                 driver.save_screenshot("debug_empty_chart_data.png")
@@ -329,7 +355,7 @@ class ChronoGenesisScraper(BaseScraper):
                 "trainer_id": {
                     "name": "TrainerName",
                     "fans": [day1_fans, day2_fans, ...],
-                    "join_day": 1  # First day with non-zero fans
+                    "join_day": 1
                 }
             }
         """
@@ -347,7 +373,6 @@ class ChronoGenesisScraper(BaseScraper):
             header_row = rows[0]
             headers = header_row.find_elements(By.TAG_NAME, "th")
             
-            # If no th elements, try td elements in first row
             if not headers:
                 headers = header_row.find_elements(By.TAG_NAME, "td")
                 logger.info("Using td elements as headers")
@@ -365,10 +390,8 @@ class ChronoGenesisScraper(BaseScraper):
                 header_texts = [h.text.strip() for h in headers]
                 logger.error(f"Headers found: {header_texts}")
                 
-                # Check if headers are empty (cookie popup blocking page)
                 if all(not h for h in header_texts):
-                    logger.error("❌ All headers are empty! Cookie consent popup is likely blocking the page.")
-                    logger.error("The scraper needs to handle the cookie popup before accessing the table.")
+                    logger.error("All headers are empty! Cookie consent popup is likely blocking the page.")
                     raise ValueError("Cookie popup is blocking page access - headers are empty")
                 
                 return {}
@@ -379,26 +402,21 @@ class ChronoGenesisScraper(BaseScraper):
             for row_idx, row in enumerate(rows[1:], start=1):
                 cells = row.find_elements(By.TAG_NAME, "td")
                 
-                # Skip empty rows
                 if not cells or len(cells) < 2:
                     continue
                 
                 # First cell contains member name and trainer ID
-                # Structure: <td><span title="trainer_id">TrainerName</span></td>
                 first_cell = cells[0]
                 
                 try:
-                    # Try to find span with title attribute (trainer ID)
                     span = first_cell.find_element(By.TAG_NAME, "span")
                     trainer_id = span.get_attribute("title")
                     member_name = span.text.strip()
                 except:
-                    # Fallback: just get text (for members without ID in span)
                     member_name = first_cell.text.strip()
                     trainer_id = None
                     logger.warning(f"Could not extract trainer ID for {member_name}")
                 
-                # Skip invalid names
                 if not member_name or member_name == "-" or member_name == "Player":
                     continue
                 
@@ -410,22 +428,19 @@ class ChronoGenesisScraper(BaseScraper):
                     
                     cell_text = cells[day_col_idx].text.strip()
                     
-                    # Handle empty cells or dashes as 0
                     if not cell_text or cell_text == "-":
                         daily_fans.append(0)
                         continue
                     
                     try:
-                        # Parse fan count (remove commas)
                         fan_count = int(cell_text.replace(',', ''))
                         daily_fans.append(fan_count)
                     except ValueError:
-                        # Non-numeric cell, treat as 0
                         logger.debug(f"Non-numeric cell for {member_name}: '{cell_text}', using 0")
                         daily_fans.append(0)
                 
                 # Detect join day (first day with non-zero fans)
-                join_day = 1  # Default to day 1
+                join_day = 1
                 for day_idx, fans in enumerate(daily_fans, start=1):
                     if fans > 0:
                         join_day = day_idx
@@ -466,11 +481,10 @@ class ChronoGenesisScraper(BaseScraper):
                     "name": "TrainerName",
                     "trainer_id": "trainer_id",
                     "fans": [day1_fans, day2_fans, ...],
-                    "join_day": 1  # First day with non-zero fans
+                    "join_day": 1
                 }
             }
         """
-        # Run the synchronous Selenium code in a thread pool executor
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, self._scrape_sync)
         return result
