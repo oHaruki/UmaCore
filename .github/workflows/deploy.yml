@@ -12,18 +12,43 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Create .env file
+      - name: Stop systemd service
+        run: sudo systemctl stop umacore-bot || true
+
+      - name: Copy files to deployment directory
         run: |
-          echo "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}" >> .env
+          DEPLOY_DIR="/home/pi/UmaCore"
+          mkdir -p "$DEPLOY_DIR"
+          # Copy all files except .git and venv
+          rsync -av --exclude='.git' --exclude='venv' --exclude='__pycache__' --exclude='*.pyc' --exclude='.env' ./ "$DEPLOY_DIR/"
+
+      - name: Create .env file
+        working-directory: /home/pi/UmaCore
+        run: |
+          echo "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}" > .env
           echo "CHANNEL_ID=${{ secrets.CHANNEL_ID }}" >> .env
           echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" >> .env
           echo "LOG_LEVEL=${{ secrets.LOG_LEVEL }}" >> .env
 
-      - name: Stop existing containers
-        run: docker-compose down || true
+      - name: Update Python dependencies
+        working-directory: /home/pi/UmaCore
+        run: |
+          if [ ! -d "venv" ]; then
+            python3.11 -m venv venv
+          fi
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          deactivate
 
-      - name: Pull latest changes
-        run: git pull origin main
+      - name: Set correct permissions
+        run: |
+          sudo chown -R pi:pi /home/pi/UmaCore
+          chmod +x /home/pi/UmaCore/install-systemd.sh || true
 
-      - name: Build and deploy Docker containers
-        run: docker-compose up -d --build
+      - name: Reload systemd and restart service
+        run: |
+          sudo systemctl daemon-reload
+          sudo systemctl restart umacore-bot
+          sleep 2
+          sudo systemctl status umacore-bot --no-pager || true
