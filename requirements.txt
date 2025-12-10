@@ -8,6 +8,10 @@ asyncpg>=0.29.0
 selenium>=4.15.0
 webdriver-manager>=4.0.0
 
+# Data Visualization
+# matplotlib>=3.7.0
+# seaborn>=0.12.0 (not for now)
+
 # Utilities
 python-dotenv>=1.0.0
 pytz>=2023.3
