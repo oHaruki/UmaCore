@@ -91,11 +91,19 @@ class ChronoGenesisScraper(BaseScraper):
         chrome_options.add_argument(f"--user-agent={user_agent}")
         logger.info(f"Using user agent: {user_agent}")
         
+<<<<<<< Updated upstream
         # ChromeDriver selection based on architecture
         import os
         
         if 'arm' in machine or 'aarch64' in machine:
             # ARM architecture (Raspberry Pi) - use system chromedriver
+=======
+        # ChromeDriver selection based on platform
+        if system == "Linux":
+            # All Linux systems (ARM and x86_64) - use system chromedriver
+            # This ensures compatibility with installed Chromium version
+            import os
+>>>>>>> Stashed changes
             chromedriver_path = '/usr/bin/chromedriver'
             
             if os.path.exists(chromedriver_path):
@@ -110,9 +118,20 @@ class ChronoGenesisScraper(BaseScraper):
                     f"  apt-get install chromium chromium-driver"
                 )
         else:
+<<<<<<< Updated upstream
             # x86_64 architecture - use webdriver-manager
             logger.info("✓ Using webdriver-manager for x86_64")
             service = Service(ChromeDriverManager().install())
+=======
+            # Windows or Mac - use webdriver-manager
+            logger.info(f"Using webdriver-manager for {system}")
+            try:
+                service = Service(ChromeDriverManager().install())
+            except Exception as e:
+                logger.error(f"Failed to install ChromeDriver via webdriver-manager: {e}")
+                logger.error("Please ensure Chrome/Chromium is installed and up to date")
+                raise
+>>>>>>> Stashed changes
         
         driver = webdriver.Chrome(service=service, options=chrome_options)
         

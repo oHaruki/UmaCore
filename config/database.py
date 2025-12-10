@@ -187,6 +187,16 @@ class Database:
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
         
+        -- User links table
+        CREATE TABLE IF NOT EXISTS user_links (
+            discord_user_id BIGINT PRIMARY KEY,
+            member_id UUID NOT NULL REFERENCES members(member_id) ON DELETE CASCADE,
+            notify_on_bombs BOOLEAN DEFAULT TRUE,
+            notify_on_deficit BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        
         -- Indexes for performance
         CREATE INDEX IF NOT EXISTS idx_quota_history_member_date 
             ON quota_history(member_id, date DESC);
@@ -198,6 +208,8 @@ class Database:
             ON members(trainer_id);
         CREATE INDEX IF NOT EXISTS idx_quota_requirements_date
             ON quota_requirements(effective_date DESC);
+        CREATE INDEX IF NOT EXISTS idx_user_links_member_id
+            ON user_links(member_id);
         """
         
         try:

@@ -10,7 +10,7 @@ import asyncio
 
 from config.settings import CHANNEL_ID, TIMEZONE, DAILY_REPORT_TIME, SCRAPE_URL
 from scrapers import ChronoGenesisScraper
-from services import QuotaCalculator, BombManager, ReportGenerator
+from services import QuotaCalculator, BombManager, ReportGenerator, NotificationService
 from models import Member, BotSettings
 
 logger = logging.getLogger(__name__)
@@ -25,9 +25,10 @@ class BotTasks:
         self.quota_calculator = QuotaCalculator()
         self.bomb_manager = BombManager()
         self.report_generator = ReportGenerator()
+        self.notification_service = NotificationService(bot)
         self.timezone = pytz.timezone(TIMEZONE)
         
-        # Parse daily report time (e.g., "16:00")
+        # Parse daily report time
         hour, minute = map(int, DAILY_REPORT_TIME.split(':'))
         self.target_hour = hour
         self.target_minute = minute
@@ -49,22 +50,15 @@ class BotTasks:
     
     @tasks.loop(hours=1)
     async def hourly_check(self):
-        """
-        Check every hour if it's time to run the daily report
-        This fixes the timezone bug by checking the configured timezone
-        """
-        # Get current time in configured timezone
+        """Check every hour if it's time to run the daily report"""
         now = datetime.now(self.timezone)
         current_date = now.date()
         
-        # Check if we're at or past the target time
         if now.hour == self.target_hour and now.minute >= self.target_minute:
-            # Check if we already ran today
             if self.last_run_date == current_date:
                 logger.debug(f"Daily check already completed today ({current_date})")
                 return
             
-            # Run the daily check
             logger.info(f"⏰ Target time reached ({now.strftime('%H:%M')} {TIMEZONE}), starting daily check...")
             self.last_run_date = current_date
             await self.daily_check()
@@ -75,15 +69,13 @@ class BotTasks:
         logger.info("Starting daily check...")
         logger.info("=" * 60)
         
-        # Get channels (report and alert)
+        # Get channels
         report_channel_id = await BotSettings.get_report_channel_id()
         alert_channel_id = await BotSettings.get_alert_channel_id()
         
-        # Fallback to CHANNEL_ID from .env if not set in database
         if not report_channel_id:
             report_channel_id = CHANNEL_ID
         
-        # If alert channel not set, use report channel
         if not alert_channel_id:
             alert_channel_id = report_channel_id
         
@@ -98,13 +90,12 @@ class BotTasks:
             logger.warning(f"Alert channel {alert_channel_id} not found, using report channel")
             alert_channel = report_channel
         
-        # Get current date in the configured timezone
         current_datetime = datetime.now(self.timezone)
         current_date = current_datetime.date()
         
         # Retry configuration
         max_retries = 3
-        retry_delay = 10  # seconds
+        retry_delay = 10
         
         scraped_data = None
         current_day = None
@@ -130,7 +121,7 @@ class BotTasks:
                 if attempt < max_retries:
                     logger.info(f"Retrying in {retry_delay} seconds...")
                     await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
+                    retry_delay *= 2
         
         # STEP 2: Handle scraping failure
         if not scraped_data:
@@ -151,7 +142,7 @@ class BotTasks:
                 "⚠️ **Manual intervention required!**\n"
                 "Administrators can run `/force_check` to retry manually."
             )
-            return  # Exit early, don't process anything
+            return
         
         # STEP 3: Process the scraped data
         try:
@@ -168,7 +159,7 @@ class BotTasks:
                 f"Data processing failed: {str(e)}"
             )
             await report_channel.send(embed=error_embed)
-            return  # Exit if processing fails
+            return
         
         # STEP 4: Bomb management
         try:
@@ -189,12 +180,32 @@ class BotTasks:
             
         except Exception as e:
             logger.error(f"❌ Error during bomb management: {e}", exc_info=True)
-            # Continue anyway - we can still send reports
             newly_activated_bombs = []
             deactivated_bombs = []
             members_to_kick = []
         
-        # STEP 5: Generate and send reports
+        # STEP 5: Send DM notifications to linked users
+        try:
+            if newly_activated_bombs:
+                logger.info("📨 Sending bomb activation DMs to linked users...")
+                await self.notification_service.send_bomb_notifications(newly_activated_bombs)
+            
+            if deactivated_bombs:
+                logger.info("📨 Sending bomb deactivation DMs to linked users...")
+                for bomb in deactivated_bombs:
+                    member = await Member.get_by_id(bomb.member_id)
+                    await self.notification_service.send_bomb_deactivation_notification(member)
+            
+            # Send deficit notifications
+            status_summary = await self.quota_calculator.get_member_status_summary(current_date)
+            if status_summary['behind']:
+                logger.info("📨 Sending deficit notifications to linked users...")
+                await self.notification_service.send_deficit_notifications(status_summary['behind'])
+            
+        except Exception as e:
+            logger.error(f"❌ Error sending DM notifications: {e}", exc_info=True)
+        
+        # STEP 6: Generate and send reports
         try:
             logger.info("📊 Generating daily report...")
             status_summary = await self.quota_calculator.get_member_status_summary(current_date)
@@ -204,7 +215,6 @@ class BotTasks:
                 status_summary, bombs_data, current_date
             )
             
-            # Send all report embeds to report channel
             for embed in daily_reports:
                 await report_channel.send(embed=embed)
             
@@ -217,9 +227,8 @@ class BotTasks:
             )
             await report_channel.send(embed=error_embed)
         
-        # STEP 6: Send alerts to alert channel
+        # STEP 7: Send alerts to alert channel
         try:
-            # Send bomb activation alerts if any
             if newly_activated_bombs:
                 bomb_data = []
                 for bomb in newly_activated_bombs:
@@ -230,7 +239,6 @@ class BotTasks:
                 await alert_channel.send(embed=alert_embed)
                 logger.info(f"💣 Sent bomb activation alert for {len(bomb_data)} member(s)")
             
-            # Send kick alerts if any
             if members_to_kick:
                 kick_embed = self.report_generator.create_kick_alert(members_to_kick)
                 await alert_channel.send(embed=kick_embed)
@@ -239,7 +247,7 @@ class BotTasks:
         except Exception as e:
             logger.error(f"❌ Error sending alerts: {e}", exc_info=True)
         
-        # STEP 7: Final summary
+        # STEP 8: Final summary
         logger.info("=" * 60)
         logger.info(f"✅ Daily check complete!")
         logger.info(f"   • Members updated: {updated_members}")
