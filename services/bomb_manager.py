@@ -51,7 +51,7 @@ class BombManager:
         
         return newly_activated
     
-    async def check_and_deactivate_bombs(self, current_date: date) -> List[Bomb]:
+    async def check_and_deactivate_bombs(self, current_date: date) -> List[Dict]:
         """
         Check active bombs and deactivate if member is back on track
         
@@ -59,7 +59,7 @@ class BombManager:
             current_date: Current date
         
         Returns:
-            List of deactivated bombs
+            List of dicts with 'bomb', 'member', and 'history' keys
         """
         active_bombs = await Bomb.get_all_active()
         deactivated = []
@@ -70,10 +70,16 @@ class BombManager:
             
             if latest_history and latest_history.deficit_surplus >= 0:
                 # Member is back on track
-                await bomb.deactivate(current_date)
-                deactivated.append(bomb)
-                
                 member = await Member.get_by_id(bomb.member_id)
+                
+                await bomb.deactivate(current_date)
+                
+                deactivated.append({
+                    'bomb': bomb,
+                    'member': member,
+                    'history': latest_history
+                })
+                
                 logger.info(f"✅ Bomb deactivated for {member.trainer_name} "
                           f"(back on track with +{latest_history.deficit_surplus:,})")
         
@@ -124,6 +130,7 @@ class BombManager:
     async def get_active_bombs_with_members(self) -> List[Dict]:
         """
         Get all active bombs with associated member information
+        Only includes bombs for currently active members
         
         Returns:
             List of dicts containing bomb and member data
@@ -133,6 +140,12 @@ class BombManager:
         
         for bomb in active_bombs:
             member = await Member.get_by_id(bomb.member_id)
+            
+            # Skip if member is deactivated
+            if not member or not member.is_active:
+                logger.debug(f"Skipping bomb for deactivated member: {member.trainer_name if member else 'Unknown'}")
+                continue
+            
             latest_history = await QuotaHistory.get_latest_for_member(bomb.member_id)
             
             result.append({
