@@ -192,8 +192,8 @@ class BotTasks:
             
             if deactivated_bombs:
                 logger.info("📨 Sending bomb deactivation DMs to linked users...")
-                for bomb in deactivated_bombs:
-                    member = await Member.get_by_id(bomb.member_id)
+                for item in deactivated_bombs:
+                    member = item['member']
                     await self.notification_service.send_bomb_deactivation_notification(member)
             
             # Send deficit notifications
@@ -219,6 +219,12 @@ class BotTasks:
                 await report_channel.send(embed=embed)
             
             logger.info(f"✅ Daily report sent ({len(daily_reports)} embed(s))")
+            
+            # Send bomb deactivation report if any
+            if deactivated_bombs:
+                deactivation_embed = self.report_generator.create_bomb_deactivation_report(deactivated_bombs)
+                await report_channel.send(embed=deactivation_embed)
+                logger.info(f"✅ Bomb deactivation report sent ({len(deactivated_bombs)} member(s))")
             
         except Exception as e:
             logger.error(f"❌ Error generating/sending daily report: {e}", exc_info=True)

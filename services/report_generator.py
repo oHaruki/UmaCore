@@ -243,6 +243,39 @@ class ReportGenerator:
         embed.set_footer(text="Get back on track to deactivate the bomb!")
         return embed
     
+    def create_bomb_deactivation_report(self, deactivated: List[Dict]) -> discord.Embed:
+        """
+        Create an embed for bombs that were deactivated (back on track)
+        
+        Args:
+            deactivated: List of dicts with 'bomb', 'member', and 'history' keys
+        
+        Returns:
+            Discord Embed object
+        """
+        embed = discord.Embed(
+            title="✅ Bombs Defused",
+            description=f"{len(deactivated)} member{'s' if len(deactivated) != 1 else ''} got back on track!",
+            color=COLOR_ON_TRACK,
+            timestamp=discord.utils.utcnow()
+        )
+        
+        for item in deactivated:
+            member = item['member']
+            history = item['history']
+            
+            surplus = history.deficit_surplus
+            
+            embed.add_field(
+                name=f"🎉 {member.trainer_name}",
+                value=f"**+{surplus:,} fans** surplus\n"
+                      f"Total: {history.cumulative_fans:,} fans",
+                inline=True
+            )
+        
+        embed.set_footer(text="Great job getting back on track!")
+        return embed
+    
     def create_error_report(self, error_message: str) -> discord.Embed:
         """Create an error report embed"""
         embed = discord.Embed(

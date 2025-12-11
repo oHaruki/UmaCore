@@ -245,6 +245,12 @@ class AdminCommands(commands.Cog):
             for embed in daily_reports:
                 await report_channel.send(embed=embed)
             
+            # Send bomb deactivation report if any
+            if deactivated:
+                deactivation_embed = self.report_generator.create_bomb_deactivation_report(deactivated)
+                await report_channel.send(embed=deactivation_embed)
+                logger.info(f"✅ Bomb deactivation report sent ({len(deactivated)} member(s))")
+            
             if newly_activated:
                 bomb_data = []
                 for bomb in newly_activated:
@@ -257,9 +263,15 @@ class AdminCommands(commands.Cog):
                 kick_alert = self.report_generator.create_kick_alert(members_to_kick)
                 await alert_channel.send(embed=kick_alert)
             
-            await interaction.followup.send(
-                f"✅ Check complete: {updated_members} members updated, {new_members} new members"
-            )
+            # Final success message
+            if deactivated:
+                await interaction.followup.send(
+                    f"✅ Check complete: {updated_members} members updated, {new_members} new members, {len(deactivated)} bombs defused"
+                )
+            else:
+                await interaction.followup.send(
+                    f"✅ Check complete: {updated_members} members updated, {new_members} new members"
+                )
             
         except Exception as e:
             logger.error(f"Error in force_check: {e}", exc_info=True)
