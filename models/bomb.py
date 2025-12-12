@@ -17,6 +17,7 @@ class Bomb:
     """Represents an active bomb warning for a member"""
     bomb_id: Optional[UUID]
     member_id: UUID
+    club_id: UUID
     activation_date: date
     days_remaining: int
     is_active: bool
@@ -24,22 +25,22 @@ class Bomb:
     last_countdown_update: Optional[date]
     
     @classmethod
-    async def create(cls, member_id: UUID, activation_date: date, days_remaining: int) -> 'Bomb':
+    async def create(cls, member_id: UUID, club_id: UUID, activation_date: date, days_remaining: int) -> 'Bomb':
         """Create a new bomb warning"""
         query = """
-            INSERT INTO bombs (member_id, activation_date, days_remaining, last_countdown_update)
-            VALUES ($1, $2, $3, $2)
-            RETURNING bomb_id, member_id, activation_date, days_remaining, is_active, deactivation_date, last_countdown_update
+            INSERT INTO bombs (member_id, club_id, activation_date, days_remaining, last_countdown_update)
+            VALUES ($1, $2, $3, $4, $3)
+            RETURNING bomb_id, member_id, club_id, activation_date, days_remaining, is_active, deactivation_date, last_countdown_update
         """
-        row = await db.fetchrow(query, member_id, activation_date, days_remaining)
-        logger.warning(f"Bomb activated for member {member_id} with {days_remaining} days remaining")
+        row = await db.fetchrow(query, member_id, club_id, activation_date, days_remaining)
+        logger.warning(f"Bomb activated for member {member_id} in club {club_id} with {days_remaining} days remaining")
         return cls(**dict(row))
     
     @classmethod
     async def get_active_for_member(cls, member_id: UUID) -> Optional['Bomb']:
         """Get active bomb for a member"""
         query = """
-            SELECT bomb_id, member_id, activation_date, days_remaining, is_active, deactivation_date, last_countdown_update
+            SELECT bomb_id, member_id, club_id, activation_date, days_remaining, is_active, deactivation_date, last_countdown_update
             FROM bombs
             WHERE member_id = $1 AND is_active = TRUE
             ORDER BY activation_date DESC
@@ -51,15 +52,15 @@ class Bomb:
         return None
     
     @classmethod
-    async def get_all_active(cls) -> List['Bomb']:
-        """Get all active bombs"""
+    async def get_all_active(cls, club_id: UUID) -> List['Bomb']:
+        """Get all active bombs for a club"""
         query = """
-            SELECT bomb_id, member_id, activation_date, days_remaining, is_active, deactivation_date, last_countdown_update
+            SELECT bomb_id, member_id, club_id, activation_date, days_remaining, is_active, deactivation_date, last_countdown_update
             FROM bombs
-            WHERE is_active = TRUE
+            WHERE club_id = $1 AND is_active = TRUE
             ORDER BY days_remaining ASC, activation_date ASC
         """
-        rows = await db.fetch(query)
+        rows = await db.fetch(query, club_id)
         return [cls(**dict(row)) for row in rows]
     
     async def deactivate(self, deactivation_date: date):
@@ -98,8 +99,8 @@ class Bomb:
             logger.info(f"Bomb countdown for member {self.member_id}: {self.days_remaining} days remaining")
     
     @classmethod
-    async def clear_all(cls):
-        """Clear all bombs (for monthly reset)"""
-        query = "DELETE FROM bombs"
-        await db.execute(query)
-        logger.info("Cleared all bombs for monthly reset")
+    async def clear_all(cls, club_id: UUID):
+        """Clear all bombs for a club (for monthly reset)"""
+        query = "DELETE FROM bombs WHERE club_id = $1"
+        await db.execute(query, club_id)
+        logger.info(f"Cleared all bombs for club {club_id} (monthly reset)")

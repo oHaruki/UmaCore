@@ -6,7 +6,7 @@ from typing import Dict, List
 import discord
 import logging
 
-from config.settings import COLOR_ON_TRACK, COLOR_BEHIND, COLOR_BOMB, COLOR_INFO, DAILY_QUOTA
+from config.settings import COLOR_ON_TRACK, COLOR_BEHIND, COLOR_BOMB, COLOR_INFO
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +28,14 @@ class ReportGenerator:
             return f"{num / 1_000:.1f}K"
         return str(num)
     
-    def create_daily_report(self, status_summary: Dict, bombs_data: List[Dict], 
-                           report_date: date) -> List[discord.Embed]:
+    def create_daily_report(self, club_name: str, daily_quota: int, status_summary: Dict, 
+                           bombs_data: List[Dict], report_date: date) -> List[discord.Embed]:
         """
         Create the main daily report embed(s)
         
         Args:
+            club_name: Name of the club
+            daily_quota: Current daily quota for the club
             status_summary: Dict from QuotaCalculator.get_member_status_summary()
             bombs_data: List from BombManager.get_active_bombs_with_members()
             report_date: Date of the report
@@ -45,9 +47,9 @@ class ReportGenerator:
         
         # Summary embed
         summary_embed = discord.Embed(
-            title="📊 Daily Quota Report",
+            title=f"📊 Daily Quota Report - {club_name}",
             description=f"**Date:** {report_date.strftime('%B %d, %Y')}\n"
-                       f"**Daily Quota:** {self.format_fans_short(DAILY_QUOTA)} fans per member",
+                       f"**Daily Quota:** {self.format_fans_short(daily_quota)} fans per member",
             color=COLOR_INFO,
             timestamp=discord.utils.utcnow()
         )
@@ -67,7 +69,7 @@ class ReportGenerator:
             inline=False
         )
         
-        summary_embed.set_footer(text="Umamusume Quota Tracker")
+        summary_embed.set_footer(text=f"Umamusume Quota Tracker - {club_name}")
         embeds.append(summary_embed)
         
         # On Track embed (separate if needed)
@@ -141,10 +143,9 @@ class ReportGenerator:
         
         for item in items:
             line = formatter(item)
-            line_length = len(line) + 1  # +1 for newline
+            line_length = len(line) + 1
             
             if current_length + line_length > max_length and current_section:
-                # Current section is full, start a new one
                 sections.append("\n".join(current_section))
                 current_section = [line]
                 current_length = line_length
@@ -152,7 +153,6 @@ class ReportGenerator:
                 current_section.append(line)
                 current_length += line_length
         
-        # Add the last section
         if current_section:
             sections.append("\n".join(current_section))
         
@@ -180,23 +180,24 @@ class ReportGenerator:
             
             lines.append(
                 f"{emoji} **{member.trainer_name}**: {days_remaining} day{'s' if days_remaining != 1 else ''} remaining "
-                f"(#{self.format_fans_short(deficit)} behind)"
+                f"(-{self.format_fans_short(deficit)} behind)"
             )
         
         return "\n".join(lines) if lines else "*No active bombs*"
     
-    def create_kick_alert(self, members_to_kick: List) -> discord.Embed:
+    def create_kick_alert(self, club_name: str, members_to_kick: List) -> discord.Embed:
         """
         Create an alert embed for members who need to be kicked
         
         Args:
+            club_name: Name of the club
             members_to_kick: List of Member objects
         
         Returns:
             Discord Embed object
         """
         embed = discord.Embed(
-            title="🚨 KICK ALERT",
+            title=f"🚨 KICK ALERT - {club_name}",
             description="The following members have failed to meet quota after bomb expiration:",
             color=COLOR_BOMB,
             timestamp=discord.utils.utcnow()
@@ -210,21 +211,22 @@ class ReportGenerator:
                 inline=False
             )
         
-        embed.set_footer(text="Manual kick required")
+        embed.set_footer(text=f"Manual kick required - {club_name}")
         return embed
     
-    def create_bomb_activation_alert(self, newly_activated: List[Dict]) -> discord.Embed:
+    def create_bomb_activation_alert(self, club_name: str, newly_activated: List[Dict]) -> discord.Embed:
         """
         Create an alert embed for newly activated bombs
         
         Args:
+            club_name: Name of the club
             newly_activated: List of dicts with 'bomb' and 'member' keys
         
         Returns:
             Discord Embed object
         """
         embed = discord.Embed(
-            title="💣 Bomb Activation Alert",
+            title=f"💣 Bomb Activation Alert - {club_name}",
             description=f"The following members have been behind quota for 3+ consecutive days:",
             color=COLOR_BOMB,
             timestamp=discord.utils.utcnow()
@@ -240,21 +242,22 @@ class ReportGenerator:
                 inline=False
             )
         
-        embed.set_footer(text="Get back on track to deactivate the bomb!")
+        embed.set_footer(text=f"Get back on track to deactivate the bomb! - {club_name}")
         return embed
     
-    def create_bomb_deactivation_report(self, deactivated: List[Dict]) -> discord.Embed:
+    def create_bomb_deactivation_report(self, club_name: str, deactivated: List[Dict]) -> discord.Embed:
         """
         Create an embed for bombs that were deactivated (back on track)
         
         Args:
+            club_name: Name of the club
             deactivated: List of dicts with 'bomb', 'member', and 'history' keys
         
         Returns:
             Discord Embed object
         """
         embed = discord.Embed(
-            title="✅ Bombs Defused",
+            title=f"✅ Bombs Defused - {club_name}",
             description=f"{len(deactivated)} member{'s' if len(deactivated) != 1 else ''} got back on track!",
             color=COLOR_ON_TRACK,
             timestamp=discord.utils.utcnow()
@@ -273,16 +276,16 @@ class ReportGenerator:
                 inline=True
             )
         
-        embed.set_footer(text="Great job getting back on track!")
+        embed.set_footer(text=f"Great job getting back on track! - {club_name}")
         return embed
     
-    def create_error_report(self, error_message: str) -> discord.Embed:
+    def create_error_report(self, club_name: str, error_message: str) -> discord.Embed:
         """Create an error report embed"""
         embed = discord.Embed(
-            title="❌ Error During Daily Check",
+            title=f"❌ Error During Daily Check - {club_name}",
             description=error_message,
             color=0xFF0000,
             timestamp=discord.utils.utcnow()
         )
-        embed.set_footer(text="Please check logs for details")
+        embed.set_footer(text=f"Please check logs for details - {club_name}")
         return embed

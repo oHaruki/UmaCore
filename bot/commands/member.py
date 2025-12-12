@@ -7,8 +7,7 @@ from discord.ext import commands
 from datetime import date as date_class
 import logging
 
-from models import Member, QuotaHistory, Bomb, UserLink
-from config.settings import DAILY_QUOTA
+from models import Member, QuotaHistory, Bomb, UserLink, Club
 
 logger = logging.getLogger(__name__)
 
@@ -19,17 +18,38 @@ class MemberCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
     
+    async def club_autocomplete(self, interaction: discord.Interaction, current: str):
+        """Autocomplete for club names"""
+        try:
+            club_names = await Club.get_all_names()
+            return [
+                app_commands.Choice(name=name, value=name)
+                for name in club_names
+                if current.lower() in name.lower()
+            ][:25]
+        except Exception as e:
+            logger.error(f"Error in club autocomplete: {e}")
+            return []
+    
     @app_commands.command(name="link_trainer", description="Link your Discord account to your trainer")
-    async def link_trainer(self, interaction: discord.Interaction, trainer_name: str):
+    async def link_trainer(self, interaction: discord.Interaction, trainer_name: str, club: str):
         """Link your Discord account to a trainer"""
         await interaction.response.defer(ephemeral=True)
         
         try:
-            member = await Member.get_by_name(trainer_name)
+            club_obj = await Club.get_by_name(club)
+            if not club_obj:
+                await interaction.followup.send(
+                    f"❌ Club '{club}' not found.",
+                    ephemeral=True
+                )
+                return
+            
+            member = await Member.get_by_name(club_obj.club_id, trainer_name)
             
             if not member:
                 await interaction.followup.send(
-                    f"❌ Trainer '{trainer_name}' not found. Make sure the name matches exactly.",
+                    f"❌ Trainer '{trainer_name}' not found in {club}. Make sure the name matches exactly.",
                     ephemeral=True
                 )
                 return
@@ -40,7 +60,7 @@ class MemberCommands(commands.Cog):
                 existing_member = await Member.get_by_id(existing_link.member_id)
                 if existing_member.member_id == member.member_id:
                     await interaction.followup.send(
-                        f"ℹ️ You're already linked to **{trainer_name}**",
+                        f"ℹ️ You're already linked to **{trainer_name}** in **{club}**",
                         ephemeral=True
                     )
                     return
@@ -59,7 +79,7 @@ class MemberCommands(commands.Cog):
             
             embed = discord.Embed(
                 title="✅ Trainer Linked!",
-                description=f"Your Discord account is now linked to **{trainer_name}**",
+                description=f"Your Discord account is now linked to **{trainer_name}** in **{club}**",
                 color=discord.Color.green(),
                 timestamp=discord.utils.utcnow()
             )
@@ -82,7 +102,7 @@ class MemberCommands(commands.Cog):
             embed.set_footer(text="You'll receive DMs when important events happen")
             
             await interaction.followup.send(embed=embed, ephemeral=True)
-            logger.info(f"User {interaction.user.id} linked to {trainer_name}")
+            logger.info(f"User {interaction.user.id} linked to {trainer_name} in {club}")
             
         except Exception as e:
             logger.error(f"Error in link_trainer: {e}", exc_info=True)
@@ -227,15 +247,20 @@ class MemberCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
     @app_commands.command(name="member_status", description="View status of a specific member")
-    async def member_status(self, interaction: discord.Interaction, trainer_name: str):
+    async def member_status(self, interaction: discord.Interaction, trainer_name: str, club: str):
         """Get detailed status for a specific member"""
         await interaction.response.defer()
         
         try:
-            member = await Member.get_by_name(trainer_name)
+            club_obj = await Club.get_by_name(club)
+            if not club_obj:
+                await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+            
+            member = await Member.get_by_name(club_obj.club_id, trainer_name)
             
             if not member:
-                await interaction.followup.send(f"❌ Member '{trainer_name}' not found")
+                await interaction.followup.send(f"❌ Member '{trainer_name}' not found in {club}")
                 return
             
             await self._send_member_status(interaction, member)
@@ -253,6 +278,11 @@ class MemberCommands(commands.Cog):
             return
         
         active_bomb = await Bomb.get_active_for_member(member.member_id)
+        
+        # Get club info for daily quota
+        from models import Club
+        club = await Club.get_by_id(member.club_id)
+        daily_quota = club.daily_quota if club else 1000000
         
         # Determine color based on status
         if active_bomb:
@@ -284,7 +314,8 @@ class MemberCommands(commands.Cog):
         embed.add_field(
             name="👤 Trainer Information",
             value=f"**Name:** {member.trainer_name}\n"
-                  f"**Trainer ID:** `{member.trainer_id or 'N/A'}`",
+                  f"**Trainer ID:** `{member.trainer_id or 'N/A'}`\n"
+                  f"**Club:** {club.club_name if club else 'Unknown'}",
             inline=True
         )
         
@@ -295,40 +326,35 @@ class MemberCommands(commands.Cog):
             inline=True
         )
         
-        # Progress bar - extended for over 100% with color indicators
+        # Progress bar
         if latest_history.expected_fans > 0:
             progress_pct = int((latest_history.cumulative_fans / latest_history.expected_fans) * 100)
         else:
             progress_pct = 0
         
-        # Determine color indicator based on progress percentage
+        # Determine color indicator
         if progress_pct >= 500:
-            color_indicator = "🟨"  # Yellow/Gold
+            color_indicator = "🟨"
         elif progress_pct >= 400:
-            color_indicator = "🟧"  # Orange
+            color_indicator = "🟧"
         elif progress_pct >= 300:
-            color_indicator = "🟪"  # Purple
+            color_indicator = "🟪"
         elif progress_pct >= 200:
-            color_indicator = "🟦"  # Blue
+            color_indicator = "🟦"
         elif progress_pct >= 100:
-            color_indicator = "🟩"  # Green
+            color_indicator = "🟩"
         else:
-            color_indicator = "⬜"  # White/Gray for under 100%
+            color_indicator = "⬜"
         
         # Calculate bar display
         if progress_pct >= 100:
-            # Over 100% - show full bar
             bar = "█" * 20
         else:
-            # Under 100% - show partial bar
             filled = int(progress_pct / 5)
             empty = 20 - filled
             bar = "█" * filled + "░" * empty
         
-        if latest_history.deficit_surplus >= 0:
-            progress_title = "📈 Current Progress"
-        else:
-            progress_title = "📉 Current Progress"
+        progress_title = "📈 Current Progress" if latest_history.deficit_surplus >= 0 else "📉 Current Progress"
         
         embed.add_field(
             name=progress_title,
@@ -339,7 +365,7 @@ class MemberCommands(commands.Cog):
             inline=False
         )
         
-        # Performance section - inline with bomb/warning
+        # Performance section
         if latest_history.deficit_surplus >= 0:
             status_emoji = "🎯"
             deficit_text = f"+{latest_history.deficit_surplus:,}"
@@ -353,11 +379,11 @@ class MemberCommands(commands.Cog):
             name=performance_title,
             value=f"**Surplus/Deficit:** {deficit_text} fans {status_emoji}\n"
                   f"**Days Behind:** {latest_history.days_behind} days\n"
-                  f"**Daily Quota:** {DAILY_QUOTA:,} fans/day",
+                  f"**Daily Quota:** {daily_quota:,} fans/day",
             inline=True
         )
         
-        # Bomb status - inline
+        # Bomb status
         if active_bomb:
             urgency_emoji = "🔴" if active_bomb.days_remaining <= 2 else "🟠" if active_bomb.days_remaining <= 4 else "🟡"
             
@@ -377,13 +403,12 @@ class MemberCommands(commands.Cog):
                 inline=True
             )
         else:
-            # Empty field to keep layout consistent
             embed.add_field(name="\u200b", value="\u200b", inline=True)
         
-        # Recommendations for behind members - more compact
+        # Recommendations
         if latest_history.deficit_surplus < 0:
             deficit = abs(latest_history.deficit_surplus)
-            recommended_daily = DAILY_QUOTA + (deficit // max(1, 7 - latest_history.days_behind))
+            recommended_daily = daily_quota + (deficit // max(1, 7 - latest_history.days_behind))
             
             embed.add_field(
                 name="💡 To Catch Up",
@@ -392,26 +417,28 @@ class MemberCommands(commands.Cog):
                 inline=False
             )
         
-        # Statistics - more compact labels
+        # Statistics
         current_date = date_class.today()
-        days_active = (current_date - member.join_date).days + 1
+        
+        # Calculate streak and get history (we'll use this for days_active too)
+        history_records = await QuotaHistory.get_last_n_days(member.member_id, 100)
+        
+        # Use actual number of days with data (more accurate than calendar calculation)
+        days_active = len(history_records) if history_records else 1
         avg_daily = latest_history.cumulative_fans / max(1, days_active) if days_active > 0 else 0
         
-        # Calculate streak (consecutive days on track)
-        history_records = await QuotaHistory.get_last_n_days(member.member_id, 30)
+        # Calculate streak
         streak_days = 0
         
         if latest_history.deficit_surplus >= 0:
-            # Currently on track, count backwards
-            streak_days = 1  # Count today
-            for record in history_records[1:]:  # Skip first (already counted)
+            streak_days = 1
+            for record in history_records[1:]:
                 if record.deficit_surplus >= 0:
                     streak_days += 1
                 else:
-                    break  # Streak broken
-        # If currently behind, streak is 0
+                    break
         
-        # Get best day from history
+        # Get best day
         best_day_fans = 0
         if len(history_records) >= 2:
             for i in range(len(history_records) - 1):
@@ -421,7 +448,7 @@ class MemberCommands(commands.Cog):
                 if daily_gain > best_day_fans:
                     best_day_fans = daily_gain
         
-        # Format avg daily
+        # Format stats
         if avg_daily >= 1_000_000:
             avg_formatted = f"{avg_daily / 1_000_000:.2f}M"
         elif avg_daily >= 1_000:
@@ -429,7 +456,6 @@ class MemberCommands(commands.Cog):
         else:
             avg_formatted = f"{int(avg_daily)}"
         
-        # Format best day
         if best_day_fans >= 1_000_000:
             best_formatted = f"{best_day_fans / 1_000_000:.2f}M"
         elif best_day_fans >= 1_000:
@@ -437,7 +463,7 @@ class MemberCommands(commands.Cog):
         else:
             best_formatted = f"{best_day_fans}"
         
-        # Streak emoji based on length
+        # Streak emoji
         if streak_days >= 30:
             streak_emoji = "🔥🔥🔥"
         elif streak_days >= 14:
@@ -459,7 +485,7 @@ class MemberCommands(commands.Cog):
         )
         
         # Rank
-        all_members = await Member.get_all_active()
+        all_members = await Member.get_all_active(member.club_id)
         member_rankings = []
         
         for m in all_members:
@@ -470,10 +496,8 @@ class MemberCommands(commands.Cog):
                     'deficit_surplus': m_history.deficit_surplus
                 })
         
-        # Sort by deficit_surplus (descending)
         member_rankings.sort(key=lambda x: x['deficit_surplus'], reverse=True)
         
-        # Find member's rank
         member_rank = 0
         for idx, ranking in enumerate(member_rankings, start=1):
             if ranking['member_id'] == member.member_id:
@@ -483,7 +507,6 @@ class MemberCommands(commands.Cog):
         total_members = len(member_rankings)
         percentile = 100 - int((member_rank / total_members) * 100) if total_members > 0 else 0
         
-        # Determine percentile description
         if percentile >= 90:
             percentile_desc = f"Top {100 - percentile}%"
         elif percentile >= 75:
@@ -503,3 +526,7 @@ class MemberCommands(commands.Cog):
         embed.set_footer(text=f"Last updated: {latest_history.date.strftime('%b %d, %Y')}")
         
         await interaction.followup.send(embed=embed)
+    
+    # Apply autocomplete
+    link_trainer.autocomplete('club')(club_autocomplete)
+    member_status.autocomplete('club')(club_autocomplete)

@@ -3,28 +3,29 @@ Bomb warning system manager
 """
 from datetime import date
 from typing import List, Dict
+from uuid import UUID
 import logging
 
-from models import Member, Bomb, QuotaHistory
-from config.settings import BOMB_TRIGGER_DAYS, BOMB_COUNTDOWN_DAYS
+from models import Member, Bomb, QuotaHistory, Club
 
 logger = logging.getLogger(__name__)
 
 
 class BombManager:
-    """Manages bomb activation, deactivation, and countdowns"""
+    """Manages bomb activation, deactivation, and countdowns per club"""
     
-    async def check_and_activate_bombs(self, current_date: date) -> List[Bomb]:
+    async def check_and_activate_bombs(self, club: Club, current_date: date) -> List[Bomb]:
         """
         Check all members and activate bombs for those who meet the criteria
         
         Args:
+            club: Club object
             current_date: Current date
         
         Returns:
             List of newly activated bombs
         """
-        members = await Member.get_all_active()
+        members = await Member.get_all_active(club.club_id)
         newly_activated = []
         
         for member in members:
@@ -35,33 +36,35 @@ class BombManager:
             
             # Check consecutive days behind
             consecutive_days = await QuotaHistory.check_consecutive_behind_days(
-                member.member_id, BOMB_TRIGGER_DAYS
+                member.member_id, club.bomb_trigger_days
             )
             
-            if consecutive_days >= BOMB_TRIGGER_DAYS:
+            if consecutive_days >= club.bomb_trigger_days:
                 # Activate bomb
                 bomb = await Bomb.create(
                     member_id=member.member_id,
+                    club_id=club.club_id,
                     activation_date=current_date,
-                    days_remaining=BOMB_COUNTDOWN_DAYS
+                    days_remaining=club.bomb_countdown_days
                 )
                 newly_activated.append(bomb)
-                logger.warning(f"💣 Bomb activated for {member.trainer_name} "
+                logger.warning(f"💣 Bomb activated for {member.trainer_name} in {club.club_name} "
                              f"({consecutive_days} days behind)")
         
         return newly_activated
     
-    async def check_and_deactivate_bombs(self, current_date: date) -> List[Dict]:
+    async def check_and_deactivate_bombs(self, club_id: UUID, current_date: date) -> List[Dict]:
         """
         Check active bombs and deactivate if member is back on track
         
         Args:
+            club_id: Club UUID
             current_date: Current date
         
         Returns:
             List of dicts with 'bomb', 'member', and 'history' keys
         """
-        active_bombs = await Bomb.get_all_active()
+        active_bombs = await Bomb.get_all_active(club_id)
         deactivated = []
         
         for bomb in active_bombs:
@@ -85,17 +88,18 @@ class BombManager:
         
         return deactivated
     
-    async def update_bomb_countdowns(self, current_date: date) -> List[Bomb]:
+    async def update_bomb_countdowns(self, club_id: UUID, current_date: date) -> List[Bomb]:
         """
         Decrement countdown for all active bombs (only once per day)
         
         Args:
+            club_id: Club UUID
             current_date: Current date for checking if countdown should happen
         
         Returns:
             List of bombs with updated countdowns
         """
-        active_bombs = await Bomb.get_all_active()
+        active_bombs = await Bomb.get_all_active(club_id)
         updated = []
         
         for bomb in active_bombs:
@@ -104,14 +108,17 @@ class BombManager:
         
         return updated
     
-    async def check_expired_bombs(self) -> List[Member]:
+    async def check_expired_bombs(self, club_id: UUID) -> List[Member]:
         """
         Check for bombs that have reached 0 days remaining
+        
+        Args:
+            club_id: Club UUID
         
         Returns:
             List of members who should be kicked
         """
-        active_bombs = await Bomb.get_all_active()
+        active_bombs = await Bomb.get_all_active(club_id)
         members_to_kick = []
         
         for bomb in active_bombs:
@@ -127,15 +134,18 @@ class BombManager:
         
         return members_to_kick
     
-    async def get_active_bombs_with_members(self) -> List[Dict]:
+    async def get_active_bombs_with_members(self, club_id: UUID) -> List[Dict]:
         """
         Get all active bombs with associated member information
         Only includes bombs for currently active members
         
+        Args:
+            club_id: Club UUID
+        
         Returns:
-            List of dicts containing bomb and member data
+            List of dicts containing bomb, member, and history data
         """
-        active_bombs = await Bomb.get_all_active()
+        active_bombs = await Bomb.get_all_active(club_id)
         result = []
         
         for bomb in active_bombs:

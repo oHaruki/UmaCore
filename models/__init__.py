@@ -7,5 +7,6 @@ from .bomb import Bomb
 from .quota_requirement import QuotaRequirement
 from .bot_settings import BotSettings
 from .user_link import UserLink
+from .club import Club
 
-__all__ = ['Member', 'QuotaHistory', 'Bomb', 'QuotaRequirement', 'BotSettings', 'UserLink']
+__all__ = ['Member', 'QuotaHistory', 'Bomb', 'QuotaRequirement', 'BotSettings', 'UserLink', 'Club']
