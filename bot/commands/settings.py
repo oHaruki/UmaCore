@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 from datetime import datetime
 import logging
+import pytz
 
 from models import Club
 from services import MonthlyInfoService
@@ -175,15 +176,16 @@ class SettingsCommands(commands.Cog):
             target_channel = channel or interaction.channel
             
             # Get current date in club's timezone
-            import pytz
             club_tz = pytz.timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
             
-            # Generate embed
-            embed = await self.monthly_info_service.create_monthly_info_embed(current_date)
-            embed.title = f"📋 Monthly Info Board - {club_obj.club_name}"
-            embed.set_footer(text=f"This message auto-updates when quota changes • {club_obj.club_name}")
+            # Generate embed - FIXED: Pass club_id, club_name, and current_date
+            embed = await self.monthly_info_service.create_monthly_info_embed(
+                club_obj.club_id, 
+                club_obj.club_name, 
+                current_date
+            )
             
             # Post message
             message = await target_channel.send(embed=embed)
@@ -208,3 +210,8 @@ class SettingsCommands(commands.Cog):
     set_alert_channel.autocomplete('club')(club_autocomplete)
     channel_settings.autocomplete('club')(club_autocomplete)
     post_monthly_info.autocomplete('club')(club_autocomplete)
+
+
+async def setup(bot):
+    """Setup function for loading the cog"""
+    await bot.add_cog(SettingsCommands(bot))
