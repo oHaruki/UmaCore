@@ -4,6 +4,7 @@ Monthly Info Board service for generating persistent information embed
 import discord
 from datetime import date
 from typing import Optional
+from uuid import UUID
 import logging
 import calendar
 
@@ -17,11 +18,13 @@ class MonthlyInfoService:
     """Generates and updates the monthly information board"""
     
     @staticmethod
-    async def create_monthly_info_embed(current_date: date) -> discord.Embed:
+    async def create_monthly_info_embed(club_id: UUID, club_name: str, current_date: date) -> discord.Embed:
         """
         Create the monthly info embed with quota history and commands
         
         Args:
+            club_id: Club ID for filtering quota requirements
+            club_name: Club name for display
             current_date: Current date for determining month
         
         Returns:
@@ -30,14 +33,14 @@ class MonthlyInfoService:
         month_name = current_date.strftime('%B %Y')
         
         embed = discord.Embed(
-            title=f"📋 Monthly Info Board - {month_name}",
-            description="Current quota requirements and available commands",
+            title=f"📋 Monthly Info Board - {club_name}",
+            description=f"**{month_name}**\nCurrent quota requirements and available commands",
             color=COLOR_INFO,
             timestamp=discord.utils.utcnow()
         )
         
         # Get current quota
-        current_quota = await QuotaRequirement.get_quota_for_date(current_date)
+        current_quota = await QuotaRequirement.get_quota_for_date(club_id, current_date)
         
         # Format current quota
         if current_quota >= 1_000_000:
@@ -54,7 +57,7 @@ class MonthlyInfoService:
         )
         
         # Get quota history for this month
-        quota_history = await QuotaRequirement.get_all_current_month(current_date)
+        quota_history = await QuotaRequirement.get_all_current_month(club_id, current_date)
         
         if quota_history:
             # Create visualization
@@ -78,10 +81,10 @@ class MonthlyInfoService:
         user_commands = (
             "**Status & Tracking:**\n"
             "`/my_status` - View your linked trainer's status\n"
-            "`/member_status <name>` - View any member's status\n"
+            f"`/member_status club:{club_name} trainer_name:<name>` - View any member\n"
             "\n"
             "**User Linking:**\n"
-            "`/link_trainer <name>` - Link your Discord to a trainer\n"
+            f"`/link_trainer club:{club_name} trainer_name:<name>` - Link your Discord\n"
             "`/unlink` - Remove your trainer link\n"
             "`/notification_settings` - Manage DM notifications\n"
         )
@@ -92,7 +95,7 @@ class MonthlyInfoService:
             inline=False
         )
         
-        embed.set_footer(text="This message auto-updates when quota changes • Last updated")
+        embed.set_footer(text=f"{club_name} • This message auto-updates when quota changes • Last updated")
         
         return embed
     
