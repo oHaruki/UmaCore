@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 class Member:
     """Represents a club member"""
     member_id: Optional[UUID]
+    club_id: UUID
     trainer_id: Optional[str]
     trainer_name: str
     join_date: date
@@ -24,39 +25,39 @@ class Member:
     last_seen: date
     
     @classmethod
-    async def create(cls, trainer_name: str, join_date: date, trainer_id: Optional[str] = None) -> 'Member':
+    async def create(cls, club_id: UUID, trainer_name: str, join_date: date, trainer_id: Optional[str] = None) -> 'Member':
         """Create a new member"""
         query = """
-            INSERT INTO members (trainer_id, trainer_name, join_date, last_seen)
-            VALUES ($1, $2, $3, $4)
-            RETURNING member_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
+            INSERT INTO members (club_id, trainer_id, trainer_name, join_date, last_seen)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING member_id, club_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
         """
-        row = await db.fetchrow(query, trainer_id, trainer_name, join_date, join_date)
-        logger.info(f"Created new member: {trainer_name} (ID: {trainer_id})")
+        row = await db.fetchrow(query, club_id, trainer_id, trainer_name, join_date, join_date)
+        logger.info(f"Created new member: {trainer_name} (ID: {trainer_id}) for club {club_id}")
         return cls(**dict(row))
     
     @classmethod
-    async def get_by_trainer_id(cls, trainer_id: str) -> Optional['Member']:
-        """Get member by trainer ID"""
+    async def get_by_trainer_id(cls, club_id: UUID, trainer_id: str) -> Optional['Member']:
+        """Get member by trainer ID within a club"""
         query = """
-            SELECT member_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
+            SELECT member_id, club_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
             FROM members
-            WHERE trainer_id = $1
+            WHERE club_id = $1 AND trainer_id = $2
         """
-        row = await db.fetchrow(query, trainer_id)
+        row = await db.fetchrow(query, club_id, trainer_id)
         if row:
             return cls(**dict(row))
         return None
     
     @classmethod
-    async def get_by_name(cls, trainer_name: str) -> Optional['Member']:
-        """Get member by trainer name"""
+    async def get_by_name(cls, club_id: UUID, trainer_name: str) -> Optional['Member']:
+        """Get member by trainer name within a club"""
         query = """
-            SELECT member_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
+            SELECT member_id, club_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
             FROM members
-            WHERE trainer_name = $1
+            WHERE club_id = $1 AND trainer_name = $2
         """
-        row = await db.fetchrow(query, trainer_name)
+        row = await db.fetchrow(query, club_id, trainer_name)
         if row:
             return cls(**dict(row))
         return None
@@ -65,7 +66,7 @@ class Member:
     async def get_by_id(cls, member_id: UUID) -> Optional['Member']:
         """Get member by UUID"""
         query = """
-            SELECT member_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
+            SELECT member_id, club_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
             FROM members
             WHERE member_id = $1
         """
@@ -75,15 +76,15 @@ class Member:
         return None
     
     @classmethod
-    async def get_all_active(cls) -> list['Member']:
-        """Get all active members"""
+    async def get_all_active(cls, club_id: UUID) -> list['Member']:
+        """Get all active members for a club"""
         query = """
-            SELECT member_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
+            SELECT member_id, club_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
             FROM members
-            WHERE is_active = TRUE
+            WHERE club_id = $1 AND is_active = TRUE
             ORDER BY trainer_name
         """
-        rows = await db.fetch(query)
+        rows = await db.fetch(query, club_id)
         return [cls(**dict(row)) for row in rows]
     
     async def update_last_seen(self, last_seen: date):

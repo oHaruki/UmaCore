@@ -21,7 +21,7 @@ SCRAPE_RETRY_DELAY = 1  # seconds
 
 # Timezone Configuration
 TIMEZONE = "Europe/Amsterdam"  # CEST
-DAILY_REPORT_TIME = "13:00"
+DAILY_REPORT_TIME = "16:00"
 
 # Quota Rules
 DAILY_QUOTA = 1_000_000

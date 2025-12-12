@@ -17,6 +17,7 @@ class QuotaHistory:
     """Represents a member's daily quota tracking"""
     id: Optional[UUID]
     member_id: UUID
+    club_id: UUID
     date: date
     cumulative_fans: int
     expected_fans: int
@@ -24,22 +25,22 @@ class QuotaHistory:
     days_behind: int
     
     @classmethod
-    async def create(cls, member_id: UUID, date: date, cumulative_fans: int,
+    async def create(cls, member_id: UUID, club_id: UUID, date: date, cumulative_fans: int,
                      expected_fans: int, deficit_surplus: int, days_behind: int) -> 'QuotaHistory':
         """Create or update quota history for a date"""
         query = """
             INSERT INTO quota_history 
-                (member_id, date, cumulative_fans, expected_fans, deficit_surplus, days_behind)
-            VALUES ($1, $2, $3, $4, $5, $6)
+                (member_id, club_id, date, cumulative_fans, expected_fans, deficit_surplus, days_behind)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (member_id, date) 
             DO UPDATE SET 
-                cumulative_fans = $3,
-                expected_fans = $4,
-                deficit_surplus = $5,
-                days_behind = $6
-            RETURNING id, member_id, date, cumulative_fans, expected_fans, deficit_surplus, days_behind
+                cumulative_fans = $4,
+                expected_fans = $5,
+                deficit_surplus = $6,
+                days_behind = $7
+            RETURNING id, member_id, club_id, date, cumulative_fans, expected_fans, deficit_surplus, days_behind
         """
-        row = await db.fetchrow(query, member_id, date, cumulative_fans, 
+        row = await db.fetchrow(query, member_id, club_id, date, cumulative_fans, 
                                 expected_fans, deficit_surplus, days_behind)
         return cls(**dict(row))
     
@@ -47,7 +48,7 @@ class QuotaHistory:
     async def get_latest_for_member(cls, member_id: UUID) -> Optional['QuotaHistory']:
         """Get the most recent quota history for a member"""
         query = """
-            SELECT id, member_id, date, cumulative_fans, expected_fans, deficit_surplus, days_behind
+            SELECT id, member_id, club_id, date, cumulative_fans, expected_fans, deficit_surplus, days_behind
             FROM quota_history
             WHERE member_id = $1
             ORDER BY date DESC
@@ -62,7 +63,7 @@ class QuotaHistory:
     async def get_last_n_days(cls, member_id: UUID, n: int) -> List['QuotaHistory']:
         """Get last N days of history for a member"""
         query = """
-            SELECT id, member_id, date, cumulative_fans, expected_fans, deficit_surplus, days_behind
+            SELECT id, member_id, club_id, date, cumulative_fans, expected_fans, deficit_surplus, days_behind
             FROM quota_history
             WHERE member_id = $1
             ORDER BY date DESC
@@ -72,14 +73,14 @@ class QuotaHistory:
         return [cls(**dict(row)) for row in rows]
     
     @classmethod
-    async def get_for_date(cls, date: date) -> List['QuotaHistory']:
-        """Get all quota histories for a specific date"""
+    async def get_for_date(cls, club_id: UUID, date: date) -> List['QuotaHistory']:
+        """Get all quota histories for a specific date in a club"""
         query = """
-            SELECT id, member_id, date, cumulative_fans, expected_fans, deficit_surplus, days_behind
+            SELECT id, member_id, club_id, date, cumulative_fans, expected_fans, deficit_surplus, days_behind
             FROM quota_history
-            WHERE date = $1
+            WHERE club_id = $1 AND date = $2
         """
-        rows = await db.fetch(query, date)
+        rows = await db.fetch(query, club_id, date)
         return [cls(**dict(row)) for row in rows]
     
     @classmethod
@@ -111,8 +112,8 @@ class QuotaHistory:
         return result or 0
     
     @classmethod
-    async def clear_all(cls):
-        """Clear all quota history (for monthly reset)"""
-        query = "DELETE FROM quota_history"
-        await db.execute(query)
-        logger.info("Cleared all quota history for monthly reset")
+    async def clear_all(cls, club_id: UUID):
+        """Clear all quota history for a club (for monthly reset)"""
+        query = "DELETE FROM quota_history WHERE club_id = $1"
+        await db.execute(query, club_id)
+        logger.info(f"Cleared all quota history for club {club_id} (monthly reset)")

@@ -17,7 +17,7 @@ class NotificationService:
     def __init__(self, bot):
         self.bot = bot
     
-    async def send_bomb_notifications(self, newly_activated_bombs: List):
+    async def send_bomb_notifications(self, club_name: str, newly_activated_bombs: List):
         """Send DM notifications to users whose bombs were just activated"""
         user_links = await UserLink.get_all_with_bomb_notifications()
         
@@ -38,7 +38,7 @@ class NotificationService:
                 user = await self.bot.fetch_user(user_link.discord_user_id)
                 
                 embed = discord.Embed(
-                    title="💣 Bomb Activated!",
+                    title=f"💣 Bomb Activated - {club_name}",
                     description=f"Your trainer **{member.trainer_name}** has been behind quota for 3 consecutive days.",
                     color=COLOR_BOMB,
                     timestamp=discord.utils.utcnow()
@@ -66,17 +66,17 @@ class NotificationService:
                     inline=False
                 )
                 
-                embed.set_footer(text="Use /my_status to check your progress • /notification_settings to manage alerts")
+                embed.set_footer(text=f"Use /my_status to check your progress • {club_name}")
                 
                 await user.send(embed=embed)
-                logger.info(f"Sent bomb notification to Discord user {user_link.discord_user_id} for {member.trainer_name}")
+                logger.info(f"Sent bomb notification to Discord user {user_link.discord_user_id} for {member.trainer_name} in {club_name}")
                 
             except discord.Forbidden:
                 logger.warning(f"Cannot send DM to user {user_link.discord_user_id} (DMs disabled)")
             except Exception as e:
                 logger.error(f"Error sending bomb notification to {user_link.discord_user_id}: {e}")
     
-    async def send_deficit_notifications(self, members_data: List[Dict]):
+    async def send_deficit_notifications(self, club_name: str, members_data: List[Dict]):
         """Send DM notifications to users who are behind quota (once per day)"""
         user_links = await UserLink.get_all_with_deficit_notifications()
         
@@ -104,7 +104,7 @@ class NotificationService:
                 deficit = abs(history.deficit_surplus)
                 
                 embed = discord.Embed(
-                    title="⚠️ Behind Quota",
+                    title=f"⚠️ Behind Quota - {club_name}",
                     description=f"Your trainer **{member.trainer_name}** is currently behind quota.",
                     color=COLOR_BEHIND,
                     timestamp=discord.utils.utcnow()
@@ -141,17 +141,17 @@ class NotificationService:
                         inline=False
                     )
                 
-                embed.set_footer(text="Use /my_status to check progress • /notification_settings to disable these alerts")
+                embed.set_footer(text=f"Use /my_status to check progress • {club_name}")
                 
                 await user.send(embed=embed)
-                logger.info(f"Sent deficit notification to Discord user {user_link.discord_user_id} for {member.trainer_name}")
+                logger.info(f"Sent deficit notification to Discord user {user_link.discord_user_id} for {member.trainer_name} in {club_name}")
                 
             except discord.Forbidden:
                 logger.warning(f"Cannot send DM to user {user_link.discord_user_id} (DMs disabled)")
             except Exception as e:
                 logger.error(f"Error sending deficit notification to {user_link.discord_user_id}: {e}")
     
-    async def send_bomb_deactivation_notification(self, member: Member):
+    async def send_bomb_deactivation_notification(self, club_name: str, member: Member):
         """Send notification when a bomb is deactivated"""
         user_link = await UserLink.get_by_member_id(member.member_id)
         
@@ -162,7 +162,7 @@ class NotificationService:
             user = await self.bot.fetch_user(user_link.discord_user_id)
             
             embed = discord.Embed(
-                title="✅ Bomb Deactivated!",
+                title=f"✅ Bomb Deactivated - {club_name}",
                 description=f"Congratulations! Your trainer **{member.trainer_name}** is back on track!",
                 color=discord.Color.green(),
                 timestamp=discord.utils.utcnow()
@@ -184,10 +184,10 @@ class NotificationService:
                 inline=False
             )
             
-            embed.set_footer(text="Use /my_status to check your progress")
+            embed.set_footer(text=f"Use /my_status to check your progress • {club_name}")
             
             await user.send(embed=embed)
-            logger.info(f"Sent bomb deactivation notification to Discord user {user_link.discord_user_id}")
+            logger.info(f"Sent bomb deactivation notification to Discord user {user_link.discord_user_id} for {club_name}")
             
         except discord.Forbidden:
             logger.warning(f"Cannot send DM to user {user_link.discord_user_id} (DMs disabled)")
