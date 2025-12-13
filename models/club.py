@@ -34,9 +34,8 @@ class Club:
                      timezone: str = 'Europe/Amsterdam', scrape_time: time = None,
                      bomb_trigger_days: int = 3, bomb_countdown_days: int = 7) -> 'Club':
         """Create a new club"""
-        # Default scrape time if not provided
         if scrape_time is None:
-            scrape_time = time(16, 0)  # 16:00
+            scrape_time = time(16, 0)
         
         query = """
             INSERT INTO clubs (club_name, scrape_url, daily_quota, timezone, scrape_time, 
@@ -130,7 +129,6 @@ class Club:
         if not updates:
             return
         
-        # Convert scrape_time string to time object if needed
         if 'scrape_time' in updates and isinstance(updates['scrape_time'], str):
             from datetime import time as time_class
             hour, minute = map(int, updates['scrape_time'].split(':'))
@@ -153,15 +151,32 @@ class Club:
     
     async def set_channels(self, report_channel_id: Optional[int] = None, 
                           alert_channel_id: Optional[int] = None):
-        """Set report and alert channels"""
-        query = """
+        """Set report and alert channels (only updates provided fields)"""
+        updates = []
+        values = [self.club_id]
+        param_num = 2
+        
+        if report_channel_id is not None:
+            updates.append(f"report_channel_id = ${param_num}")
+            values.append(report_channel_id)
+            param_num += 1
+            self.report_channel_id = report_channel_id
+        
+        if alert_channel_id is not None:
+            updates.append(f"alert_channel_id = ${param_num}")
+            values.append(alert_channel_id)
+            param_num += 1
+            self.alert_channel_id = alert_channel_id
+        
+        if not updates:
+            return
+        
+        query = f"""
             UPDATE clubs
-            SET report_channel_id = $2, alert_channel_id = $3, updated_at = NOW()
+            SET {', '.join(updates)}, updated_at = NOW()
             WHERE club_id = $1
         """
-        await db.execute(query, self.club_id, report_channel_id, alert_channel_id)
-        self.report_channel_id = report_channel_id
-        self.alert_channel_id = alert_channel_id
+        await db.execute(query, *values)
         logger.info(f"Updated channels for {self.club_name}")
     
     async def deactivate(self):
