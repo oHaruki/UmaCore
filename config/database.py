@@ -61,7 +61,7 @@ class Database:
         -- Enable UUID extension
         CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
         
-        -- Clubs table (NEW for multi-club support)
+        -- Clubs table
         CREATE TABLE IF NOT EXISTS clubs (
             club_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
             club_name VARCHAR(100) UNIQUE NOT NULL,
@@ -74,9 +74,24 @@ class Database:
             is_active BOOLEAN DEFAULT TRUE,
             report_channel_id BIGINT,
             alert_channel_id BIGINT,
+            monthly_info_channel_id BIGINT,
+            monthly_info_message_id BIGINT,
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
+        
+        -- Add monthly info tracking columns if they don't exist
+        DO $$ 
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='clubs' AND column_name='monthly_info_channel_id'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN monthly_info_channel_id BIGINT;
+                ALTER TABLE clubs ADD COLUMN monthly_info_message_id BIGINT;
+                RAISE NOTICE 'Added monthly_info tracking columns to clubs';
+            END IF;
+        END $$;
         
         -- Members table
         CREATE TABLE IF NOT EXISTS members (
@@ -255,7 +270,7 @@ class Database:
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
         
-        -- Scrape locks table (for preventing concurrent scrapes)
+        -- Scrape locks table
         CREATE TABLE IF NOT EXISTS scrape_locks (
             club_id UUID PRIMARY KEY REFERENCES clubs(club_id) ON DELETE CASCADE,
             locked_at TIMESTAMPTZ NOT NULL,
@@ -289,7 +304,7 @@ class Database:
         try:
             async with self.pool.acquire() as conn:
                 await conn.execute(schema_sql)
-            logger.info("Database schema initialized successfully with multi-club support")
+            logger.info("Database schema initialized successfully with multi-club support and monthly info tracking")
         except Exception as e:
             logger.error(f"Failed to initialize schema: {e}")
             raise
