@@ -157,6 +157,8 @@ Edit `config/settings.py` to customize:
 
 ## Troubleshooting
 
+**This readme is somewhat outdated**
+
 **Bot doesn't start**
 - Check logs in `bot.log`
 - Verify `DISCORD_TOKEN` and `DATABASE_URL` in `.env`
