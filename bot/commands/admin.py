@@ -39,6 +39,31 @@ class AdminCommands(commands.Cog):
             logger.error(f"Error in club autocomplete: {e}")
             return []
     
+    async def _update_monthly_info_board(self, club_obj: Club, current_date):
+        """Helper method to update the monthly info board"""
+        try:
+            channel_id, message_id = await club_obj.get_monthly_info_location()
+            if channel_id and message_id:
+                channel = self.bot.get_channel(channel_id)
+                if channel:
+                    try:
+                        message = await channel.fetch_message(message_id)
+                        updated_embed = await self.monthly_info_service.create_monthly_info_embed(
+                            club_obj.club_id, club_obj.club_name, current_date
+                        )
+                        await message.edit(embed=updated_embed)
+                        logger.info(f"Auto-updated monthly info board for {club_obj.club_name}")
+                        return True
+                    except discord.NotFound:
+                        logger.warning(f"Monthly info message not found for {club_obj.club_name}")
+                    except discord.Forbidden:
+                        logger.error(f"No permission to edit monthly info message for {club_obj.club_name}")
+                    except Exception as e:
+                        logger.error(f"Error editing monthly info message: {e}")
+        except Exception as e:
+            logger.error(f"Error updating monthly info board: {e}")
+        return False
+    
     @app_commands.command(name="quota", description="Set the daily quota requirement")
     @app_commands.checks.has_permissions(administrator=True)
     async def set_quota(self, interaction: discord.Interaction, amount: int, club: str):
@@ -114,8 +139,67 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(embed=embed)
             logger.info(f"Quota set to {amount:,} for {club} by {set_by} effective {current_date}")
             
+            # Auto-update monthly info board
+            updated = await self._update_monthly_info_board(club_obj, current_date)
+            if updated:
+                await interaction.followup.send("✅ Monthly info board auto-updated!", ephemeral=True)
+            
         except Exception as e:
             logger.error(f"Error in set_quota: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+    
+    @app_commands.command(name="update_monthly_info", description="Update the monthly info board")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def update_monthly_info(self, interaction: discord.Interaction, club: str):
+        """Update the existing monthly info board"""
+        await interaction.response.defer()
+        
+        try:
+            club_obj = await Club.get_by_name(club)
+            if not club_obj:
+                await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+            
+            # Get saved location
+            channel_id, message_id = await club_obj.get_monthly_info_location()
+            
+            if not channel_id or not message_id:
+                await interaction.followup.send(
+                    f"❌ No monthly info board found for {club}. Use `/post_monthly_info` first."
+                )
+                return
+            
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                await interaction.followup.send(f"❌ Channel not found. The board may have been deleted.")
+                return
+            
+            try:
+                message = await channel.fetch_message(message_id)
+            except discord.NotFound:
+                await interaction.followup.send(f"❌ Message not found. Use `/post_monthly_info` to create a new one.")
+                return
+            
+            # Get current date in club's timezone
+            club_tz = pytz.timezone(club_obj.timezone)
+            current_datetime = datetime.now(club_tz)
+            current_date = current_datetime.date()
+            
+            # Generate updated embed
+            embed = await self.monthly_info_service.create_monthly_info_embed(
+                club_obj.club_id,
+                club_obj.club_name,
+                current_date
+            )
+            
+            # Update message
+            await message.edit(embed=embed)
+            
+            await interaction.followup.send(f"✅ Monthly info board updated for {club}!")
+            logger.info(f"Updated monthly info board for {club_obj.club_name}")
+            
+        except Exception as e:
+            logger.error(f"Error in update_monthly_info: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
     @app_commands.command(name="quota_history", description="View quota history for current month")
@@ -446,6 +530,7 @@ class AdminCommands(commands.Cog):
     
     # Apply autocomplete to all commands
     set_quota.autocomplete('club')(club_autocomplete)
+    update_monthly_info.autocomplete('club')(club_autocomplete)
     quota_history.autocomplete('club')(club_autocomplete)
     force_check.autocomplete('club')(club_autocomplete)
     add_member.autocomplete('club')(club_autocomplete)

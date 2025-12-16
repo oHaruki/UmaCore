@@ -152,6 +152,29 @@ class SettingsCommands(commands.Cog):
                     inline=False
                 )
             
+            # Monthly info board
+            channel_id, message_id = await club_obj.get_monthly_info_location()
+            if channel_id and message_id:
+                info_channel = self.bot.get_channel(channel_id)
+                if info_channel:
+                    embed.add_field(
+                        name="📋 Monthly Info Board",
+                        value=f"{info_channel.mention}\n[Jump to message](https://discord.com/channels/{interaction.guild_id}/{channel_id}/{message_id})",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="📋 Monthly Info Board",
+                        value="⚠️ Channel not found",
+                        inline=False
+                    )
+            else:
+                embed.add_field(
+                    name="📋 Monthly Info Board",
+                    value="❌ Not posted (use `/post_monthly_info`)",
+                    inline=False
+                )
+            
             embed.set_footer(text="Use /set_report_channel and /set_alert_channel to configure")
             
             await interaction.followup.send(embed=embed)
@@ -180,7 +203,7 @@ class SettingsCommands(commands.Cog):
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
             
-            # Generate embed - FIXED: Pass club_id, club_name, and current_date
+            # Generate embed
             embed = await self.monthly_info_service.create_monthly_info_embed(
                 club_obj.club_id, 
                 club_obj.club_name, 
@@ -190,16 +213,26 @@ class SettingsCommands(commands.Cog):
             # Post message
             message = await target_channel.send(embed=embed)
             
+            # Save the message location to database
+            await club_obj.set_monthly_info_location(target_channel.id, message.id)
+            
             embed_response = discord.Embed(
                 title="✅ Monthly Info Board Posted",
                 description=f"Posted in {target_channel.mention} for **{club_obj.club_name}**\n\n"
-                           f"This message will auto-update when quota changes.",
+                           f"This message will auto-update when quota changes.\n"
+                           f"[Jump to board](https://discord.com/channels/{interaction.guild_id}/{target_channel.id}/{message.id})",
                 color=discord.Color.green(),
                 timestamp=discord.utils.utcnow()
             )
             
+            embed_response.add_field(
+                name="📝 Note",
+                value="The board location has been saved and will persist through bot restarts.",
+                inline=False
+            )
+            
             await interaction.followup.send(embed=embed_response)
-            logger.info(f"Monthly info board posted for {club_obj.club_name} in {target_channel.name} by {interaction.user}")
+            logger.info(f"Monthly info board posted for {club_obj.club_name} in {target_channel.name} by {interaction.user} - saved location")
             
         except Exception as e:
             logger.error(f"Error in post_monthly_info: {e}", exc_info=True)
