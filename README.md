@@ -1,4 +1,4 @@
-# Umamusume Club Quota Tracker
+# UmaCore Club Quota Tracker
 
 <div align="center">
 
@@ -13,47 +13,54 @@
 
 ## Overview
 
-Automated Discord bot that scrapes ChronoGenesis.net to track club member fan quotas, manages warning systems, and generates daily performance reports for Umamusume clubs.
+Automated Discord bot that scrapes ChronoGenesis.net to track club member fan quotas, manages warning systems, and generates daily performance reports. Supports multiple clubs with independent tracking and customizable settings.
 
 ## Key Features
 
+- **Multi-Club Support**: Track multiple clubs independently with separate quotas and schedules
 - **Automated Daily Tracking**: Scrapes member data from ChronoGenesis.net at scheduled times
-- **Dynamic Quota System**: Flexible daily quota requirements with admin controls
+- **Dynamic Quota System**: Flexible daily quota requirements with mid-month changes
 - **Bomb Warning System**: 3-strike countdown system for members falling behind
-- **Smart Member Management**: Auto-detects when members leave or return to the club
-- **Flexible Reporting**: Separate channels for daily reports and urgent alerts
+- **User Linking**: Members can link their Discord accounts for DM notifications
+- **Smart Member Management**: Auto-detects when members leave or return
 - **Monthly Reset Handling**: Automatically detects and handles monthly game resets
+- **Scrape Locking**: Prevents concurrent scraping conflicts
 
-## Installation
+## Setup
 
 ### Prerequisites
 - Python 3.10 or higher
-- PostgreSQL database (free tier from [Neon](https://neon.tech), [Supabase](https://supabase.com), etc.)
+- PostgreSQL database ([Neon](https://neon.tech), [Supabase](https://supabase.com), etc.)
 - Discord bot token ([Discord Developer Portal](https://discord.com/developers/applications))
-- Chrome/Chromium for web scraping
+- Chrome/Chromium browser
 
-### Setup
+### Installation
 
-1. **Clone or download this repository**
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd umamusume-bot
+   ```
 
 2. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Create a PostgreSQL database** and get your connection string
+3. **Set up PostgreSQL database**
+   - Create a database on your preferred PostgreSQL provider
+   - Copy the connection string
 
-4. **Create a Discord bot**:
-   - Go to [Discord Developer Portal](https://discord.com/developers/applications)
-   - Create an application and add a bot
-   - Enable "Server Members Intent" and "Message Content Intent"
+4. **Configure Discord bot**
+   - Visit [Discord Developer Portal](https://discord.com/developers/applications)
+   - Create a new application and bot
+   - Enable "Server Members Intent" and "Message Content Intent" under Bot settings
    - Copy the bot token
-   - Invite bot with these permissions: Send Messages, Embed Links, Read Messages
+   - Invite the bot with permissions: Send Messages, Embed Links, Read Messages
 
-5. **Configure environment variables** (create `.env` file):
+5. **Create `.env` file**
    ```env
    DISCORD_TOKEN=your_bot_token_here
-   CHANNEL_ID=your_channel_id_here
    DATABASE_URL=postgresql://user:password@host:5432/database_name
    LOG_LEVEL=INFO
    ```
@@ -63,126 +70,167 @@ Automated Discord bot that scrapes ChronoGenesis.net to track club member fan qu
    python main.py
    ```
 
+The bot will automatically create database tables on first run.
+
 ## Quick Start
 
-1. **Set up channels** (optional, uses CHANNEL_ID from .env as fallback):
+1. **Add your club**
    ```
-   /set_report_channel #daily-reports
-   /set_alert_channel #mod-alerts
+   /add_club club_name:YourClubName circle_id:your_circle_id
+   ```
+   Find your `circle_id` in the ChronoGenesis URL: `chronogenesis.net/club_profile?circle_id=XXXXX`
+
+2. **Set up channels**
+   ```
+   /set_report_channel club:YourClubName channel:#daily-reports
+   /set_alert_channel club:YourClubName channel:#mod-alerts
    ```
 
-2. **Configure quota** (optional, default is 1M fans/day):
+3. **Test the system**
    ```
-   /quota 1000000
-   ```
-
-3. **Test the system**:
-   ```
-   /force_check
+   /force_check club:YourClubName
    ```
 
-The bot will automatically run daily checks at 16:00 CEST.
+The bot will run daily checks automatically at the scheduled time (default: 16:00 CEST).
 
 ## Commands
 
-### For Everyone
-- `/member_status <trainer_name>` - Check any member's quota status
+### Club Management (Admin)
+- `/add_club` - Register a new club to track
+- `/remove_club` - Deactivate a club
+- `/activate_club` - Reactivate a deactivated club
+- `/list_clubs` - View all registered clubs
+- `/edit_club` - Edit club settings (quota, schedule, etc.)
 
-### For Administrators
-- `/set_report_channel <channel>` - Set where daily reports are posted
-- `/set_alert_channel <channel>` - Set where alerts (bombs, kicks) are posted
+### Channel Settings (Admin)
+- `/set_report_channel` - Set where daily reports are posted
+- `/set_alert_channel` - Set where alerts are posted
 - `/channel_settings` - View current channel configuration
-- `/quota <amount>` - Set daily quota requirement
+- `/post_monthly_info` - Post the monthly info board
+
+### Quota Management (Admin)
+- `/quota` - Set daily quota requirement for a club
 - `/quota_history` - View quota changes this month
 - `/force_check` - Manually trigger daily check and report
+
+### Member Management (Admin)
+- `/add_member` - Manually add a member
+- `/deactivate_member` - Deactivate a member
+- `/activate_member` - Reactivate a member
 - `/bomb_status` - View all active bomb warnings
-- `/add_member <name> <join_date> [trainer_id]` - Manually add a member
-- `/deactivate_member <trainer_name>` - Deactivate a member
+
+### User Commands
+- `/link_trainer` - Link your Discord account to your trainer
+- `/unlink` - Remove your trainer link
+- `/my_status` - View your own quota status
+- `/member_status` - View any member's quota status
+- `/notification_settings` - Manage DM notification preferences
 
 ## How It Works
 
 ### Daily Quota System
-- Each member must earn **1,000,000 fans per day** (configurable)
-- System tracks cumulative progress since joining
+- Configurable daily fan requirement (default: 1,000,000 fans/day)
+- Tracks cumulative progress since joining
+- Mid-month quota changes supported
 - Members can catch up from previous deficits
 
 ### Bomb Warning System
 - **Activation**: 3 consecutive days behind quota
 - **Countdown**: 7 days to get back on track
 - **Deactivation**: Immediate when member catches up
-- **Expiration**: Kick required if still behind after countdown
+- **Expiration**: Manual kick required if still behind after countdown
 
-### Auto-Detection
+### Member Auto-Detection
 - **New Members**: Automatically added when they appear in scraped data
 - **Departed Members**: Auto-deactivated when missing from scraped data
-- **Returning Members**: Auto-reactivated when they rejoin
+- **Returning Members**: Auto-reactivated when they rejoin (unless manually deactivated)
+
+### DM Notifications
+- Users can link their Discord accounts to trainers
+- Receive DMs for bomb activations
+- Optional daily deficit notifications
+- Bomb deactivation celebrations
 
 ## Deployment
 
-### Local Development
-```bash
-python main.py
-```
-
-### Production (Linux VPS)
-```bash
-# Create systemd service
-sudo nano /etc/systemd/system/umamusume-bot.service
-
-# Start service
-sudo systemctl enable umamusume-bot
-sudo systemctl start umamusume-bot
-```
-
 ### Docker
 ```bash
-docker build -t umamusume-bot .
-docker run -d --env-file .env umamusume-bot
+docker-compose up -d --build
 ```
 
 ### Cloud Hosting
-Works with Railway, Render, Fly.io, etc. Add a `Procfile`:
+The bot works with Railway, Render, Fly.io, etc. Create a `Procfile`:
 ```
 worker: python main.py
 ```
 
+### Systemd Service (Linux)
+```bash
+sudo nano /etc/systemd/system/umamusume-bot.service
+sudo systemctl enable umamusume-bot
+sudo systemctl start umamusume-bot
+```
+
 ## Configuration
 
-Edit `config/settings.py` to customize:
-- `DAILY_QUOTA` - Daily fan requirement (default: 1,000,000)
-- `BOMB_TRIGGER_DAYS` - Days before bomb activation (default: 3)
-- `BOMB_COUNTDOWN_DAYS` - Days until kick required (default: 7)
-- `DAILY_REPORT_TIME` - When to run daily check (default: "16:00")
-- `TIMEZONE` - Timezone for scheduling (default: "Europe/Amsterdam")
+Each club can be configured independently:
+- Daily quota requirement
+- Scrape time and timezone
+- Bomb trigger days (default: 3)
+- Bomb countdown days (default: 7)
+
+Use `/edit_club` to modify settings after creation.
 
 ## Troubleshooting
 
-**This readme is somewhat outdated**
-
 **Bot doesn't start**
-- Check logs in `bot.log`
+- Check `bot.log` for errors
 - Verify `DISCORD_TOKEN` and `DATABASE_URL` in `.env`
+- Ensure PostgreSQL database is accessible
 
 **Scraping fails**
-- Ensure Chrome/Chromium is installed
-- Check if website is accessible
-- Increase `SCRAPE_TIMEOUT` in settings
+- Verify Chrome/Chromium is installed (`chromium-browser --version`)
+- Check if ChronoGenesis.net is accessible
+- Cookie consent popup issues may require manual intervention
 
 **Database errors**
-- Bot auto-creates tables on first run
-- Ensure database URL is correct and accessible
+- Bot creates tables automatically on first run
+- Verify database connection string format
+- Check database permissions
 
 ## Project Structure
 
 ```
 umamusume-bot/
-├── bot/              # Discord bot client and commands
-├── config/           # Configuration and database
-├── models/           # Data models (Member, Bomb, etc.)
-├── scrapers/         # Web scraping logic
-├── services/         # Business logic (quota calculations, reports)
-├── utils/            # Utilities (logging, timezone)
-└── main.py           # Entry point
+├── bot/
+│   ├── client.py          # Bot client and setup
+│   ├── tasks.py           # Scheduled tasks
+│   └── commands/          # Command handlers
+│       ├── admin.py       # Admin commands
+│       ├── member.py      # User commands
+│       ├── settings.py    # Channel settings
+│       └── club_management.py
+├── config/
+│   ├── database.py        # Database connection
+│   └── settings.py        # Configuration
+├── models/                # Data models
+│   ├── club.py
+│   ├── member.py
+│   ├── quota_history.py
+│   ├── bomb.py
+│   └── user_link.py
+├── scrapers/              # Web scraping
+│   ├── base_scraper.py
+│   └── chronogenesis_scraper.py
+├── services/              # Business logic
+│   ├── quota_calculator.py
+│   ├── bomb_manager.py
+│   ├── report_generator.py
+│   └── notification_service.py
+├── utils/                 # Utilities
+│   ├── logger.py
+│   └── timezone_helper.py
+└── main.py                # Entry point
 ```
 
 ## Support the Project
