@@ -10,6 +10,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.select import Select
@@ -39,17 +40,16 @@ class ChronoGenesisScraper(BaseScraper):
         commands = []
         
         if system == "Windows":
-            # Windows Chrome locations
             commands = [
                 r'reg query "HKEY_CURRENT_USER\Software\Google\Chrome\BLBeacon" /v version',
                 r'reg query "HKLM\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Google Chrome" /v version',
             ]
-        elif system == "Darwin":  # macOS
+        elif system == "Darwin":
             commands = [
                 ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '--version'],
                 ['chromium', '--version'],
             ]
-        else:  # Linux
+        else:
             commands = [
                 ['chromium-browser', '--version'],
                 ['chromium', '--version'],
@@ -59,11 +59,9 @@ class ChronoGenesisScraper(BaseScraper):
         for cmd in commands:
             try:
                 if isinstance(cmd, str):
-                    # Windows registry command
                     result = subprocess.run(cmd, capture_output=True, text=True, 
                                           timeout=5, shell=True)
                 else:
-                    # Direct command
                     result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
                 
                 version_output = result.stdout
@@ -96,18 +94,17 @@ class ChronoGenesisScraper(BaseScraper):
         
         # Platform-specific arguments
         if system == "Linux":
-            # Critical flags for Docker + Raspberry Pi ARM to prevent "unkillable" containers
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-gpu")
             
-            # Only use single-process on ARM (Raspberry Pi)
             if 'arm' in machine or 'aarch64' in machine:
                 chrome_options.add_argument("--no-zygote")
                 chrome_options.add_argument("--single-process")
         
         chrome_options.add_argument("--disable-software-rasterizer")
         chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--lang=en-US")
         
         # Detect Chrome version and set matching user agent
         chrome_version = self._get_chrome_version()
@@ -129,8 +126,6 @@ class ChronoGenesisScraper(BaseScraper):
         
         # ChromeDriver selection based on platform
         if system == "Linux":
-            # All Linux systems (ARM and x86_64) - use system chromedriver
-            # This ensures compatibility with installed Chromium version
             import os
             chromedriver_path = '/usr/bin/chromedriver'
             
@@ -146,7 +141,6 @@ class ChronoGenesisScraper(BaseScraper):
                     f"  apt-get install chromium chromium-driver"
                 )
         else:
-            # Windows or Mac - use webdriver-manager
             logger.info(f"Using webdriver-manager for {system}")
             try:
                 service = Service(ChromeDriverManager().install())
@@ -168,92 +162,261 @@ class ChronoGenesisScraper(BaseScraper):
         
         return driver
     
-    def _scrape_sync(self) -> Dict[str, List[int]]:
+    def _handle_cookie_consent(self, driver):
+        """Handle cookie consent popup"""
+        try:
+            logger.info("Checking for cookie consent popup...")
+            import time
+            time.sleep(3)
+            
+            selectors = [
+                "//button[contains(text(), 'Continue with Recommended Cookies')]",
+                "button.ez-accept-all",
+                "#ez-cookie-dialog-wrapper button",
+                ".ez-main-cmp-wrapper button",
+                "button.fc-cta-consent",
+                "button[class*='consent']",
+                "button[title='Consent']",
+                "//button[contains(text(), 'Consent')]",
+                "//button[contains(text(), 'Accept')]",
+            ]
+            
+            consent_clicked = False
+            for selector in selectors:
+                try:
+                    if selector.startswith("//"):
+                        consent_button = driver.find_element(By.XPATH, selector)
+                    else:
+                        consent_button = driver.find_element(By.CSS_SELECTOR, selector)
+                    
+                    if consent_button.is_displayed():
+                        consent_button.click()
+                        logger.info(f"Clicked consent button: {selector}")
+                        consent_clicked = True
+                        time.sleep(8)
+                        return True
+                except Exception as e:
+                    logger.debug(f"Selector {selector} failed: {e}")
+                    continue
+            
+            if not consent_clicked:
+                logger.warning("Could not find or click cookie consent button")
+                logger.warning("Attempting to remove cookie dialog with JavaScript...")
+                
+                try:
+                    driver.execute_script("""
+                        var ezDialog = document.getElementById('ez-cookie-dialog-wrapper');
+                        if (ezDialog) ezDialog.remove();
+                        
+                        var overlays = document.querySelectorAll('[id*="cookie"], [class*="cookie"], [id*="consent"], [class*="consent"]');
+                        overlays.forEach(function(el) {
+                            if (el.style.position === 'fixed' || el.style.zIndex > 100) {
+                                el.remove();
+                            }
+                        });
+                    """)
+                    logger.info("Removed cookie dialog with JavaScript")
+                    time.sleep(2)
+                    return True
+                except Exception as js_error:
+                    logger.error(f"JavaScript removal failed: {js_error}")
+                    return False
+                    
+        except Exception as e:
+            logger.warning(f"Cookie consent handling failed: {e}")
+            return False
+    
+    def _scrape_sync(self) -> Dict[str, Dict]:
         """Synchronous scraping function (runs in executor)"""
         driver = None
         try:
             driver = self._setup_driver()
-            logger.info(f"Loading {self.url}...")
-            driver.get(self.url)
             
             import time
             
-            # Verify page loaded
-            time.sleep(2)
-            current_url = driver.current_url
-            logger.info(f"Page loaded, current URL: {current_url}")
+            # Step 1: Visit homepage
+            logger.info("Loading ChronoGenesis homepage...")
+            driver.get("https://chronogenesis.net")
+            time.sleep(3)
             
-            # Check if we got redirected or blocked
+            # Verify we're on the right site
+            current_url = driver.current_url
+            logger.info(f"Homepage loaded: {current_url}")
+            
             if "chronogenesis.net" not in current_url:
                 logger.error(f"Unexpected URL: {current_url}")
                 driver.save_screenshot("debug_wrong_url.png")
                 raise ValueError(f"Page redirected to unexpected URL: {current_url}")
             
-            # Handle cookie consent popup if it exists
-            logger.info("Checking for cookie consent popup...")
-            try:
-                time.sleep(3)
-                
-                # Try to find and click the consent button (multiple possible selectors)
-                selectors = [
-                    # New ez-cookie dialog (2024 update)
-                    "//button[contains(text(), 'Continue with Recommended Cookies')]",
-                    "button.ez-accept-all",
-                    "#ez-cookie-dialog-wrapper button",
-                    ".ez-main-cmp-wrapper button",
-                    
-                    # Old selectors (fallback)
-                    "button.fc-cta-consent",
-                    "button[class*='consent']",
-                    "button[title='Consent']",
-                    "//button[contains(text(), 'Consent')]",
-                    "//button[contains(text(), 'Accept')]",
-                ]
-                
-                consent_clicked = False
-                for selector in selectors:
-                    try:
-                        if selector.startswith("//"):
-                            consent_button = driver.find_element(By.XPATH, selector)
-                        else:
-                            consent_button = driver.find_element(By.CSS_SELECTOR, selector)
-                        
-                        if consent_button.is_displayed():
-                            consent_button.click()
-                            logger.info(f"Clicked consent button: {selector}")
-                            consent_clicked = True
-                            time.sleep(15)
-                            break
-                    except Exception as e:
-                        logger.debug(f"Selector {selector} failed: {e}")
-                        continue
-                
-                if not consent_clicked:
-                    logger.warning("Could not find or click cookie consent button")
-                    logger.warning("Attempting to remove cookie dialog with JavaScript...")
-                    
-                    # Remove the cookie dialog with JavaScript
-                    try:
-                        driver.execute_script("""
-                            var ezDialog = document.getElementById('ez-cookie-dialog-wrapper');
-                            if (ezDialog) ezDialog.remove();
-                            
-                            var overlays = document.querySelectorAll('[id*="cookie"], [class*="cookie"], [id*="consent"], [class*="consent"]');
-                            overlays.forEach(function(el) {
-                                if (el.style.position === 'fixed' || el.style.zIndex > 100) {
-                                    el.remove();
-                                }
-                            });
-                        """)
-                        logger.info("Removed cookie dialog with JavaScript")
-                        time.sleep(2)
-                    except Exception as js_error:
-                        logger.error(f"JavaScript removal failed: {js_error}")
-                    
-            except Exception as e:
-                logger.info("No consent popup found or already accepted")
+            # Step 2: Handle cookie consent
+            self._handle_cookie_consent(driver)
             
-            # Wait for page to fully render after cookie consent
+            # Step 3: Click "Club Profile" card to get to club search page
+            logger.info("Looking for 'Club Profile' card on homepage...")
+            club_profile_clicked = False
+            
+            # Wait a moment for the page to fully render
+            time.sleep(3)
+            
+            # Try multiple methods to click the Club Profile card
+            click_methods = [
+                # Try clicking the card text directly
+                lambda: driver.find_element(By.XPATH, "//*[contains(text(), 'Club Profile')]").click(),
+                
+                # Try clicking the card that contains "Look up your club"
+                lambda: driver.find_element(By.XPATH, "//*[contains(text(), 'Look up your club')]").click(),
+                
+                # Try clicking the card with both Club Profile AND Look up text
+                lambda: driver.find_element(By.XPATH, "//div[contains(., 'Club Profile') and contains(., 'Look up')]").click(),
+                
+                # Try the Club nav link at the top as fallback
+                lambda: driver.find_element(By.LINK_TEXT, "Club").click(),
+                
+                # Try clicking any clickable element with "Club" text
+                lambda: driver.find_element(By.XPATH, "//span[text()='Club']").click(),
+            ]
+            
+            for idx, method in enumerate(click_methods):
+                try:
+                    logger.info(f"Trying click method {idx + 1}...")
+                    method()
+                    logger.info("Successfully clicked Club Profile!")
+                    club_profile_clicked = True
+                    time.sleep(5)  # Wait for navigation
+                    break
+                except Exception as e:
+                    logger.debug(f"Click method {idx + 1} failed: {e}")
+                    continue
+            
+            if not club_profile_clicked:
+                logger.warning("Could not click Club Profile, trying direct navigation")
+                driver.get("https://chronogenesis.net/club_profile")
+                time.sleep(5)
+            
+            # Step 4: We should now be on the club search page with input field
+            logger.info(f"Current page: {driver.current_url}")
+            
+            # Wait for React app to fully render
+            logger.info("Waiting for React app to render...")
+            time.sleep(8)  # Give more time for React to render
+            
+            # Debug: Check what's on the page
+            logger.info("Checking page content...")
+            page_text = driver.find_element(By.TAG_NAME, "body").text[:500]
+            logger.info(f"Page body text (first 500 chars): {page_text}")
+            
+            # Debug: Check for any inputs on the page
+            all_inputs = driver.find_elements(By.TAG_NAME, "input")
+            logger.info(f"Found {len(all_inputs)} input elements on page")
+            for idx, inp in enumerate(all_inputs):
+                logger.info(f"  Input {idx}: class='{inp.get_attribute('class')}', placeholder='{inp.get_attribute('placeholder')}'")
+            
+            # Extract circle_id from original URL
+            circle_id = None
+            if "circle_id=" in self.url:
+                circle_id = self.url.split("circle_id=")[-1]
+                logger.info(f"Extracted circle_id: {circle_id}")
+            
+            if not circle_id:
+                logger.error("No circle_id found in URL")
+                raise ValueError("Cannot proceed without circle_id")
+            
+            # Step 5: Wait for the input field to be present
+            logger.info("Looking for club search input field...")
+            
+            search_input = None
+            max_attempts = 3
+            
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    logger.info(f"Attempt {attempt}/{max_attempts} to find input field...")
+                    
+                    # Try multiple selectors
+                    selectors = [
+                        "input.club-id-input",
+                        "input[placeholder*='Club']",
+                        "input[placeholder*='ID']",
+                        ".club-id-input",
+                        ".club-profile-main input",
+                    ]
+                    
+                    for selector in selectors:
+                        try:
+                            search_input = WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                            )
+                            logger.info(f"Found input field using selector: {selector}")
+                            break
+                        except:
+                            logger.debug(f"Selector failed: {selector}")
+                            continue
+                    
+                    if search_input:
+                        break
+                    
+                    logger.warning(f"Attempt {attempt} failed, waiting 5 seconds...")
+                    time.sleep(5)
+                    
+                except Exception as e:
+                    logger.error(f"Attempt {attempt} error: {e}")
+                    if attempt < max_attempts:
+                        time.sleep(5)
+            
+            if not search_input:
+                logger.error("Could not find club-id-input field after all attempts")
+                driver.save_screenshot("debug_no_input.png")
+                
+                # Save page source for debugging
+                with open("debug_page_source.html", "w", encoding="utf-8") as f:
+                    f.write(driver.page_source)
+                logger.error("Saved page source to debug_page_source.html")
+                
+                raise ValueError("Search input field not found")
+            
+            # Step 6: Use JavaScript to set the value and trigger events
+            logger.info("Using JavaScript to enter club name and trigger search...")
+            
+            # Set the input value using JavaScript
+            driver.execute_script("""
+                var input = document.querySelector('input.club-id-input');
+                input.value = arguments[0];
+                
+                // Trigger input event
+                var event = new Event('input', { bubbles: true });
+                input.dispatchEvent(event);
+                
+                // Trigger change event
+                var changeEvent = new Event('change', { bubbles: true });
+                input.dispatchEvent(changeEvent);
+            """, circle_id)
+            
+            logger.info(f"Set club name via JavaScript: {circle_id}")
+            time.sleep(2)
+            
+            # Try to trigger the search via Enter key using JavaScript
+            driver.execute_script("""
+                var input = document.querySelector('input.club-id-input');
+                var event = new KeyboardEvent('keydown', {
+                    key: 'Enter',
+                    code: 'Enter',
+                    keyCode: 13,
+                    which: 13,
+                    bubbles: true
+                });
+                input.dispatchEvent(event);
+            """)
+            
+            logger.info("Triggered search via JavaScript")
+            time.sleep(5)
+            
+            # Verify we're on club profile page
+            current_url = driver.current_url
+            logger.info(f"Final page: {current_url}")
+            
+            if "circle_id=" + circle_id not in current_url:
+                logger.warning(f"URL doesn't contain circle_id={circle_id}, but continuing...")
+            
+            # Wait for page to fully render
             logger.info("Waiting for page to fully render...")
             time.sleep(5)
             
@@ -342,24 +505,8 @@ class ChronoGenesisScraper(BaseScraper):
             if driver:
                 driver.quit()
     
-    def _parse_chart_table(self, table) -> Dict[str, List[int]]:
-        """Parse the chart data table to extract daily fan counts per member
-        
-        Table structure:
-        Header: ["Player", "Day 1", "Day 2", "Day 3", ...]
-        Row 1:  [Member1Name, fans_day1, fans_day2, fans_day3, ...]
-        Row 2:  [Member2Name, fans_day1, fans_day2, fans_day3, ...]
-        
-        Returns:
-            Dict with structure:
-            {
-                "trainer_id": {
-                    "name": "TrainerName",
-                    "fans": [day1_fans, day2_fans, ...],
-                    "join_day": 1
-                }
-            }
-        """
+    def _parse_chart_table(self, table) -> Dict[str, Dict]:
+        """Parse the chart data table to extract daily fan counts per member"""
         member_data = {}
         
         try:
@@ -370,7 +517,7 @@ class ChronoGenesisScraper(BaseScraper):
                 logger.warning("Chart table has too few rows")
                 return {}
             
-            # First row should be headers (Player, Day 1, Day 2, etc.)
+            # First row should be headers
             header_row = rows[0]
             headers = header_row.find_elements(By.TAG_NAME, "th")
             
@@ -378,7 +525,7 @@ class ChronoGenesisScraper(BaseScraper):
                 headers = header_row.find_elements(By.TAG_NAME, "td")
                 logger.info("Using td elements as headers")
             
-            # Find which columns are day columns (Day 1, Day 2, etc.)
+            # Find which columns are day columns
             day_columns = []
             for idx, header in enumerate(headers):
                 header_text = header.text.strip()
@@ -399,7 +546,7 @@ class ChronoGenesisScraper(BaseScraper):
             
             logger.info(f"Found {num_days} day columns at indices: {day_columns}")
             
-            # Parse data rows (each row is a member)
+            # Parse data rows
             for row_idx, row in enumerate(rows[1:], start=1):
                 cells = row.find_elements(By.TAG_NAME, "td")
                 
@@ -440,14 +587,14 @@ class ChronoGenesisScraper(BaseScraper):
                         logger.debug(f"Non-numeric cell for {member_name}: '{cell_text}', using 0")
                         daily_fans.append(0)
                 
-                # Detect join day (first day with non-zero fans)
+                # Detect join day
                 join_day = 1
                 for day_idx, fans in enumerate(daily_fans, start=1):
                     if fans > 0:
                         join_day = day_idx
                         break
                 
-                # Use trainer_id as key if available, otherwise use name
+                # Use trainer_id as key if available
                 key = trainer_id if trainer_id else member_name
                 
                 member_data[key] = {
@@ -459,7 +606,7 @@ class ChronoGenesisScraper(BaseScraper):
                 
                 logger.debug(f"Parsed {member_name} (ID: {trainer_id}): {len(daily_fans)} days, joined day {join_day}")
             
-            # Set the current day count based on how many day columns exist
+            # Set the current day count
             self.current_day_count = num_days
             logger.info(f"Successfully parsed {len(member_data)} members with {num_days} days of data")
             
@@ -472,20 +619,7 @@ class ChronoGenesisScraper(BaseScraper):
             return {}
     
     async def scrape(self) -> Dict[str, Dict]:
-        """
-        Scrape the website asynchronously
-        
-        Returns:
-            Dict mapping trainer_id -> member data dict:
-            {
-                "trainer_id": {
-                    "name": "TrainerName",
-                    "trainer_id": "trainer_id",
-                    "fans": [day1_fans, day2_fans, ...],
-                    "join_day": 1
-                }
-            }
-        """
+        """Scrape the website asynchronously"""
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, self._scrape_sync)
         return result
