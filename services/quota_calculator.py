@@ -16,41 +16,54 @@ class QuotaCalculator:
     """Handles all quota calculations and tracking per club"""
     
     @staticmethod
-    async def calculate_expected_fans(club_id: UUID, join_day: int, current_day: int, 
+    async def calculate_expected_fans(club_id: UUID, member_join_date: date, 
                                      current_date: date) -> int:
         """
-        Calculate expected cumulative fans based on days active and quota history
+        Calculate expected cumulative fans based on days active in current month
         
         Args:
             club_id: Club UUID
-            join_day: What day of the month they joined (1-31)
-            current_day: Current day of the month (1-31)
-            current_date: Current date object
+            member_join_date: When the member joined the club
+            current_date: Current date
         
         Returns:
-            Expected cumulative fan count based on quota requirements
+            Expected cumulative fan count for this month only
         """
-        if join_day > current_day:
-            return 0
+        # Determine the effective start date for this month
+        if member_join_date.year == current_date.year and member_join_date.month == current_date.month:
+            # Joined this month - start from their join date
+            start_date = member_join_date
+        else:
+            # Joined in previous month(s) - start from first day of current month
+            start_date = date(current_date.year, current_date.month, 1)
         
         total_expected = 0
         
-        # Calculate for each day the member was active
-        for day in range(join_day, current_day + 1):
-            day_date = date(current_date.year, current_date.month, day)
-            
-            # Get the quota that was in effect on that day for this club
-            daily_quota = await QuotaRequirement.get_quota_for_date(club_id, day_date)
-            total_expected += daily_quota
+        # Calculate for each day from start_date to current_date (inclusive)
+        day_count = (current_date - start_date).days + 1
         
+        current_day = start_date
+        for _ in range(day_count):
+            # Get the quota that was in effect on that day for this club
+            daily_quota = await QuotaRequirement.get_quota_for_date(club_id, current_day)
+            total_expected += daily_quota
+            current_day += timedelta(days=1)
+        
+        logger.debug(f"Expected fans calculation: {start_date} to {current_date} = {day_count} days × quota = {total_expected:,}")
         return total_expected
     
     @staticmethod
-    def calculate_days_active_in_month(join_day: int, current_day: int) -> int:
+    def calculate_days_active_in_month(member_join_date: date, current_date: date) -> int:
         """Calculate how many days a member has been active this month"""
-        if join_day > current_day:
-            return 0
-        return current_day - join_day + 1
+        # Determine the effective start date for this month
+        if member_join_date.year == current_date.year and member_join_date.month == current_date.month:
+            # Joined this month
+            start_date = member_join_date
+        else:
+            # Joined in previous month(s) - active since first day of current month
+            start_date = date(current_date.year, current_date.month, 1)
+        
+        return (current_date - start_date).days + 1
     
     @staticmethod
     def calculate_deficit_surplus(actual_fans: int, expected_fans: int) -> int:
@@ -139,7 +152,7 @@ class QuotaCalculator:
             club_id: Club UUID
             scraped_data: Dict of trainer_id -> {name, trainer_id, fans[], join_day}
             current_date: Current date
-            current_day: Current day number in the month
+            current_day: Current day number from scraper (ONLY used for detecting new joins from table data)
         
         Returns:
             Tuple of (new_members_count, updated_members_count)
@@ -190,11 +203,23 @@ class QuotaCalculator:
                 member = await Member.get_by_name(club_id, trainer_name)
             
             if not member:
-                # New member
-                join_date = date(current_date.year, current_date.month, detected_join_day)
+                # New member - calculate correct join date
+                # If detected_join_day > current calendar day, it's from previous month
+                if detected_join_day > current_date.day:
+                    # Previous month
+                    if current_date.month == 1:
+                        # Previous month is December of previous year
+                        join_date = date(current_date.year - 1, 12, detected_join_day)
+                    else:
+                        # Previous month in same year
+                        join_date = date(current_date.year, current_date.month - 1, detected_join_day)
+                else:
+                    # Current month
+                    join_date = date(current_date.year, current_date.month, detected_join_day)
+                
                 member = await Member.create(club_id, trainer_name, join_date, trainer_id)
                 new_members += 1
-                logger.info(f"New member added: {trainer_name} (ID: {trainer_id}, joined Day {detected_join_day})")
+                logger.info(f"New member added: {trainer_name} (ID: {trainer_id}, joined {join_date.strftime('%Y-%m-%d')})")
             else:
                 # Existing member
                 if member.trainer_name != trainer_name:
@@ -212,17 +237,12 @@ class QuotaCalculator:
             # Update last seen
             await member.update_last_seen(current_date)
             
-            # Calculate days active this month
-            if member.join_date.year == current_date.year and member.join_date.month == current_date.month:
-                join_day_from_db = member.join_date.day
-            else:
-                join_day_from_db = 1
+            # Calculate days active this month using actual dates
+            days_active = self.calculate_days_active_in_month(member.join_date, current_date)
             
-            days_active = self.calculate_days_active_in_month(join_day_from_db, current_day)
-            
-            # Calculate expected fans using dynamic quota system
+            # Calculate expected fans using actual dates (not day numbers from table)
             expected_fans = await self.calculate_expected_fans(
-                club_id, join_day_from_db, current_day, current_date
+                club_id, member.join_date, current_date
             )
             
             # Calculate deficit/surplus
@@ -245,7 +265,7 @@ class QuotaCalculator:
             updated_members += 1
             
             logger.debug(f"{trainer_name}: {cumulative_fans:,} fans "
-                        f"(expected: {expected_fans:,}, {deficit_surplus:+,})")
+                        f"(expected: {expected_fans:,}, {deficit_surplus:+,}, days active: {days_active})")
         
         logger.info(f"Processed {updated_members} members ({new_members} new) for club {club_id}")
         return new_members, updated_members
