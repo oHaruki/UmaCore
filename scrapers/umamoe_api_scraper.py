@@ -102,10 +102,14 @@ class UmaMoeAPIScraper(BaseScraper):
         """
         parsed_data = {}
         
-        # Detect current day from all members
-        current_day = self._detect_current_day_from_raw(members)
+        # Use calendar day, just like ChronoGenesis does
+        # This ensures calculator expects the right number of days
+        from datetime import datetime
+        calendar_day = datetime.now().day
+        current_day = calendar_day
         self.current_day_count = current_day
-        logger.info(f"Current day detected: {current_day}")
+        
+        logger.info(f"Current day: {current_day} (using calendar day like ChronoGenesis)")
         
         # Parse each member and convert lifetime fans to monthly fans
         for member in members:
@@ -169,26 +173,6 @@ class UmaMoeAPIScraper(BaseScraper):
             )
         
         return parsed_data
-    
-    def _detect_current_day_from_raw(self, members: list) -> int:
-        """
-        Detect current day from raw member data
-        
-        Args:
-            members: Raw member list from API
-        
-        Returns:
-            Current day number (1-indexed)
-        """
-        max_day = 0
-        
-        for member in members:
-            daily_fans = member.get("daily_fans", [])
-            for idx, fans in enumerate(daily_fans, start=1):
-                if fans > 0:
-                    max_day = max(max_day, idx)
-        
-        return max_day if max_day > 0 else 1
     
     def get_current_day(self) -> int:
         """Get the current day number"""
