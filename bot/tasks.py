@@ -9,8 +9,9 @@ import pytz
 import asyncio
 
 from models import Club, Member
-from scrapers import ChronoGenesisScraper
+from scrapers import ChronoGenesisScraper, UmaMoeAPIScraper
 from services import QuotaCalculator, BombManager, ReportGenerator, NotificationService, ScrapeLockManager, ScrapeContext
+from config.settings import USE_UMAMOE_API
 
 logger = logging.getLogger(__name__)
 
@@ -124,9 +125,20 @@ class BotTasks:
                 current_day = None
                 last_error = None
                 
-                # STEP 1: Try to scrape with retries
-                scraper = ChronoGenesisScraper(club.scrape_url)
+                # STEP 1: Select and initialize scraper
+                if USE_UMAMOE_API and club.circle_id:
+                    # Use fast Uma.moe API scraper
+                    scraper = UmaMoeAPIScraper(club.circle_id)
+                    logger.info(f"🚀 Using Uma.moe API scraper for {club.club_name} (circle_id: {club.circle_id})")
+                else:
+                    # Fallback to ChronoGenesis web scraper
+                    scraper = ChronoGenesisScraper(club.scrape_url)
+                    if not club.circle_id:
+                        logger.warning(f"⚠️ No circle_id configured for {club.club_name}, using ChronoGenesis scraper")
+                    else:
+                        logger.info(f"ℹ️ Uma.moe API disabled (USE_UMAMOE_API={USE_UMAMOE_API}), using ChronoGenesis scraper for {club.club_name}")
                 
+                # STEP 2: Try to scrape with retries
                 for attempt in range(1, max_retries + 1):
                     try:
                         logger.info(f"🔍 Scraping {club.club_name} (attempt {attempt}/{max_retries})...")
@@ -148,7 +160,7 @@ class BotTasks:
                             await asyncio.sleep(retry_delay)
                             retry_delay *= 2
                 
-                # STEP 2: Handle scraping failure
+                # STEP 3: Handle scraping failure
                 if not scraped_data:
                     error_msg = (
                         f"Failed to scrape data after {max_retries} attempts.\n\n"
@@ -169,7 +181,7 @@ class BotTasks:
                     )
                     return
                 
-                # STEP 3: Process the scraped data
+                # STEP 4: Process the scraped data
                 try:
                     logger.info(f"⚙️ Processing scraped data for {club.club_name}...")
                     new_members, updated_members = await self.quota_calculator.process_scraped_data(
@@ -187,7 +199,7 @@ class BotTasks:
                     await report_channel.send(embed=error_embed)
                     return
                 
-                # STEP 4: Bomb management
+                # STEP 5: Bomb management
                 try:
                     logger.info(f"💣 Checking for bomb activations in {club.club_name}...")
                     newly_activated_bombs = await self.bomb_manager.check_and_activate_bombs(club, current_date)
@@ -210,7 +222,7 @@ class BotTasks:
                     deactivated_bombs = []
                     members_to_kick = []
                 
-                # STEP 5: Send DM notifications to linked users
+                # STEP 6: Send DM notifications to linked users
                 try:
                     if newly_activated_bombs:
                         logger.info(f"📨 Sending bomb activation DMs for {club.club_name}...")
@@ -231,7 +243,7 @@ class BotTasks:
                 except Exception as e:
                     logger.error(f"❌ Error sending DM notifications for {club.club_name}: {e}", exc_info=True)
                 
-                # STEP 6: Generate and send reports
+                # STEP 7: Generate and send reports
                 try:
                     logger.info(f"📊 Generating daily report for {club.club_name}...")
                     status_summary = await self.quota_calculator.get_member_status_summary(club.club_id, current_date)
@@ -260,7 +272,7 @@ class BotTasks:
                     )
                     await report_channel.send(embed=error_embed)
                 
-                # STEP 7: Send alerts to alert channel
+                # STEP 8: Send alerts to alert channel
                 try:
                     if newly_activated_bombs:
                         bomb_data = []
@@ -280,7 +292,7 @@ class BotTasks:
                 except Exception as e:
                     logger.error(f"❌ Error sending alerts for {club.club_name}: {e}", exc_info=True)
                 
-                # STEP 8: Final summary
+                # STEP 9: Final summary
                 logger.info("=" * 80)
                 logger.info(f"✅ Daily check complete for {club.club_name}!")
                 logger.info(f"   • Members updated: {updated_members}")

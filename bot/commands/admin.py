@@ -9,9 +9,10 @@ import logging
 import pytz
 import asyncio
 
-from scrapers import ChronoGenesisScraper
+from scrapers import ChronoGenesisScraper, UmaMoeAPIScraper
 from services import QuotaCalculator, BombManager, ReportGenerator, MonthlyInfoService
 from models import Member, QuotaRequirement, BotSettings, Club
+from config.settings import USE_UMAMOE_API
 
 logger = logging.getLogger(__name__)
 
@@ -285,13 +286,27 @@ class AdminCommands(commands.Cog):
             if not alert_channel:
                 alert_channel = report_channel
             
+            # Select scraper based on configuration
+            if USE_UMAMOE_API and club_obj.circle_id:
+                # Use fast Uma.moe API scraper
+                scraper = UmaMoeAPIScraper(club_obj.circle_id)
+                await interaction.followup.send(f"🚀 Using Uma.moe API scraper for {club}...")
+                logger.info(f"Using Uma.moe API scraper for {club_obj.club_name} (circle_id: {club_obj.circle_id})")
+            else:
+                # Fallback to ChronoGenesis web scraper
+                scraper = ChronoGenesisScraper(club_obj.scrape_url)
+                if not club_obj.circle_id:
+                    await interaction.followup.send(f"⚠️ No circle_id configured, using ChronoGenesis scraper...")
+                    logger.warning(f"No circle_id configured for {club_obj.club_name}, using ChronoGenesis scraper")
+                else:
+                    await interaction.followup.send(f"ℹ️ Uma.moe API disabled, using ChronoGenesis scraper...")
+                    logger.info(f"Uma.moe API disabled (USE_UMAMOE_API={USE_UMAMOE_API}), using ChronoGenesis scraper for {club_obj.club_name}")
+            
             # Scrape with retry logic
             max_retries = 3
             retry_delay = 10
             scraped_data = None
             current_day = None
-            
-            scraper = ChronoGenesisScraper(club_obj.scrape_url)
             
             for attempt in range(1, max_retries + 1):
                 try:
@@ -537,3 +552,8 @@ class AdminCommands(commands.Cog):
     deactivate_member.autocomplete('club')(club_autocomplete)
     activate_member.autocomplete('club')(club_autocomplete)
     bomb_status.autocomplete('club')(club_autocomplete)
+
+
+async def setup(bot):
+    """Setup function for loading the cog"""
+    await bot.add_cog(AdminCommands(bot))
