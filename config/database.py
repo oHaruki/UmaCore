@@ -66,6 +66,7 @@ class Database:
             club_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
             club_name VARCHAR(100) UNIQUE NOT NULL,
             scrape_url TEXT NOT NULL,
+            circle_id VARCHAR(100),
             daily_quota BIGINT NOT NULL DEFAULT 1000000,
             timezone VARCHAR(100) NOT NULL DEFAULT 'Europe/Amsterdam',
             scrape_time TIME NOT NULL DEFAULT '16:00',
@@ -80,7 +81,19 @@ class Database:
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
         
-        -- Add monthly info tracking columns if they don't exist
+        -- Migration: Add circle_id column if it doesn't exist
+        DO $$ 
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='clubs' AND column_name='circle_id'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN circle_id VARCHAR(100);
+                RAISE NOTICE 'Added circle_id column to clubs';
+            END IF;
+        END $$;
+        
+        -- Migration: Add monthly info tracking columns if they don't exist
         DO $$ 
         BEGIN
             IF NOT EXISTS (
