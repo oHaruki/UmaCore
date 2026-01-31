@@ -115,8 +115,23 @@ class BotTasks:
                 last_error = None
                 
                 # STEP 1: Select and initialize scraper with validation
-                if USE_UMAMOE_API and club.circle_id:
-                    # Validate circle_id format
+                if USE_UMAMOE_API:
+                    if not club.circle_id:
+                        logger.error(f"No circle_id configured for {club.club_name} (required when Uma.moe API is enabled)")
+                        error_embed = self.report_generator.create_error_report(
+                            club.club_name,
+                            f"⚠️ **Missing Circle ID for {club.club_name}**\n\n"
+                            f"Uma.moe API is enabled but no circle_id has been set.\n\n"
+                            f"**To fix this:**\n"
+                            f"Use `/edit_club club:{club.club_name} circle_id:<numeric_id>`\n\n"
+                            f"**How to find your Circle ID:**\n"
+                            f"1. Go to https://uma.moe/circles/\n"
+                            f"2. Search for **{club.club_name}**\n"
+                            f"3. Copy the number from the URL"
+                        )
+                        await report_channel.send(embed=error_embed)
+                        return
+                    
                     if not club.is_circle_id_valid():
                         logger.error(f"Invalid circle_id format for {club.club_name}: '{club.circle_id}' (must be numeric)")
                         error_embed = self.report_generator.create_error_report(
@@ -127,13 +142,10 @@ class BotTasks:
                         return
                     
                     scraper = UmaMoeAPIScraper(club.circle_id)
-                    logger.info(f"🚀 Using Uma.moe API scraper for {club.club_name} (circle_id: {club.circle_id})")
+                    logger.info(f"Using Uma.moe API scraper for {club.club_name} (circle_id: {club.circle_id})")
                 else:
                     scraper = ChronoGenesisScraper(club.scrape_url)
-                    if not club.circle_id:
-                        logger.warning(f"⚠️ No circle_id configured for {club.club_name}, using ChronoGenesis scraper")
-                    else:
-                        logger.info(f"ℹ️ Uma.moe API disabled (USE_UMAMOE_API={USE_UMAMOE_API}), using ChronoGenesis scraper for {club.club_name}")
+                    logger.info(f"Using ChronoGenesis scraper for {club.club_name}")
                 
                 # STEP 2: Try to scrape with retries
                 for attempt in range(1, max_retries + 1):
@@ -231,6 +243,7 @@ class BotTasks:
                             member = item['member']
                             await self.notification_service.send_bomb_deactivation_notification(club.club_name, member)
                     
+                    # Send deficit notifications
                     status_summary = await self.quota_calculator.get_member_status_summary(club.club_id, current_date)
                     if status_summary['behind']:
                         logger.info(f"📨 Sending deficit notifications for {club.club_name}...")

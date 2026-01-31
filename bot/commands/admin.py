@@ -217,7 +217,8 @@ class AdminCommands(commands.Cog):
             if not quota_reqs:
                 embed = discord.Embed(
                     title=f"📊 Quota History - {club}",
-                    description=f"No quota changes this month. Using default: **{club_obj.daily_quota:,} fans/day**",
+                    description=f"No quota changes this month.\n"
+                                f"Using default: **{club_obj.daily_quota:,} fans/day**",
                     color=discord.Color.blue(),
                     timestamp=discord.utils.utcnow()
                 )
@@ -280,8 +281,21 @@ class AdminCommands(commands.Cog):
                 alert_channel = report_channel
             
             # Select scraper based on configuration with validation
-            if USE_UMAMOE_API and club_obj.circle_id:
-                # Validate circle_id format
+            if USE_UMAMOE_API:
+                if not club_obj.circle_id:
+                    await interaction.followup.send(
+                        f"⚠️ **Missing Circle ID for {club_obj.club_name}**\n\n"
+                        f"Uma.moe API is enabled but no circle_id has been set.\n\n"
+                        f"**To fix this:**\n"
+                        f"Use `/edit_club club:{club_obj.club_name} circle_id:<numeric_id>`\n\n"
+                        f"**How to find your Circle ID:**\n"
+                        f"1. Go to https://uma.moe/circles/\n"
+                        f"2. Search for **{club_obj.club_name}**\n"
+                        f"3. Copy the number from the URL"
+                    )
+                    logger.error(f"No circle_id configured for {club_obj.club_name} (required when Uma.moe API is enabled)")
+                    return
+                
                 if not club_obj.is_circle_id_valid():
                     error_msg = club_obj.get_circle_id_help_message()
                     await interaction.followup.send(error_msg)
@@ -289,16 +303,12 @@ class AdminCommands(commands.Cog):
                     return
                 
                 scraper = UmaMoeAPIScraper(club_obj.circle_id)
-                await interaction.followup.send(f"🚀 Using Uma.moe API scraper for {club}...")
+                await interaction.followup.send(f"Using Uma.moe API scraper for {club}...")
                 logger.info(f"Using Uma.moe API scraper for {club_obj.club_name} (circle_id: {club_obj.circle_id})")
             else:
                 scraper = ChronoGenesisScraper(club_obj.scrape_url)
-                if not club_obj.circle_id:
-                    await interaction.followup.send(f"⚠️ No circle_id configured, using ChronoGenesis scraper...")
-                    logger.warning(f"No circle_id configured for {club_obj.club_name}, using ChronoGenesis scraper")
-                else:
-                    await interaction.followup.send(f"ℹ️ Uma.moe API disabled, using ChronoGenesis scraper...")
-                    logger.info(f"Uma.moe API disabled (USE_UMAMOE_API={USE_UMAMOE_API}), using ChronoGenesis scraper for {club_obj.club_name}")
+                await interaction.followup.send(f"Using ChronoGenesis scraper for {club}...")
+                logger.info(f"Using ChronoGenesis scraper for {club_obj.club_name}")
             
             # Scrape with retry logic
             max_retries = 3
