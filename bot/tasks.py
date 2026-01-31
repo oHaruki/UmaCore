@@ -49,26 +49,21 @@ class BotTasks:
         logger.info("=" * 80)
         
         try:
-            # Get all active clubs
             clubs = await Club.get_all_active()
             logger.info(f"Found {len(clubs)} active club(s)")
             
             for club in clubs:
                 try:
-                    # Convert current time to club's timezone
                     club_tz = pytz.timezone(club.timezone)
                     now_in_club_tz = datetime.now(club_tz)
                     current_date = now_in_club_tz.date()
                     
-                    # Get target time for this club
                     target_hour = club.scrape_time.hour
                     target_minute = club.scrape_time.minute
                     
-                    # Check if it's time to scrape
                     if (now_in_club_tz.hour == target_hour and 
                         now_in_club_tz.minute >= target_minute):
                         
-                        # Check if already ran today
                         run_key = f"{club.club_id}_{current_date}"
                         if self.last_runs.get(run_key):
                             logger.debug(f"{club.club_name}: Already ran today ({current_date})")
@@ -76,10 +71,8 @@ class BotTasks:
                         
                         logger.info(f"⏰ Time to check {club.club_name} ({now_in_club_tz.strftime('%H:%M')} {club.timezone})")
                         
-                        # Mark as running
                         self.last_runs[run_key] = True
                         
-                        # Run check for this club (non-blocking)
                         asyncio.create_task(self.daily_check_for_club(club))
                     else:
                         logger.debug(f"{club.club_name}: Not time yet (current: {now_in_club_tz.strftime('%H:%M')}, target: {target_hour:02d}:{target_minute:02d} {club.timezone})")
@@ -98,9 +91,7 @@ class BotTasks:
         logger.info("=" * 80)
         
         try:
-            # Use scrape lock to prevent conflicts
             async with ScrapeContext(club.club_id, f"tasks_{club.club_name}"):
-                # Get channels
                 report_channel = self.bot.get_channel(club.report_channel_id)
                 alert_channel = self.bot.get_channel(club.alert_channel_id or club.report_channel_id)
                 
@@ -112,12 +103,10 @@ class BotTasks:
                     logger.warning(f"Alert channel not found for {club.club_name}, using report channel")
                     alert_channel = report_channel
                 
-                # Get current date in club's timezone
                 club_tz = pytz.timezone(club.timezone)
                 current_datetime = datetime.now(club_tz)
                 current_date = current_datetime.date()
                 
-                # Retry configuration
                 max_retries = 3
                 retry_delay = 10
                 
@@ -125,13 +114,21 @@ class BotTasks:
                 current_day = None
                 last_error = None
                 
-                # STEP 1: Select and initialize scraper
+                # STEP 1: Select and initialize scraper with validation
                 if USE_UMAMOE_API and club.circle_id:
-                    # Use fast Uma.moe API scraper
+                    # Validate circle_id format
+                    if not club.is_circle_id_valid():
+                        logger.error(f"Invalid circle_id format for {club.club_name}: '{club.circle_id}' (must be numeric)")
+                        error_embed = self.report_generator.create_error_report(
+                            club.club_name,
+                            club.get_circle_id_help_message()
+                        )
+                        await report_channel.send(embed=error_embed)
+                        return
+                    
                     scraper = UmaMoeAPIScraper(club.circle_id)
                     logger.info(f"🚀 Using Uma.moe API scraper for {club.club_name} (circle_id: {club.circle_id})")
                 else:
-                    # Fallback to ChronoGenesis web scraper
                     scraper = ChronoGenesisScraper(club.scrape_url)
                     if not club.circle_id:
                         logger.warning(f"⚠️ No circle_id configured for {club.club_name}, using ChronoGenesis scraper")
@@ -234,7 +231,6 @@ class BotTasks:
                             member = item['member']
                             await self.notification_service.send_bomb_deactivation_notification(club.club_name, member)
                     
-                    # Send deficit notifications
                     status_summary = await self.quota_calculator.get_member_status_summary(club.club_id, current_date)
                     if status_summary['behind']:
                         logger.info(f"📨 Sending deficit notifications for {club.club_name}...")
@@ -258,7 +254,6 @@ class BotTasks:
                     
                     logger.info(f"✅ Daily report sent for {club.club_name} ({len(daily_reports)} embed(s))")
                     
-                    # Send bomb deactivation report if any
                     if deactivated_bombs:
                         deactivation_embed = self.report_generator.create_bomb_deactivation_report(club.club_name, deactivated_bombs)
                         await report_channel.send(embed=deactivation_embed)
@@ -305,7 +300,6 @@ class BotTasks:
         except Exception as e:
             logger.error(f"Fatal error in daily check for {club.club_name}: {e}", exc_info=True)
             
-            # Try to send error notification
             try:
                 report_channel = self.bot.get_channel(club.report_channel_id)
                 if report_channel:

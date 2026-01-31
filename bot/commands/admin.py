@@ -85,7 +85,6 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send("❌ Quota amount seems unreasonably high (>10M). Please check your input.")
                 return
             
-            # Get current date in club's timezone
             club_tz = pytz.timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
@@ -98,7 +97,6 @@ class AdminCommands(commands.Cog):
                 set_by=set_by
             )
             
-            # Format amount
             if amount >= 1_000_000:
                 formatted = f"{amount / 1_000_000:.1f}M"
             elif amount >= 1_000:
@@ -140,7 +138,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(embed=embed)
             logger.info(f"Quota set to {amount:,} for {club} by {set_by} effective {current_date}")
             
-            # Auto-update monthly info board
             updated = await self._update_monthly_info_board(club_obj, current_date)
             if updated:
                 await interaction.followup.send("✅ Monthly info board auto-updated!", ephemeral=True)
@@ -161,7 +158,6 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Club '{club}' not found")
                 return
             
-            # Get saved location
             channel_id, message_id = await club_obj.get_monthly_info_location()
             
             if not channel_id or not message_id:
@@ -181,19 +177,16 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Message not found. Use `/post_monthly_info` to create a new one.")
                 return
             
-            # Get current date in club's timezone
             club_tz = pytz.timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
             
-            # Generate updated embed
             embed = await self.monthly_info_service.create_monthly_info_embed(
                 club_obj.club_id,
                 club_obj.club_name,
                 current_date
             )
             
-            # Update message
             await message.edit(embed=embed)
             
             await interaction.followup.send(f"✅ Monthly info board updated for {club}!")
@@ -286,14 +279,19 @@ class AdminCommands(commands.Cog):
             if not alert_channel:
                 alert_channel = report_channel
             
-            # Select scraper based on configuration
+            # Select scraper based on configuration with validation
             if USE_UMAMOE_API and club_obj.circle_id:
-                # Use fast Uma.moe API scraper
+                # Validate circle_id format
+                if not club_obj.is_circle_id_valid():
+                    error_msg = club_obj.get_circle_id_help_message()
+                    await interaction.followup.send(error_msg)
+                    logger.error(f"Invalid circle_id format for {club}: '{club_obj.circle_id}'")
+                    return
+                
                 scraper = UmaMoeAPIScraper(club_obj.circle_id)
                 await interaction.followup.send(f"🚀 Using Uma.moe API scraper for {club}...")
                 logger.info(f"Using Uma.moe API scraper for {club_obj.club_name} (circle_id: {club_obj.circle_id})")
             else:
-                # Fallback to ChronoGenesis web scraper
                 scraper = ChronoGenesisScraper(club_obj.scrape_url)
                 if not club_obj.circle_id:
                     await interaction.followup.send(f"⚠️ No circle_id configured, using ChronoGenesis scraper...")
@@ -347,7 +345,6 @@ class AdminCommands(commands.Cog):
             for embed in daily_reports:
                 await report_channel.send(embed=embed)
             
-            # Send bomb deactivation report if any
             if deactivated:
                 deactivation_embed = self.report_generator.create_bomb_deactivation_report(club_obj.club_name, deactivated)
                 await report_channel.send(embed=deactivation_embed)
@@ -365,7 +362,6 @@ class AdminCommands(commands.Cog):
                 kick_alert = self.report_generator.create_kick_alert(club_obj.club_name, members_to_kick)
                 await alert_channel.send(embed=kick_alert)
             
-            # Final success message
             if deactivated:
                 await interaction.followup.send(
                     f"✅ Check complete for {club}: {updated_members} members updated, {new_members} new members, {len(deactivated)} bombs defused"

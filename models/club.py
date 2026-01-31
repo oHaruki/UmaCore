@@ -1,5 +1,5 @@
 """
-Club data model for multi-club support
+Club data model for multi-club support with circle_id validation
 """
 from dataclasses import dataclass
 from datetime import time
@@ -18,7 +18,7 @@ class Club:
     club_id: UUID
     club_name: str
     scrape_url: str
-    circle_id: Optional[str]  # Uma.moe API circle_id
+    circle_id: Optional[str]
     daily_quota: int
     timezone: str
     scrape_time: time
@@ -138,7 +138,6 @@ class Club:
         if not updates:
             return
         
-        # Convert scrape_time string to time object if needed
         if 'scrape_time' in updates and isinstance(updates['scrape_time'], str):
             from datetime import time as time_class
             hour, minute = map(int, updates['scrape_time'].split(':'))
@@ -215,3 +214,30 @@ class Club:
         if isinstance(self.scrape_time, time):
             return self.scrape_time.strftime('%H:%M')
         return str(self.scrape_time)
+    
+    def is_circle_id_valid(self) -> bool:
+        """Check if circle_id is in the correct numeric format for Uma.moe API"""
+        if not self.circle_id:
+            return False
+        return self.circle_id.isdigit()
+    
+    def get_uma_moe_url(self) -> str:
+        """Get the Uma.moe URL for this club"""
+        if self.circle_id and self.circle_id.isdigit():
+            return f"https://uma.moe/circles/{self.circle_id}"
+        return "https://uma.moe/circles/"
+    
+    def get_circle_id_help_message(self) -> str:
+        """Get helpful error message for invalid circle_id"""
+        return (
+            f"⚠️ **Invalid Circle ID for {self.club_name}**\n\n"
+            f"The circle_id must be a **numeric ID** from Uma.moe, not a club name.\n\n"
+            f"**How to find your Circle ID:**\n"
+            f"1. Go to https://uma.moe/circles/\n"
+            f"2. Search for your club: **{self.club_name}**\n"
+            f"3. Click on your club\n"
+            f"4. Copy the **number** at the end of the URL\n"
+            f"   Example: `https://uma.moe/circles/860280110` → Circle ID is `860280110`\n\n"
+            f"**To fix this:**\n"
+            f"Use `/edit_club club:{self.club_name} circle_id:<numeric_id>`"
+        )

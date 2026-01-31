@@ -1,5 +1,6 @@
 """
-Bomb warning system manager
+Bomb warning system manager - FIXED VERSION
+This version skips kick alerts for already-deactivated members
 """
 from datetime import date
 from typing import List, Dict
@@ -29,18 +30,15 @@ class BombManager:
         newly_activated = []
         
         for member in members:
-            # Check if member already has an active bomb
             existing_bomb = await Bomb.get_active_for_member(member.member_id)
             if existing_bomb:
                 continue
             
-            # Check consecutive days behind
             consecutive_days = await QuotaHistory.check_consecutive_behind_days(
                 member.member_id, club.bomb_trigger_days
             )
             
             if consecutive_days >= club.bomb_trigger_days:
-                # Activate bomb
                 bomb = await Bomb.create(
                     member_id=member.member_id,
                     club_id=club.club_id,
@@ -68,11 +66,9 @@ class BombManager:
         deactivated = []
         
         for bomb in active_bombs:
-            # Get latest quota history
             latest_history = await QuotaHistory.get_latest_for_member(bomb.member_id)
             
             if latest_history and latest_history.deficit_surplus >= 0:
-                # Member is back on track
                 member = await Member.get_by_id(bomb.member_id)
                 
                 await bomb.deactivate(current_date)
@@ -111,23 +107,32 @@ class BombManager:
     async def check_expired_bombs(self, club_id: UUID) -> List[Member]:
         """
         Check for bombs that have reached 0 days remaining
+        FIXED: Now skips members who are already deactivated
         
         Args:
             club_id: Club UUID
         
         Returns:
-            List of members who should be kicked
+            List of members who should be kicked (only active members)
         """
         active_bombs = await Bomb.get_all_active(club_id)
         members_to_kick = []
         
         for bomb in active_bombs:
             if bomb.days_remaining <= 0:
+                # Get member info
+                member = await Member.get_by_id(bomb.member_id)
+                
+                # FIXED: Skip if member is already deactivated
+                if not member or not member.is_active:
+                    logger.info(f"Skipping kick alert for already-deactivated member: "
+                              f"{member.trainer_name if member else 'Unknown'}")
+                    continue
+                
                 # Check if still behind quota
                 latest_history = await QuotaHistory.get_latest_for_member(bomb.member_id)
                 
                 if latest_history and latest_history.deficit_surplus < 0:
-                    member = await Member.get_by_id(bomb.member_id)
                     members_to_kick.append(member)
                     logger.critical(f"🚨 KICK REQUIRED: {member.trainer_name} "
                                   f"(bomb expired, still {latest_history.deficit_surplus:,} behind)")
