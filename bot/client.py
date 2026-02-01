@@ -2,6 +2,7 @@
 Discord bot client setup
 """
 import discord
+from discord import app_commands
 from discord.ext import commands
 import logging
 
@@ -105,7 +106,7 @@ class UmamusumeBot(commands.Bot):
             logger.error(f"Guild ID backfill failed: {e}", exc_info=True)
     
     async def on_command_error(self, ctx, error):
-        """Global error handler for commands"""
+        """Global error handler for prefix commands"""
         if isinstance(error, commands.CommandNotFound):
             return
         elif isinstance(error, commands.MissingPermissions):
@@ -115,6 +116,21 @@ class UmamusumeBot(commands.Bot):
         else:
             logger.error(f"Command error: {error}", exc_info=error)
             await ctx.send(f"❌ An error occurred: {str(error)}")
+    
+    async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        """Global error handler for slash commands"""
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "❌ You're missing the required permissions to use this command."
+        elif isinstance(error, app_commands.CheckFailure):
+            msg = "❌ You're not authorized to use this command."
+        else:
+            logger.error(f"Slash command error: {error}", exc_info=error)
+            msg = f"❌ An error occurred: {str(error)}"
+
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
     
     async def close(self):
         """Cleanup when bot is shutting down"""
