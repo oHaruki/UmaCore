@@ -1,8 +1,9 @@
 """
 Uma.moe API scraper for fast, reliable club data fetching
 """
-from typing import Dict
+from typing import Dict, Optional, List
 import logging
+import calendar
 import aiohttp
 from datetime import datetime
 
@@ -15,67 +16,89 @@ class UmaMoeAPIScraper(BaseScraper):
     """Scraper using Uma.moe API for fast data retrieval"""
     
     def __init__(self, circle_id: str):
-        """
-        Initialize scraper with circle_id
-        
-        Args:
-            circle_id: The circle/club ID from Uma.moe (e.g., "860280110")
-        """
         self.circle_id = circle_id
         self.base_url = "https://uma.moe/api/v4/circles"
         self.current_day_count = 1
+        # Track which year/month was actually fetched (differs from now() on Day 1)
+        self._fetched_year = None
+        self._fetched_month = None
         super().__init__(self.base_url)
+    
+    async def _fetch_month(self, session: aiohttp.ClientSession, year: int, month: int) -> Optional[dict]:
+        """Fetch API data for a specific year/month. Returns parsed JSON or None on failure."""
+        params = {
+            "circle_id": self.circle_id,
+            "year": year,
+            "month": month
+        }
+        async with session.get(self.base_url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
+            if response.status != 200:
+                error_text = await response.text()
+                logger.error(f"Uma.moe API returned status {response.status} for {year}-{month:02d}: {error_text[:200]}")
+                return None
+            return await response.json()
     
     async def scrape(self) -> Dict[str, Dict]:
         """
-        Scrape club data from Uma.moe API
+        Scrape club data from Uma.moe API.
+        
+        On Day 1 the new month hasn't populated yet, so we fetch the previous
+        month as the primary data source. We also fetch the current month and
+        use its index 0 as the true endpoint per member — this captures fans
+        earned between the previous month's last snapshot (~15:10 UTC on the
+        last day) and the reset. Without this correction, up to ~24h of fans
+        at end-of-month are invisible.
         
         Returns:
-            Dict mapping viewer_id -> member data:
-            {
-                "viewer_id": {
-                    "name": "TrainerName",
-                    "trainer_id": "viewer_id",
-                    "fans": [day1_monthly, day2_monthly, ...],
-                    "join_day": 1
-                }
-            }
+            Dict mapping viewer_id -> member data
         """
         try:
             now = datetime.now()
             year = now.year
             month = now.month
             
+            # Determine which month to use as primary data source
+            if now.day == 1:
+                if month == 1:
+                    year -= 1
+                    month = 12
+                else:
+                    month -= 1
+                logger.info(f"Day 1 detected: fetching previous month ({year}-{month:02d}) as primary source")
+            
+            self._fetched_year = year
+            self._fetched_month = month
+            
             logger.info(f"Fetching data from Uma.moe API for circle {self.circle_id}...")
             
-            params = {
-                "circle_id": self.circle_id,
-                "year": year,
-                "month": month
-            }
-            
             async with aiohttp.ClientSession() as session:
-                async with session.get(self.base_url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        logger.error(f"Uma.moe API returned status {response.status}: {error_text[:200]}")
-                        raise ValueError(f"API request failed with status {response.status}")
-                    
-                    data = await response.json()
-                    logger.info(f"Successfully fetched data from Uma.moe API")
+                # Primary fetch: the month we're actually reporting on
+                primary_data = await self._fetch_month(session, year, month)
+                if not primary_data:
+                    raise ValueError(f"Primary API request failed for {year}-{month:02d}")
+                
+                # On Day 1, also fetch current month for endpoint correction
+                endpoint_members = None
+                if now.day == 1:
+                    endpoint_data = await self._fetch_month(session, now.year, now.month)
+                    if endpoint_data and "members" in endpoint_data:
+                        endpoint_members = endpoint_data.get("members", [])
+                        logger.info(f"Fetched {len(endpoint_members)} members from {now.year}-{now.month:02d} for endpoint correction")
+                    else:
+                        logger.warning("Could not fetch current month for endpoint correction — using previous month's last snapshot")
             
-            if not data or "members" not in data:
+            if not primary_data or "members" not in primary_data:
                 logger.error("API response missing 'members' field")
                 raise ValueError("Invalid API response structure")
             
-            members = data.get("members", [])
+            members = primary_data.get("members", [])
             logger.info(f"API returned {len(members)} members")
             
             if not members:
                 logger.warning("No members found in API response")
                 return {}
             
-            parsed_data = self._parse_api_data(members)
+            parsed_data = self._parse_api_data(members, endpoint_members=endpoint_members)
             logger.info(f"Successfully parsed {len(parsed_data)} active members from API")
             
             return parsed_data
@@ -87,31 +110,48 @@ class UmaMoeAPIScraper(BaseScraper):
             logger.error(f"Error during Uma.moe API scraping: {e}")
             raise
     
-    def _parse_api_data(self, members: list) -> Dict[str, Dict]:
+    def _parse_api_data(self, members: list, endpoint_members: Optional[List] = None) -> Dict[str, Dict]:
         """
-        Parse API member data into scraper format
+        Parse API member data into scraper format.
         
-        CRITICAL: Uma.moe returns LIFETIME cumulative fans, but the quota system 
-        expects fans earned THIS MONTH ONLY. We must convert by subtracting starting fans.
+        Uma.moe returns LIFETIME cumulative fans. Converts to monthly by
+        subtracting each member's starting lifetime fans (fans at join).
+        
+        When endpoint_members is provided (Day 1 only), the final fan count
+        per member is corrected using the current month's index 0 value.
+        This is the snapshot closest to the true month boundary and includes
+        fans earned after the previous month's last daily snapshot.
         
         Args:
-            members: List of member dicts from API
+            members: List of member dicts from the primary (previous) month
+            endpoint_members: Member list from current month (Day 1 only)
         
         Returns:
             Dict mapping viewer_id -> member data
         """
         parsed_data = {}
         
-        # Use calendar day, just like ChronoGenesis does
-        # This ensures calculator expects the right number of days
-        from datetime import datetime
-        calendar_day = datetime.now().day
-        current_day = calendar_day
+        # On Day 1 we fetched the previous month, so current_day is that month's last day
+        now = datetime.now()
+        if now.day == 1:
+            current_day = calendar.monthrange(self._fetched_year, self._fetched_month)[1]
+            logger.info(f"Day 1 fallback: using day {current_day} (last day of {self._fetched_year}-{self._fetched_month:02d})")
+        else:
+            current_day = now.day
+            logger.info(f"Current day: {current_day}")
         self.current_day_count = current_day
         
-        logger.info(f"Current day: {current_day} (using calendar day like ChronoGenesis)")
+        # Build endpoint lookup: viewer_id -> lifetime fans at current month index 0.
+        # This is the true month boundary snapshot for end-of-month correction.
+        endpoint_totals = {}
+        if endpoint_members:
+            for m in endpoint_members:
+                vid = m.get("viewer_id")
+                fans = m.get("daily_fans", [])
+                if vid and fans and len(fans) > 0 and fans[0] > 0:
+                    endpoint_totals[str(vid)] = fans[0]
+            logger.info(f"Endpoint correction available for {len(endpoint_totals)} members")
         
-        # Parse each member and convert lifetime fans to monthly fans
         for member in members:
             viewer_id = member.get("viewer_id")
             trainer_name = member.get("trainer_name")
@@ -145,19 +185,36 @@ class UmaMoeAPIScraper(BaseScraper):
                     break
             
             # Convert lifetime cumulative fans to monthly cumulative fans
-            # Formula: monthly_fans = lifetime_fans - starting_lifetime_fans
             monthly_fans = []
             for day_idx in range(current_day):
                 lifetime_total = lifetime_fans[day_idx]
                 
                 if lifetime_total == 0:
-                    # Member hasn't joined yet
                     fans_this_month = 0
                 else:
-                    # Fans earned this month = current lifetime - starting lifetime
                     fans_this_month = lifetime_total - starting_lifetime_fans
                 
                 monthly_fans.append(fans_this_month)
+            
+            # Day 1 endpoint correction: replace the final monthly total with the
+            # value derived from current month's index 0. This captures fans earned
+            # between the previous month's last snapshot and the actual reset.
+            if endpoint_totals and viewer_id_str in endpoint_totals:
+                endpoint_lifetime = endpoint_totals[viewer_id_str]
+                if endpoint_lifetime >= starting_lifetime_fans:
+                    corrected_monthly = endpoint_lifetime - starting_lifetime_fans
+                    if corrected_monthly > monthly_fans[-1]:
+                        logger.debug(
+                            f"Endpoint correction for {trainer_name}: "
+                            f"{monthly_fans[-1]:,} → {corrected_monthly:,} "
+                            f"(+{corrected_monthly - monthly_fans[-1]:,} recovered)"
+                        )
+                        monthly_fans[-1] = corrected_monthly
+                else:
+                    logger.warning(
+                        f"Endpoint correction skipped for {trainer_name}: "
+                        f"endpoint lifetime ({endpoint_lifetime:,}) < starting ({starting_lifetime_fans:,})"
+                    )
             
             parsed_data[viewer_id_str] = {
                 "name": trainer_name,

@@ -106,6 +106,18 @@ class Database:
             END IF;
         END $$;
         
+        -- Migration: Add guild_id column if it doesn't exist
+        DO $$ 
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='clubs' AND column_name='guild_id'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN guild_id BIGINT;
+                RAISE NOTICE 'Added guild_id column to clubs';
+            END IF;
+        END $$;
+        
         -- Members table
         CREATE TABLE IF NOT EXISTS members (
             member_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

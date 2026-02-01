@@ -41,7 +41,7 @@ class AdminCommands(commands.Cog):
             return []
     
     async def _update_monthly_info_board(self, club_obj: Club, current_date):
-        """Helper method to update the monthly info board"""
+        """Helper to auto-update the monthly info board after quota changes"""
         try:
             channel_id, message_id = await club_obj.get_monthly_info_location()
             if channel_id and message_id:
@@ -75,6 +75,10 @@ class AdminCommands(commands.Cog):
             club_obj = await Club.get_by_name(club)
             if not club_obj:
                 await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+            
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
             
             if amount < 0:
@@ -138,6 +142,7 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(embed=embed)
             logger.info(f"Quota set to {amount:,} for {club} by {set_by} effective {current_date}")
             
+            # Auto-update monthly info board
             updated = await self._update_monthly_info_board(club_obj, current_date)
             if updated:
                 await interaction.followup.send("✅ Monthly info board auto-updated!", ephemeral=True)
@@ -156,6 +161,10 @@ class AdminCommands(commands.Cog):
             club_obj = await Club.get_by_name(club)
             if not club_obj:
                 await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+            
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
             
             channel_id, message_id = await club_obj.get_monthly_info_location()
@@ -190,16 +199,15 @@ class AdminCommands(commands.Cog):
             await message.edit(embed=embed)
             
             await interaction.followup.send(f"✅ Monthly info board updated for {club}!")
-            logger.info(f"Updated monthly info board for {club_obj.club_name}")
             
         except Exception as e:
             logger.error(f"Error in update_monthly_info: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
-    @app_commands.command(name="quota_history", description="View quota history for current month")
+    @app_commands.command(name="quota_history", description="View quota changes this month")
     @app_commands.checks.has_permissions(administrator=True)
     async def quota_history(self, interaction: discord.Interaction, club: str):
-        """View all quota changes for the current month"""
+        """View quota change history for the current month"""
         await interaction.response.defer()
         
         try:
@@ -208,15 +216,21 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Club '{club}' not found")
                 return
             
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+            
             club_tz = pytz.timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
             
-            quota_reqs = await QuotaRequirement.get_all_current_month(club_obj.club_id, current_date)
+            quota_reqs = await QuotaRequirement.get_for_month(
+                club_obj.club_id, current_date.year, current_date.month
+            )
             
             if not quota_reqs:
                 embed = discord.Embed(
-                    title=f"📊 Quota History - {club}",
+                    title=f"📊 Quota History - {club} - Current Month",
                     description=f"No quota changes this month.\n"
                                 f"Using default: **{club_obj.daily_quota:,} fans/day**",
                     color=discord.Color.blue(),
@@ -264,6 +278,10 @@ class AdminCommands(commands.Cog):
             club_obj = await Club.get_by_name(club)
             if not club_obj:
                 await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+            
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
             
             club_tz = pytz.timezone(club_obj.timezone)
@@ -335,16 +353,19 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send("❌ Failed to scrape data after all retries")
                 return
             
+            # Process scraped data
             await interaction.followup.send("⚙️ Processing data...")
             new_members, updated_members = await self.quota_calculator.process_scraped_data(
                 club_obj.club_id, scraped_data, current_date, current_day
             )
             
+            # Bomb management
             newly_activated = await self.bomb_manager.check_and_activate_bombs(club_obj, current_date)
             await self.bomb_manager.update_bomb_countdowns(club_obj.club_id, current_date)
             deactivated = await self.bomb_manager.check_and_deactivate_bombs(club_obj.club_id, current_date)
             members_to_kick = await self.bomb_manager.check_expired_bombs(club_obj.club_id)
             
+            # Generate and send reports
             status_summary = await self.quota_calculator.get_member_status_summary(club_obj.club_id, current_date)
             bombs_data = await self.bomb_manager.get_active_bombs_with_members(club_obj.club_id)
             
@@ -372,6 +393,9 @@ class AdminCommands(commands.Cog):
                 kick_alert = self.report_generator.create_kick_alert(club_obj.club_name, members_to_kick)
                 await alert_channel.send(embed=kick_alert)
             
+            # Auto-update monthly info board
+            await self._update_monthly_info_board(club_obj, current_date)
+            
             if deactivated:
                 await interaction.followup.send(
                     f"✅ Check complete for {club}: {updated_members} members updated, {new_members} new members, {len(deactivated)} bombs defused"
@@ -396,6 +420,10 @@ class AdminCommands(commands.Cog):
             club_obj = await Club.get_by_name(club)
             if not club_obj:
                 await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+            
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
             
             join_date_obj = datetime.strptime(join_date, "%Y-%m-%d").date()
@@ -433,6 +461,10 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Club '{club}' not found")
                 return
             
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+            
             member = await Member.get_by_name(club_obj.club_id, trainer_name)
             
             if not member:
@@ -465,16 +497,20 @@ class AdminCommands(commands.Cog):
             logger.error(f"Error in deactivate_member: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
-    @app_commands.command(name="activate_member", description="Manually reactivate a deactivated member")
+    @app_commands.command(name="activate_member", description="Reactivate a member")
     @app_commands.checks.has_permissions(administrator=True)
     async def activate_member(self, interaction: discord.Interaction, trainer_name: str, club: str):
-        """Manually reactivate a member"""
+        """Reactivate a deactivated member"""
         await interaction.response.defer()
         
         try:
             club_obj = await Club.get_by_name(club)
             if not club_obj:
                 await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+            
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
             
             member = await Member.get_by_name(club_obj.club_id, trainer_name)
@@ -513,6 +549,10 @@ class AdminCommands(commands.Cog):
             club_obj = await Club.get_by_name(club)
             if not club_obj:
                 await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+            
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
             
             bombs_data = await self.bomb_manager.get_active_bombs_with_members(club_obj.club_id)

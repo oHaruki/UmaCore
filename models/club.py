@@ -19,6 +19,7 @@ class Club:
     club_name: str
     scrape_url: str
     circle_id: Optional[str]
+    guild_id: Optional[int]
     daily_quota: int
     timezone: str
     scrape_time: time
@@ -34,6 +35,7 @@ class Club:
     
     @classmethod
     async def create(cls, club_name: str, scrape_url: str, circle_id: Optional[str] = None,
+                     guild_id: Optional[int] = None,
                      daily_quota: int = 1000000, timezone: str = 'Europe/Amsterdam', 
                      scrape_time: time = None, bomb_trigger_days: int = 3, 
                      bomb_countdown_days: int = 7) -> 'Club':
@@ -42,24 +44,24 @@ class Club:
             scrape_time = time(16, 0)
         
         query = """
-            INSERT INTO clubs (club_name, scrape_url, circle_id, daily_quota, timezone, scrape_time, 
+            INSERT INTO clubs (club_name, scrape_url, circle_id, guild_id, daily_quota, timezone, scrape_time, 
                              bomb_trigger_days, bomb_countdown_days)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING club_id, club_name, scrape_url, circle_id, daily_quota, timezone, scrape_time,
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, timezone, scrape_time,
                      bomb_trigger_days, bomb_countdown_days, is_active, report_channel_id,
                      alert_channel_id, monthly_info_channel_id, monthly_info_message_id,
                      created_at, updated_at
         """
-        row = await db.fetchrow(query, club_name, scrape_url, circle_id, daily_quota, timezone, 
+        row = await db.fetchrow(query, club_name, scrape_url, circle_id, guild_id, daily_quota, timezone, 
                                 scrape_time, bomb_trigger_days, bomb_countdown_days)
-        logger.info(f"Created new club: {club_name} (circle_id: {circle_id})")
+        logger.info(f"Created new club: {club_name} (circle_id: {circle_id}, guild_id: {guild_id})")
         return cls(**dict(row))
     
     @classmethod
     async def get_by_id(cls, club_id: UUID) -> Optional['Club']:
         """Get club by ID"""
         query = """
-            SELECT club_id, club_name, scrape_url, circle_id, daily_quota, timezone, scrape_time,
+            SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, timezone, scrape_time,
                    bomb_trigger_days, bomb_countdown_days, is_active, report_channel_id,
                    alert_channel_id, monthly_info_channel_id, monthly_info_message_id,
                    created_at, updated_at
@@ -75,7 +77,7 @@ class Club:
     async def get_by_name(cls, club_name: str) -> Optional['Club']:
         """Get club by name"""
         query = """
-            SELECT club_id, club_name, scrape_url, circle_id, daily_quota, timezone, scrape_time,
+            SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, timezone, scrape_time,
                    bomb_trigger_days, bomb_countdown_days, is_active, report_channel_id,
                    alert_channel_id, monthly_info_channel_id, monthly_info_message_id,
                    created_at, updated_at
@@ -91,7 +93,7 @@ class Club:
     async def get_all_active(cls) -> List['Club']:
         """Get all active clubs"""
         query = """
-            SELECT club_id, club_name, scrape_url, circle_id, daily_quota, timezone, scrape_time,
+            SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, timezone, scrape_time,
                    bomb_trigger_days, bomb_countdown_days, is_active, report_channel_id,
                    alert_channel_id, monthly_info_channel_id, monthly_info_message_id,
                    created_at, updated_at
@@ -106,7 +108,7 @@ class Club:
     async def get_all(cls) -> List['Club']:
         """Get all clubs (active and inactive)"""
         query = """
-            SELECT club_id, club_name, scrape_url, circle_id, daily_quota, timezone, scrape_time,
+            SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, timezone, scrape_time,
                    bomb_trigger_days, bomb_countdown_days, is_active, report_channel_id,
                    alert_channel_id, monthly_info_channel_id, monthly_info_message_id,
                    created_at, updated_at
@@ -114,6 +116,21 @@ class Club:
             ORDER BY club_name
         """
         rows = await db.fetch(query)
+        return [cls(**dict(row)) for row in rows]
+    
+    @classmethod
+    async def get_all_for_guild(cls, guild_id: int) -> List['Club']:
+        """Get clubs registered to a specific guild, plus any pre-migration clubs (guild_id IS NULL)"""
+        query = """
+            SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, timezone, scrape_time,
+                   bomb_trigger_days, bomb_countdown_days, is_active, report_channel_id,
+                   alert_channel_id, monthly_info_channel_id, monthly_info_message_id,
+                   created_at, updated_at
+            FROM clubs
+            WHERE guild_id = $1 OR guild_id IS NULL
+            ORDER BY club_name
+        """
+        rows = await db.fetch(query, guild_id)
         return [cls(**dict(row)) for row in rows]
     
     @classmethod
@@ -138,6 +155,7 @@ class Club:
         if not updates:
             return
         
+        # Convert scrape_time string to time object if needed
         if 'scrape_time' in updates and isinstance(updates['scrape_time'], str):
             from datetime import time as time_class
             hour, minute = map(int, updates['scrape_time'].split(':'))
@@ -160,16 +178,36 @@ class Club:
     
     async def set_channels(self, report_channel_id: Optional[int] = None, 
                           alert_channel_id: Optional[int] = None):
-        """Set report and alert channels"""
-        query = """
+        """
+        Update one or both channel settings.
+        Only modifies columns for arguments that are explicitly passed as non-None,
+        leaving the other column untouched.
+        """
+        updates = {}
+        if report_channel_id is not None:
+            updates['report_channel_id'] = report_channel_id
+        if alert_channel_id is not None:
+            updates['alert_channel_id'] = alert_channel_id
+        
+        if not updates:
+            return
+        
+        set_parts = []
+        values = [self.club_id]
+        for i, (col, val) in enumerate(updates.items(), start=2):
+            set_parts.append(f"{col} = ${i}")
+            values.append(val)
+        
+        query = f"""
             UPDATE clubs
-            SET report_channel_id = $2, alert_channel_id = $3, updated_at = NOW()
+            SET {', '.join(set_parts)}, updated_at = NOW()
             WHERE club_id = $1
         """
-        await db.execute(query, self.club_id, report_channel_id, alert_channel_id)
-        self.report_channel_id = report_channel_id
-        self.alert_channel_id = alert_channel_id
-        logger.info(f"Updated channels for {self.club_name}")
+        await db.execute(query, *values)
+        
+        for k, v in updates.items():
+            setattr(self, k, v)
+        logger.info(f"Updated channels for {self.club_name}: {updates}")
     
     async def set_monthly_info_location(self, channel_id: int, message_id: int):
         """Set the monthly info message location for this club"""
@@ -208,6 +246,16 @@ class Club:
         await db.execute(query, self.club_id)
         self.is_active = True
         logger.info(f"Activated club: {self.club_name}")
+    
+    def belongs_to_guild(self, guild_id: int) -> bool:
+        """
+        Check whether this club is accessible from a given guild.
+        Clubs without guild_id (created before the column existed) are
+        treated as accessible until the backfill populates their value.
+        """
+        if self.guild_id is None:
+            return True
+        return self.guild_id == guild_id
     
     def get_scrape_time_str(self) -> str:
         """Get scrape time as HH:MM string"""
