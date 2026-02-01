@@ -1,11 +1,11 @@
 """
-Uma.moe API scraper for fast, reliable club data fetching
+Uma.moe API scraper for club data fetching
 """
 from typing import Dict, Optional, List
 import logging
 import calendar
 import aiohttp
-from datetime import datetime
+from datetime import datetime, date
 
 from scrapers.base_scraper import BaseScraper
 
@@ -22,6 +22,9 @@ class UmaMoeAPIScraper(BaseScraper):
         # Track which year/month was actually fetched (differs from now() on Day 1)
         self._fetched_year = None
         self._fetched_month = None
+        # Set to a date object when the scraper fell back to the previous month;
+        # None when the fetched data matches the current calendar date.
+        self._data_date: Optional[date] = None
         super().__init__(self.base_url)
     
     async def _fetch_month(self, session: aiohttp.ClientSession, year: int, month: int) -> Optional[dict]:
@@ -64,7 +67,11 @@ class UmaMoeAPIScraper(BaseScraper):
                     month = 12
                 else:
                     month -= 1
-                logger.info(f"Day 1 detected: fetching previous month ({year}-{month:02d}) as primary source")
+                # Record the actual date the data belongs to so callers can use it
+                # instead of today's date for reports, quota calculations, etc.
+                last_day = calendar.monthrange(year, month)[1]
+                self._data_date = date(year, month, last_day)
+                logger.info(f"Day 1 detected: fetching previous month ({year}-{month:02d}) as primary source, data date: {self._data_date}")
             
             self._fetched_year = year
             self._fetched_month = month
@@ -234,3 +241,13 @@ class UmaMoeAPIScraper(BaseScraper):
     def get_current_day(self) -> int:
         """Get the current day number"""
         return self.current_day_count
+    
+    def get_data_date(self) -> Optional[date]:
+        """
+        Returns the date the scraped data belongs to when the previous-month
+        fallback was used (Day 1), or None when the data matches today.
+        
+        Callers should use this to override current_date for reports and
+        quota calculations instead of blindly using datetime.now().
+        """
+        return self._data_date

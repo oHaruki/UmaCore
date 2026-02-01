@@ -353,6 +353,15 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send("❌ Failed to scrape data after all retries")
                 return
             
+            # The scraper may have fallen back to the previous month (e.g. on
+            # Day 1 when the current month isn't populated yet).  Use the date
+            # the data actually belongs to so reports and quota calculations
+            # reference the correct day.
+            data_date = scraper.get_data_date()
+            if data_date:
+                current_date = data_date
+                logger.info(f"Using scraper's data date: {current_date} (previous-month fallback)")
+            
             # Process scraped data
             await interaction.followup.send("⚙️ Processing data...")
             new_members, updated_members = await self.quota_calculator.process_scraped_data(
