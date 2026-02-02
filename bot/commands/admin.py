@@ -224,7 +224,7 @@ class AdminCommands(commands.Cog):
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
             
-            quota_reqs = await QuotaRequirement.get_for_month(
+            quota_reqs = await QuotaRequirement.get_all_for_month(
                 club_obj.club_id, current_date.year, current_date.month
             )
             
