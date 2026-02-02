@@ -124,10 +124,12 @@ class UmaMoeAPIScraper(BaseScraper):
         Uma.moe returns LIFETIME cumulative fans. Converts to monthly by
         subtracting each member's starting lifetime fans (fans at join).
         
+        Uma.moe updates around 15:10 UTC with yesterday's data, so:
+        - Calendar Day 2 → Use Day 1 data
+        - Calendar Day 3 → Use Day 2 data
+        
         When endpoint_members is provided (Day 1 only), the final fan count
         per member is corrected using the current month's index 0 value.
-        This is the snapshot closest to the true month boundary and includes
-        fans earned after the previous month's last daily snapshot.
         
         Args:
             members: List of member dicts from the primary (previous) month
@@ -138,14 +140,20 @@ class UmaMoeAPIScraper(BaseScraper):
         """
         parsed_data = {}
         
-        # On Day 1 we fetched the previous month, so current_day is that month's last day
         now = datetime.now()
+        
         if now.day == 1:
+            # Day 1: Fetched previous month, use last day of that month
             current_day = calendar.monthrange(self._fetched_year, self._fetched_month)[1]
             logger.info(f"Day 1 fallback: using day {current_day} (last day of {self._fetched_year}-{self._fetched_month:02d})")
         else:
+            # Day 2+: Competition is one day behind calendar
+            # Use calendar day for array indexing (to read latest data)
+            # But report as yesterday for quota calculations (actual competition day)
             current_day = now.day
-            logger.info(f"Current day: {current_day}")
+            self._data_date = date(now.year, now.month, now.day - 1)
+            logger.info(f"Calendar day {now.day} → reading index {current_day-1}, reporting as Day {now.day-1} (data_date: {self._data_date})")
+        
         self.current_day_count = current_day
         
         # Build endpoint lookup: viewer_id -> lifetime fans at current month index 0.
