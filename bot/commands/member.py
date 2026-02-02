@@ -19,9 +19,9 @@ class MemberCommands(commands.Cog):
         self.bot = bot
     
     async def club_autocomplete(self, interaction: discord.Interaction, current: str):
-        """Autocomplete for club names"""
+        """Autocomplete for club names visible in this guild"""
         try:
-            club_names = await Club.get_all_names()
+            club_names = await Club.get_names_for_guild(interaction.guild_id)
             return [
                 app_commands.Choice(name=name, value=name)
                 for name in club_names
@@ -420,10 +420,10 @@ class MemberCommands(commands.Cog):
         # Statistics
         current_date = date_class.today()
         
-        # Calculate streak and get history (we'll use this for days_active too)
+        # Calculate streak and get history
         history_records = await QuotaHistory.get_last_n_days(member.member_id, 100)
         
-        # Use actual number of days with data (more accurate than calendar calculation)
+        # Use actual number of days with data
         days_active = len(history_records) if history_records else 1
         avg_daily = latest_history.cumulative_fans / max(1, days_active) if days_active > 0 else 0
         

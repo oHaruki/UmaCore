@@ -22,9 +22,9 @@ class SettingsCommands(commands.Cog):
         self.monthly_info_service = MonthlyInfoService()
     
     async def club_autocomplete(self, interaction: discord.Interaction, current: str):
-        """Autocomplete for club names"""
+        """Autocomplete for club names visible in this guild"""
         try:
-            club_names = await Club.get_all_names()
+            club_names = await Club.get_names_for_guild(interaction.guild_id)
             return [
                 app_commands.Choice(name=name, value=name)
                 for name in club_names
@@ -44,6 +44,10 @@ class SettingsCommands(commands.Cog):
             club_obj = await Club.get_by_name(club)
             if not club_obj:
                 await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+            
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
             
             await club_obj.set_channels(report_channel_id=channel.id)
@@ -74,6 +78,10 @@ class SettingsCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Club '{club}' not found")
                 return
             
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+            
             await club_obj.set_channels(alert_channel_id=channel.id)
             
             embed = discord.Embed(
@@ -100,6 +108,10 @@ class SettingsCommands(commands.Cog):
             club_obj = await Club.get_by_name(club)
             if not club_obj:
                 await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+            
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
             
             embed = discord.Embed(
@@ -195,25 +207,26 @@ class SettingsCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Club '{club}' not found")
                 return
             
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+            
             # Use current channel if none specified
             target_channel = channel or interaction.channel
             
-            # Get current date in club's timezone
             club_tz = pytz.timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
             
-            # Generate embed
             embed = await self.monthly_info_service.create_monthly_info_embed(
                 club_obj.club_id, 
                 club_obj.club_name, 
                 current_date
             )
             
-            # Post message
             message = await target_channel.send(embed=embed)
             
-            # Save the message location to database
+            # Save the message location so it can be auto-updated later
             await club_obj.set_monthly_info_location(target_channel.id, message.id)
             
             embed_response = discord.Embed(

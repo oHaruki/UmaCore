@@ -1,75 +1,104 @@
 """
-Club management commands for administrators
+Club management commands (add, remove, edit, list)
 """
 import discord
 from discord import app_commands
 from discord.ext import commands
+from datetime import datetime, time
 import logging
-from datetime import time
+import pytz
+import asyncio
 
 from models import Club
-from config.settings import TIMEZONE
 
 logger = logging.getLogger(__name__)
 
+# Bot author ID for pre-migration club deletion
+AUTHOR_ID = 139769063948681217
+
 
 class ClubManagementCommands(commands.Cog):
-    """Commands for managing multiple clubs"""
+    """Commands for managing club registrations"""
     
     def __init__(self, bot):
         self.bot = bot
     
-    @app_commands.command(name="add_club", description="Register a new club (Admin only)")
+    async def club_autocomplete(self, interaction: discord.Interaction, current: str):
+        """Autocomplete for club names visible in this guild"""
+        try:
+            club_names = await Club.get_names_for_guild(interaction.guild_id)
+            return [
+                app_commands.Choice(name=name, value=name)
+                for name in club_names
+                if current.lower() in name.lower()
+            ][:25]
+        except Exception as e:
+            logger.error(f"Error in club autocomplete: {e}")
+            return []
+    
+    @app_commands.command(name="add_club", description="Register a new club to track (Admin only)")
     @app_commands.checks.has_permissions(administrator=True)
-    async def add_club(self, interaction: discord.Interaction, 
+    async def add_club(self, interaction: discord.Interaction,
                        club_name: str,
-                       circle_id: str,
+                       scrape_url: str,
+                       circle_id: str = None,
                        daily_quota: int = 1000000,
-                       scrape_time: str = "16:00",
-                       timezone: str = "Europe/Amsterdam"):
-        """
-        Add a new club to track
-        
-        Args:
-            club_name: Display name for the club (e.g., "Horsecore")
-            circle_id: ChronoGenesis circle_id from URL
-            daily_quota: Default daily fan quota (default: 1,000,000)
-            scrape_time: Time to scrape in HH:MM format (default: 16:00)
-            timezone: Timezone for schedule (default: Europe/Amsterdam)
-        """
+                       timezone: str = "Europe/Amsterdam",
+                       scrape_time: str = "16:00"):
+        """Register a new club"""
         await interaction.response.defer()
         
         try:
-            # Check if club already exists
+            # Check for duplicate
             existing = await Club.get_by_name(club_name)
             if existing:
                 await interaction.followup.send(f"❌ Club '{club_name}' already exists")
                 return
             
-            # Build scrape URL
-            scrape_url = f"https://chronogenesis.net/club_profile?circle_id={circle_id}"
+            # Validate circle_id format if provided
+            if circle_id is not None and circle_id != "" and not circle_id.isdigit():
+                await interaction.followup.send(
+                    f"❌ Invalid Circle ID format: `{circle_id}`\n\n"
+                    f"The circle_id must be a **numeric ID** from Uma.moe.\n\n"
+                    f"**How to find it:**\n"
+                    f"1. Go to https://uma.moe/circles/\n"
+                    f"2. Search for **{club_name}**\n"
+                    f"3. Click on it and copy the **number** from the URL\n"
+                    f"   Example: `https://uma.moe/circles/860280110` → use `860280110`"
+                )
+                return
             
-            # Validate scrape time format
+            # Validate timezone
+            try:
+                pytz.timezone(timezone)
+            except pytz.exceptions.UnknownTimeZoneError:
+                await interaction.followup.send(f"❌ Invalid timezone: `{timezone}`")
+                return
+            
+            # Parse scrape time
             try:
                 hour, minute = map(int, scrape_time.split(':'))
                 if not (0 <= hour < 24 and 0 <= minute < 60):
                     raise ValueError
-                # Convert to time object
                 scrape_time_obj = time(hour=hour, minute=minute)
-            except:
-                await interaction.followup.send("❌ Invalid time format. Use HH:MM (e.g., 16:00)")
+            except (ValueError, AttributeError):
+                await interaction.followup.send("❌ Invalid scrape time format. Use HH:MM (e.g., 16:00)")
                 return
             
-            # Create club
+            # Normalise circle_id: treat empty string as None
+            resolved_circle_id = circle_id if circle_id and circle_id != "" else None
+            
             club = await Club.create(
                 club_name=club_name,
                 scrape_url=scrape_url,
+                circle_id=resolved_circle_id,
+                guild_id=interaction.guild_id,
                 daily_quota=daily_quota,
                 timezone=timezone,
-                scrape_time=scrape_time_obj  # Pass time object, not string
+                scrape_time=scrape_time_obj
             )
             
-            # Format quota
+            # Format quota for display
             if daily_quota >= 1_000_000:
                 quota_formatted = f"{daily_quota / 1_000_000:.1f}M"
             elif daily_quota >= 1_000:
@@ -87,7 +116,7 @@ class ClubManagementCommands(commands.Cog):
             embed.add_field(
                 name="Club Details",
                 value=f"**Name:** {club_name}\n"
-                      f"**Circle ID:** {circle_id}\n"
+                      f"**Circle ID:** {resolved_circle_id or 'Not set'}\n"
                       f"**URL:** {scrape_url}",
                 inline=False
             )
@@ -100,6 +129,21 @@ class ClubManagementCommands(commands.Cog):
                 inline=False
             )
             
+            # Show scraper info based on whether circle_id was provided
+            if resolved_circle_id:
+                embed.add_field(
+                    name="🚀 Scraper",
+                    value="Using Uma.moe API (fast path)",
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="⚠️ Scraper",
+                    value="Using ChronoGenesis scraper.\n"
+                          "Add circle_id later with `/edit_club` for better performance.",
+                    inline=False
+                )
+            
             embed.add_field(
                 name="Next Steps",
                 value=f"1. Set channels: `/set_report_channel club:{club_name}` and `/set_alert_channel club:{club_name}`\n"
@@ -111,16 +155,16 @@ class ClubManagementCommands(commands.Cog):
             embed.set_footer(text=f"Added by {interaction.user}")
             
             await interaction.followup.send(embed=embed)
-            logger.info(f"Club '{club_name}' added by {interaction.user}")
+            logger.info(f"Club '{club_name}' added by {interaction.user} (circle_id: {resolved_circle_id}, guild_id: {interaction.guild_id})")
             
         except Exception as e:
             logger.error(f"Error in add_club: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
-    @app_commands.command(name="remove_club", description="Deactivate a club (Admin only)")
+    @app_commands.command(name="remove_club", description="Permanently delete a club (Admin only)")
     @app_commands.checks.has_permissions(administrator=True)
     async def remove_club(self, interaction: discord.Interaction, club: str):
-        """Deactivate a club (data is preserved)"""
+        """Permanently delete a club and all associated data"""
         await interaction.response.defer()
         
         try:
@@ -130,31 +174,81 @@ class ClubManagementCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Club '{club}' not found")
                 return
             
-            if not club_obj.is_active:
-                await interaction.followup.send(f"ℹ️ Club '{club}' is already deactivated")
-                return
+            # Pre-migration clubs (guild_id IS NULL) can only be deleted by bot author
+            if club_obj.guild_id is None:
+                if interaction.user.id != AUTHOR_ID:
+                    await interaction.followup.send(
+                        f"❌ Cannot delete **{club}**\n\n"
+                        f"This club was created before multi-server support and can only be deleted by the bot author."
+                    )
+                    return
+            else:
+                # Regular clubs must belong to this guild
+                if not club_obj.belongs_to_guild(interaction.guild_id):
+                    await interaction.followup.send(
+                        f"❌ Club '{club}' is not registered in this server."
+                    )
+                    return
             
-            await club_obj.deactivate()
-            
-            embed = discord.Embed(
-                title="✅ Club Deactivated",
-                description=f"**{club}** has been deactivated",
-                color=discord.Color.orange(),
+            # Create warning embed
+            warning_embed = discord.Embed(
+                title="⚠️ Confirm Club Deletion",
+                description=f"You are about to **permanently delete** the club: **{club}**",
+                color=discord.Color.red(),
                 timestamp=discord.utils.utcnow()
             )
             
-            embed.add_field(
-                name="ℹ️ What this means",
-                value="• Daily scraping stopped\n"
-                      "• Member data preserved\n"
-                      "• Can be reactivated with `/activate_club`",
+            warning_embed.add_field(
+                name="🗑️ What will be deleted",
+                value="• All member records\n"
+                      "• All quota history\n"
+                      "• All active bombs\n"
+                      "• All quota requirements\n"
+                      "• All user links\n"
+                      "• All settings",
                 inline=False
             )
             
-            embed.set_footer(text=f"Deactivated by {interaction.user}")
+            warning_embed.add_field(
+                name="⚠️ This action is irreversible",
+                value="**This cannot be undone.** All data will be permanently lost.\n\n"
+                      f"Reply with `confirm delete {club}` within 30 seconds to proceed.",
+                inline=False
+            )
+            
+            warning_embed.set_footer(text=f"Requested by {interaction.user}")
+            
+            await interaction.followup.send(embed=warning_embed)
+            
+            # Wait for confirmation
+            def check(m):
+                return (m.author.id == interaction.user.id and 
+                       m.channel.id == interaction.channel.id and
+                       m.content.strip().lower() == f"confirm delete {club.lower()}")
+            
+            try:
+                confirmation = await self.bot.wait_for('message', check=check, timeout=30.0)
+            except asyncio.TimeoutError:
+                await interaction.followup.send(
+                    f"⏰ Deletion cancelled - confirmation timed out for **{club}**"
+                )
+                return
+            
+            # Delete the club
+            await club_obj.delete()
+            
+            # Success embed
+            embed = discord.Embed(
+                title="✅ Club Deleted",
+                description=f"**{club}** and all associated data have been permanently deleted.",
+                color=discord.Color.dark_gray(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            embed.set_footer(text=f"Deleted by {interaction.user}")
             
             await interaction.followup.send(embed=embed)
-            logger.info(f"Club '{club}' deactivated by {interaction.user}")
+            logger.warning(f"Club '{club}' permanently deleted by {interaction.user} (ID: {interaction.user.id})")
             
         except Exception as e:
             logger.error(f"Error in remove_club: {e}", exc_info=True)
@@ -171,6 +265,10 @@ class ClubManagementCommands(commands.Cog):
             
             if not club_obj:
                 await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+            
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
             
             if club_obj.is_active:
@@ -203,14 +301,15 @@ class ClubManagementCommands(commands.Cog):
     
     @app_commands.command(name="list_clubs", description="View all registered clubs")
     async def list_clubs(self, interaction: discord.Interaction):
-        """List all clubs"""
+        """List clubs registered in this server"""
         await interaction.response.defer()
         
         try:
-            clubs = await Club.get_all()
+            # Only show clubs belonging to the current guild (plus any pre-migration clubs)
+            clubs = await Club.get_all_for_guild(interaction.guild_id)
             
             if not clubs:
-                await interaction.followup.send("No clubs registered yet. Use `/add_club` to add one.")
+                await interaction.followup.send("No clubs registered in this server. Use `/add_club` to add one.")
                 return
             
             embed = discord.Embed(
@@ -231,11 +330,20 @@ class ClubManagementCommands(commands.Cog):
                 else:
                     quota_formatted = str(club.daily_quota)
                 
+                # Scraper type indicator
+                if club.circle_id:
+                    if club.is_circle_id_valid():
+                        scraper_info = "\n**Scraper:** Uma.moe API 🚀"
+                    else:
+                        scraper_info = "\n**Scraper:** ⚠️ Invalid circle_id"
+                else:
+                    scraper_info = "\n**Scraper:** ChronoGenesis"
+                
                 embed.add_field(
                     name=f"{status} {club.club_name}",
                     value=f"**Quota:** {quota_formatted} fans/day\n"
-                          f"**Schedule:** {club.get_scrape_time_str()} {club.timezone}\n"
-                          f"**URL:** [ChronoGenesis]({club.scrape_url})",
+                          f"**Schedule:** {club.get_scrape_time_str()} {club.timezone}"
+                          f"{scraper_info}",
                     inline=False
                 )
             
@@ -249,6 +357,7 @@ class ClubManagementCommands(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def edit_club(self, interaction: discord.Interaction, 
                        club: str,
+                       circle_id: str = None,
                        daily_quota: int = None,
                        scrape_time: str = None,
                        timezone: str = None,
@@ -264,20 +373,44 @@ class ClubManagementCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Club '{club}' not found")
                 return
             
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+            
+            # Validate circle_id if being updated
+            if circle_id is not None and circle_id != "" and not circle_id.isdigit():
+                await interaction.followup.send(
+                    f"❌ Invalid Circle ID format: `{circle_id}`\n\n"
+                    f"The circle_id must be a **numeric ID** from Uma.moe.\n\n"
+                    f"**How to find it:**\n"
+                    f"1. Go to https://uma.moe/circles/\n"
+                    f"2. Search for **{club}**\n"
+                    f"3. Click on it and copy the **number** from the URL\n"
+                    f"   Example: `https://uma.moe/circles/860280110` → use `860280110`\n\n"
+                    f"To remove circle_id (use ChronoGenesis), use an empty string."
+                )
+                return
+            
             updates = {}
+            if circle_id is not None:
+                updates['circle_id'] = circle_id if circle_id != "" else None
             if daily_quota is not None:
                 updates['daily_quota'] = daily_quota
             if scrape_time is not None:
-                # Validate and convert to time object
                 try:
                     hour, minute = map(int, scrape_time.split(':'))
                     if not (0 <= hour < 24 and 0 <= minute < 60):
                         raise ValueError
                     updates['scrape_time'] = time(hour=hour, minute=minute)
-                except:
+                except (ValueError, AttributeError):
                     await interaction.followup.send("❌ Invalid time format. Use HH:MM (e.g., 16:00)")
                     return
             if timezone is not None:
+                try:
+                    pytz.timezone(timezone)
+                except pytz.exceptions.UnknownTimeZoneError:
+                    await interaction.followup.send(f"❌ Invalid timezone: `{timezone}`")
+                    return
                 updates['timezone'] = timezone
             if bomb_trigger_days is not None:
                 updates['bomb_trigger_days'] = bomb_trigger_days
@@ -299,7 +432,12 @@ class ClubManagementCommands(commands.Cog):
             
             changes_text = []
             for key, value in updates.items():
-                if key == 'daily_quota':
+                if key == 'circle_id':
+                    if value:
+                        changes_text.append(f"**Circle ID:** {value} (Uma.moe API enabled 🚀)")
+                    else:
+                        changes_text.append(f"**Circle ID:** Removed (will use ChronoGenesis)")
+                elif key == 'daily_quota':
                     if value >= 1_000_000:
                         formatted = f"{value / 1_000_000:.1f}M"
                     elif value >= 1_000:
@@ -332,19 +470,6 @@ class ClubManagementCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
     # Autocomplete for club parameter
-    async def club_autocomplete(self, interaction: discord.Interaction, current: str):
-        """Autocomplete for club names"""
-        try:
-            club_names = await Club.get_all_names()
-            return [
-                app_commands.Choice(name=name, value=name)
-                for name in club_names
-                if current.lower() in name.lower()
-            ][:25]
-        except:
-            return []
-    
-    # Add autocomplete to commands
     remove_club.autocomplete('club')(club_autocomplete)
     activate_club.autocomplete('club')(club_autocomplete)
     edit_club.autocomplete('club')(club_autocomplete)

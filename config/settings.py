@@ -14,10 +14,12 @@ CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Scraping Configuration
-SCRAPE_URL = "https://chronogenesis.net/club_profile?circle_id=Horsecore"
 SCRAPE_TIMEOUT = 90  # seconds
 SCRAPE_RETRY_ATTEMPTS = 3
 SCRAPE_RETRY_DELAY = 1  # seconds
+
+# Uma.moe API Configuration
+USE_UMAMOE_API = os.getenv("USE_UMAMOE_API", "true").lower() == "true"
 
 # Timezone Configuration
 TIMEZONE = "Europe/Amsterdam"  # CEST
