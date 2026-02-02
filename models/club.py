@@ -259,6 +259,15 @@ class Club:
         self.is_active = True
         logger.info(f"Activated club: {self.club_name}")
     
+    async def delete(self):
+        """
+        Permanently delete club and all associated data.
+        Cascades to members, quota_history, bombs, quota_requirements, scrape_locks.
+        """
+        query = "DELETE FROM clubs WHERE club_id = $1"
+        await db.execute(query, self.club_id)
+        logger.warning(f"Permanently deleted club: {self.club_name} (club_id: {self.club_id})")
+    
     def belongs_to_guild(self, guild_id: int) -> bool:
         """
         Check whether this club is accessible from a given guild.
