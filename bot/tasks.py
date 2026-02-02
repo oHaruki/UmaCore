@@ -174,11 +174,16 @@ class BotTasks:
                     error_msg = (
                         f"Failed to scrape data after {max_retries} attempts.\n\n"
                         f"**Last error:** {str(last_error)}\n\n"
-                        f"**Possible causes:**\n"
-                        f"• Website is down or blocked\n"
-                        f"• Cookie consent popup changed\n"
+                        f"**Most likely cause:**\n"
+                        f"• Data for current day not yet available on Uma.moe\n"
+                        f"• Uma.moe typically updates around 15:10 UTC daily\n\n"
+                        f"**Other possible causes:**\n"
+                        f"• Uma.moe API is down or unreachable\n"
                         f"• Network timeout\n"
-                        f"• Website structure changed"
+                        f"• Invalid circle_id\n\n"
+                        f"**What to do:**\n"
+                        f"• Wait a few hours and try `/force_check` again\n"
+                        f"• Check uma.moe directly to verify data availability"
                     )
                     logger.error(f"Scraping failed for {club.club_name}: {error_msg}")
                     
