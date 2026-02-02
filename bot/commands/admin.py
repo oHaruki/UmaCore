@@ -28,9 +28,9 @@ class AdminCommands(commands.Cog):
         self.monthly_info_service = MonthlyInfoService()
     
     async def club_autocomplete(self, interaction: discord.Interaction, current: str):
-        """Autocomplete for club names"""
+        """Autocomplete for club names visible in this guild"""
         try:
-            club_names = await Club.get_all_names()
+            club_names = await Club.get_names_for_guild(interaction.guild_id)
             return [
                 app_commands.Choice(name=name, value=name)
                 for name in club_names

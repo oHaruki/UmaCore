@@ -145,6 +145,18 @@ class Club:
         rows = await db.fetch(query)
         return [row['club_name'] for row in rows]
     
+    @classmethod
+    async def get_names_for_guild(cls, guild_id: int) -> List[str]:
+        """Get active club names belonging to a specific guild, for autocomplete"""
+        query = """
+            SELECT club_name
+            FROM clubs
+            WHERE is_active = TRUE AND (guild_id = $1 OR guild_id IS NULL)
+            ORDER BY club_name
+        """
+        rows = await db.fetch(query, guild_id)
+        return [row['club_name'] for row in rows]
+    
     async def update_settings(self, **kwargs):
         """Update club settings"""
         valid_fields = {'scrape_url', 'circle_id', 'daily_quota', 'timezone', 'scrape_time', 
