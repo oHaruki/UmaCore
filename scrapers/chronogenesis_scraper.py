@@ -2,6 +2,7 @@
 ChronoGenesis website scraper using Selenium
 """
 from typing import Dict, List, Optional
+from datetime import date
 import logging
 import asyncio
 
@@ -28,6 +29,7 @@ class ChronoGenesisScraper(BaseScraper):
         super().__init__(url)
         self.current_day_count = 1
         self.club_start_day = 1
+        self._data_date = None  # ChronoGenesis always scrapes current month
     
     def _get_chrome_version(self) -> str:
         """Detect the installed Chrome/Chromium version across platforms"""
@@ -477,3 +479,12 @@ class ChronoGenesisScraper(BaseScraper):
     def get_club_start_day(self) -> int:
         """Get the club start day (first day in the table)"""
         return self.club_start_day
+    
+    def get_data_date(self) -> Optional[date]:
+        """
+        Get the actual date the scraped data belongs to.
+        
+        For ChronoGenesis, this is always None since it scrapes current month data.
+        Returns None to indicate data matches current calendar date.
+        """
+        return self._data_date

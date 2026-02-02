@@ -2,7 +2,7 @@
 Base scraper abstract class
 """
 from abc import ABC, abstractmethod
-from typing import Dict, List
+from typing import Dict, List, Optional
 from datetime import date
 import logging
 
@@ -32,6 +32,17 @@ class BaseScraper(ABC):
     @abstractmethod
     def get_current_day(self) -> int:
         """Get the current day number (1-indexed)"""
+        pass
+    
+    @abstractmethod
+    def get_data_date(self) -> Optional[date]:
+        """
+        Get the actual date the scraped data belongs to.
+        
+        Returns:
+            date object if data belongs to a different date than today (e.g., Day 1 fallback)
+            None if data matches current calendar date
+        """
         pass
     
     def detect_monthly_reset(self, previous_data: Dict[str, int], current_data: Dict[str, List[int]]) -> bool:

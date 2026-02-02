@@ -24,7 +24,7 @@ class QuotaCalculator:
         Args:
             club_id: Club UUID
             member_join_date: When the member joined the club
-            current_date: Current date
+            current_date: The date the data belongs to (not necessarily today)
         
         Returns:
             Expected cumulative fan count for this month only
@@ -146,18 +146,36 @@ class QuotaCalculator:
     async def process_scraped_data(self, club_id: UUID, scraped_data: Dict[str, Dict], 
                                    current_date: date, current_day: int) -> Tuple[int, int]:
         """
-        Process scraped data and update database for a specific club
+        Process scraped data and update database for a specific club.
+        
+        current_date is when the bot actually ran; current_day is the last day
+        number present in the scraped table.  These can differ — e.g. the bot
+        runs on Feb 2 but ChronoGenesis still only shows Day 1.  All quota
+        math uses data_date (derived from current_day) so that expected fans
+        match the data we actually have.  current_date is kept only for
+        update_last_seen.
         
         Args:
             club_id: Club UUID
             scraped_data: Dict of trainer_id -> {name, trainer_id, fans[], join_day}
-            current_date: Current date
-            current_day: Current day number (1-indexed calendar day)
+            current_date: Actual calendar date when the bot ran
+            current_day: Last day number present in the scraped data table
         
         Returns:
             Tuple of (new_members_count, updated_members_count)
         """
-        logger.info(f"Processing scraped data for club {club_id}: day {current_day} = {current_date}")
+        # Derive the date the scraped data actually covers.
+        # If current_day is greater than today's day-of-month the table is
+        # showing last month's data (e.g. Day 30 seen on the 2nd).
+        if current_day > current_date.day:
+            if current_date.month == 1:
+                data_date = date(current_date.year - 1, 12, current_day)
+            else:
+                data_date = date(current_date.year, current_date.month - 1, current_day)
+        else:
+            data_date = date(current_date.year, current_date.month, current_day)
+        
+        logger.info(f"Processing scraped data for club {club_id}: day {current_day} = {data_date} (bot running on {current_date})")
         
         # Check for monthly reset
         logger.info(f"Checking for monthly reset for club {club_id}...")
@@ -182,7 +200,7 @@ class QuotaCalculator:
         scraped_trainer_ids = set(scraped_data.keys())
         await self._auto_deactivate_missing_members(club_id, scraped_trainer_ids)
         
-        # Process scraped data
+        # Process each member
         new_members = 0
         updated_members = 0
         
@@ -196,25 +214,9 @@ class QuotaCalculator:
                 logger.warning(f"No fan data for {trainer_name}")
                 continue
             
-            # ⭐ FIX: Get cumulative fans for CURRENT day (not last array element)
-            # current_day is 1-indexed (1-31), array is 0-indexed (0-30)
-            # Example: current_day=30 -> array index 29 (day 30's data)
-            current_day_index = current_day - 1
-            
-            # Safety check: ensure index is within bounds
-            if current_day_index >= len(daily_fans):
-                logger.warning(
-                    f"{trainer_name}: current_day {current_day} (index {current_day_index}) "
-                    f"exceeds array length {len(daily_fans)}, using last available day"
-                )
-                current_day_index = len(daily_fans) - 1
-            
-            cumulative_fans = daily_fans[current_day_index]
-            
-            logger.debug(
-                f"{trainer_name}: Using day {current_day} (array index {current_day_index}), "
-                f"cumulative_fans = {cumulative_fans:,}"
-            )
+            # Use the last value in the fans array — that's the cumulative
+            # total for the most recent day in the table (data_date).
+            cumulative_fans = daily_fans[-1]
             
             # Look up member by trainer_id first, then by name
             if trainer_id:
@@ -223,19 +225,17 @@ class QuotaCalculator:
                 member = await Member.get_by_name(club_id, trainer_name)
             
             if not member:
-                # New member - calculate correct join date
-                # If detected_join_day > current calendar day, it's from previous month
-                if detected_join_day > current_date.day:
-                    # Previous month
-                    if current_date.month == 1:
-                        # Previous month is December of previous year
-                        join_date = date(current_date.year - 1, 12, detected_join_day)
+                # New member — resolve their join day into a full date using
+                # data_date as the reference point (not today).
+                if detected_join_day > data_date.day:
+                    # Join day is higher than the current data day, so it
+                    # must belong to the previous month.
+                    if data_date.month == 1:
+                        join_date = date(data_date.year - 1, 12, detected_join_day)
                     else:
-                        # Previous month in same year
-                        join_date = date(current_date.year, current_date.month - 1, detected_join_day)
+                        join_date = date(data_date.year, data_date.month - 1, detected_join_day)
                 else:
-                    # Current month
-                    join_date = date(current_date.year, current_date.month, detected_join_day)
+                    join_date = date(data_date.year, data_date.month, detected_join_day)
                 
                 member = await Member.create(club_id, trainer_name, join_date, trainer_id)
                 new_members += 1
@@ -245,7 +245,7 @@ class QuotaCalculator:
                 if member.trainer_name != trainer_name:
                     await member.update_name(trainer_name)
                 
-                # Reactivate if they were previously deactivated (and not manually)
+                # Reactivate if previously auto-deactivated
                 if not member.is_active:
                     if member.manually_deactivated:
                         logger.info(f"Skipping reactivation of manually deactivated member: {trainer_name}")
@@ -254,28 +254,26 @@ class QuotaCalculator:
                         await member.activate()
                         logger.info(f"Reactivated returning member: {trainer_name}")
             
-            # Update last seen
+            # last_seen tracks when we actually observed them (wall-clock date)
             await member.update_last_seen(current_date)
             
-            # Calculate days active this month using actual dates
-            days_active = self.calculate_days_active_in_month(member.join_date, current_date)
+            # All quota calculations use data_date — the date the scraped
+            # data actually covers — so expected fans match reality.
+            days_active = self.calculate_days_active_in_month(member.join_date, data_date)
             
-            # Calculate expected fans using actual dates (not day numbers from table)
             expected_fans = await self.calculate_expected_fans(
-                club_id, member.join_date, current_date
+                club_id, member.join_date, data_date
             )
             
-            # Calculate deficit/surplus
             deficit_surplus = self.calculate_deficit_surplus(cumulative_fans, expected_fans)
             
-            # Count consecutive days behind
-            days_behind = await self._calculate_days_behind(member.member_id, deficit_surplus, current_date)
+            days_behind = await self._calculate_days_behind(member.member_id, deficit_surplus, data_date)
             
-            # Create or update quota history
+            # Store history keyed to data_date, not today
             await QuotaHistory.create(
                 member_id=member.member_id,
                 club_id=club_id,
-                date=current_date,
+                date=data_date,
                 cumulative_fans=cumulative_fans,
                 expected_fans=expected_fans,
                 deficit_surplus=deficit_surplus,
@@ -291,7 +289,7 @@ class QuotaCalculator:
         return new_members, updated_members
     
     async def _calculate_days_behind(self, member_id: UUID, current_deficit_surplus: int, 
-                                    current_date: date) -> int:
+                                    data_date: date) -> int:
         """Calculate how many consecutive days a member has been behind"""
         if current_deficit_surplus >= 0:
             return 0
@@ -301,11 +299,12 @@ class QuotaCalculator:
         if not recent_history:
             return 1
         
-        # Filter out any records from today
-        recent_history = [h for h in recent_history if h.date < current_date]
+        # Exclude any records from data_date or later (we haven't written
+        # today's record yet at this point)
+        recent_history = [h for h in recent_history if h.date < data_date]
         
-        # Count consecutive days with negative deficit before today
-        consecutive_days = 1  # Count today
+        # Count consecutive days with negative deficit before data_date
+        consecutive_days = 1  # Count the current day
         
         for history in recent_history:
             if history.deficit_surplus < 0:
