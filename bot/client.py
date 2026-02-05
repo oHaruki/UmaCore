@@ -120,17 +120,28 @@ class UmamusumeBot(commands.Bot):
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         """Global error handler for slash commands"""
         if isinstance(error, app_commands.MissingPermissions):
-            msg = "❌ You're missing the required permissions to use this command."
+            missing_perms = ", ".join(error.missing_permissions)
+            msg = (
+                f"❌ **Missing Permissions**\n\n"
+                f"You need the following permission(s) to use this command:\n"
+                f"`{missing_perms}`\n\n"
+                f"Please contact a server administrator."
+            )
+            logger.warning(f"User {interaction.user} (ID: {interaction.user.id}) tried to use /{interaction.command.name} without permissions: {missing_perms}")
         elif isinstance(error, app_commands.CheckFailure):
             msg = "❌ You're not authorized to use this command."
+            logger.warning(f"User {interaction.user} (ID: {interaction.user.id}) failed check for /{interaction.command.name}: {error}")
         else:
-            logger.error(f"Slash command error: {error}", exc_info=error)
+            logger.error(f"Slash command error in /{interaction.command.name}: {error}", exc_info=error)
             msg = f"❌ An error occurred: {str(error)}"
 
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception as e:
+            logger.error(f"Failed to send error message to user: {e}")
     
     async def close(self):
         """Cleanup when bot is shutting down"""
