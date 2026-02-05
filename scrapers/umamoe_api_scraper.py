@@ -147,12 +147,16 @@ class UmaMoeAPIScraper(BaseScraper):
             current_day = calendar_day if calendar_day else now.day
             current_day_index = current_day - 1
             
-            # Sample first member to check if current day data exists
+            # Check if current day data exists by sampling active members
             data_exists = False
-            if members and members[0].get("daily_fans"):
-                sample_fans = members[0]["daily_fans"]
-                if current_day_index < len(sample_fans) and sample_fans[current_day_index] > 0:
-                    data_exists = True
+            if members:
+                # Find a member with recent activity to check data availability
+                for member in members:
+                    sample_fans = member.get("daily_fans", [])
+                    if sample_fans and len(sample_fans) > current_day_index and sample_fans[current_day_index] > 0:
+                        data_exists = True
+                        logger.debug(f"Found current day data in member {member.get('trainer_name')}")
+                        break
             
             if not data_exists:
                 # Current day data not available yet, use previous day

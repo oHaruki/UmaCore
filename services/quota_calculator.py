@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from typing import Dict, List, Tuple, Set
 from uuid import UUID
 import logging
+import calendar
 
 from models import Member, QuotaHistory, QuotaRequirement, Bomb, Club
 from config.database import db
@@ -209,15 +210,19 @@ class QuotaCalculator:
             
             if not member:
                 # New member - resolve their join day into a full date
-                if detected_join_day > data_date.day:
-                    # Join day is higher than the current data day, so it
-                    # must belong to the previous month
+                # detected_join_day is the day number in the scraped month (data_date.month)
+                # Check if it's a valid day in that month
+                last_day_of_month = calendar.monthrange(data_date.year, data_date.month)[1]
+                
+                if 1 <= detected_join_day <= last_day_of_month:
+                    # Join day is within the current month being processed
+                    join_date = date(data_date.year, data_date.month, detected_join_day)
+                else:
+                    # Join day exceeds current month, must be from previous month
                     if data_date.month == 1:
                         join_date = date(data_date.year - 1, 12, detected_join_day)
                     else:
                         join_date = date(data_date.year, data_date.month - 1, detected_join_day)
-                else:
-                    join_date = date(data_date.year, data_date.month, detected_join_day)
                 
                 member = await Member.create(club_id, trainer_name, join_date, trainer_id)
                 new_members += 1
