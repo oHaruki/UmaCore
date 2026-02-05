@@ -1,5 +1,5 @@
 """
-Uma.moe API scraper for club data fetching
+Uma.moe API scraper for club data fetching - FIXED VERSION
 """
 from typing import Dict, Optional, List
 import logging
@@ -47,10 +47,10 @@ class UmaMoeAPIScraper(BaseScraper):
         
         On Day 1 the new month hasn't populated yet, so we fetch the previous
         month as the primary data source. We also fetch the current month and
-        use its index 0 as the true endpoint per member — this captures fans
-        earned between the previous month's last snapshot (~15:10 UTC on the
-        last day) and the reset. Without this correction, up to ~24h of fans
-        at end-of-month are invisible.
+        use its index 0 as the true endpoint per member.
+        
+        On Day 2+, we check if current day data exists (Uma.moe updates ~15:10 UTC).
+        If not, we fall back to previous day to avoid reading zeros.
         
         Returns:
             Dict mapping viewer_id -> member data
@@ -67,8 +67,6 @@ class UmaMoeAPIScraper(BaseScraper):
                     month = 12
                 else:
                     month -= 1
-                # Record the actual date the data belongs to so callers can use it
-                # instead of today's date for reports, quota calculations, etc.
                 last_day = calendar.monthrange(year, month)[1]
                 self._data_date = date(year, month, last_day)
                 logger.info(f"Day 1 detected: fetching previous month ({year}-{month:02d}) as primary source, data date: {self._data_date}")
@@ -105,7 +103,8 @@ class UmaMoeAPIScraper(BaseScraper):
                 logger.warning("No members found in API response")
                 return {}
             
-            parsed_data = self._parse_api_data(members, endpoint_members=endpoint_members)
+            # Pass calendar_day to _parse_api_data so it can check if data exists
+            parsed_data = self._parse_api_data(members, endpoint_members=endpoint_members, calendar_day=now.day)
             logger.info(f"Successfully parsed {len(parsed_data)} active members from API")
             
             return parsed_data
@@ -117,23 +116,20 @@ class UmaMoeAPIScraper(BaseScraper):
             logger.error(f"Error during Uma.moe API scraping: {e}")
             raise
     
-    def _parse_api_data(self, members: list, endpoint_members: Optional[List] = None) -> Dict[str, Dict]:
+    def _parse_api_data(self, members: list, endpoint_members: Optional[List] = None, calendar_day: int = None) -> Dict[str, Dict]:
         """
         Parse API member data into scraper format.
         
         Uma.moe returns LIFETIME cumulative fans. Converts to monthly by
         subtracting each member's starting lifetime fans (fans at join).
         
-        Uma.moe updates around 15:10 UTC with yesterday's data, so:
-        - Calendar Day 2 → Use Day 1 data
-        - Calendar Day 3 → Use Day 2 data
-        
-        When endpoint_members is provided (Day 1 only), the final fan count
-        per member is corrected using the current month's index 0 value.
+        Uma.moe updates around 15:10 UTC with yesterday's data, so we check
+        if current day data exists before using it.
         
         Args:
             members: List of member dicts from the primary (previous) month
             endpoint_members: Member list from current month (Day 1 only)
+            calendar_day: Current calendar day for data availability checking
         
         Returns:
             Dict mapping viewer_id -> member data
@@ -147,17 +143,30 @@ class UmaMoeAPIScraper(BaseScraper):
             current_day = calendar.monthrange(self._fetched_year, self._fetched_month)[1]
             logger.info(f"Day 1 fallback: using day {current_day} (last day of {self._fetched_year}-{self._fetched_month:02d})")
         else:
-            # Day 2+: Competition is one day behind calendar
-            # Use calendar day for array indexing (to read latest data)
-            # But report as yesterday for quota calculations (actual competition day)
-            current_day = now.day
-            self._data_date = date(now.year, now.month, now.day - 1)
-            logger.info(f"Calendar day {now.day} → reading index {current_day-1}, reporting as Day {now.day-1} (data_date: {self._data_date})")
+            # Day 2+: Check if current day data exists
+            current_day = calendar_day if calendar_day else now.day
+            current_day_index = current_day - 1
+            
+            # Sample first member to check if current day data exists
+            data_exists = False
+            if members and members[0].get("daily_fans"):
+                sample_fans = members[0]["daily_fans"]
+                if current_day_index < len(sample_fans) and sample_fans[current_day_index] > 0:
+                    data_exists = True
+            
+            if not data_exists:
+                # Current day data not available yet, use previous day
+                current_day = now.day - 1
+                logger.warning(f"Current day {now.day} data not available yet (Uma.moe updates ~15:10 UTC). Using day {current_day} data.")
+                self._data_date = date(now.year, now.month, current_day)
+            else:
+                # Current day data exists, but report as yesterday (competition is one day behind)
+                logger.info(f"Current day {current_day} data is available")
+                self._data_date = date(now.year, now.month, now.day - 1)
         
         self.current_day_count = current_day
         
-        # Build endpoint lookup: viewer_id -> lifetime fans at current month index 0.
-        # This is the true month boundary snapshot for end-of-month correction.
+        # Build endpoint lookup for Day 1 correction
         endpoint_totals = {}
         if endpoint_members:
             for m in endpoint_members:
@@ -211,9 +220,7 @@ class UmaMoeAPIScraper(BaseScraper):
                 
                 monthly_fans.append(fans_this_month)
             
-            # Day 1 endpoint correction: replace the final monthly total with the
-            # value derived from current month's index 0. This captures fans earned
-            # between the previous month's last snapshot and the actual reset.
+            # Day 1 endpoint correction
             if endpoint_totals and viewer_id_str in endpoint_totals:
                 endpoint_lifetime = endpoint_totals[viewer_id_str]
                 if endpoint_lifetime >= starting_lifetime_fans:
@@ -252,10 +259,7 @@ class UmaMoeAPIScraper(BaseScraper):
     
     def get_data_date(self) -> Optional[date]:
         """
-        Returns the date the scraped data belongs to when the previous-month
-        fallback was used (Day 1), or None when the data matches today.
-        
-        Callers should use this to override current_date for reports and
-        quota calculations instead of blindly using datetime.now().
+        Returns the date the scraped data belongs to when fallback was used,
+        or None when the data matches today.
         """
         return self._data_date
