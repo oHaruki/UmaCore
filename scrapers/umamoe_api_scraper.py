@@ -1,5 +1,5 @@
 """
-Uma.moe API scraper for club data fetching - FIXED VERSION
+Uma.moe API scraper for club data fetching
 """
 from typing import Dict, Optional, List
 import logging
@@ -160,9 +160,12 @@ class UmaMoeAPIScraper(BaseScraper):
                 logger.warning(f"Current day {now.day} data not available yet (Uma.moe updates ~15:10 UTC). Using day {current_day} data.")
                 self._data_date = date(now.year, now.month, current_day)
             else:
-                # Current day data exists, but report as yesterday (competition is one day behind)
-                logger.info(f"Current day {current_day} data is available")
+                # Current day data exists (Day 5 on Feb 5 = Feb 4 competition)
+                # current_day = day number to read from array
+                # _data_date = actual competition date it represents
+                current_day = now.day
                 self._data_date = date(now.year, now.month, now.day - 1)
+                logger.info(f"Day {current_day} data is available (represents day {now.day - 1} competition results)")
         
         self.current_day_count = current_day
         
