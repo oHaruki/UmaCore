@@ -1,5 +1,5 @@
 """
-Uma.moe API scraper for club data fetching - FIXED VERSION
+Uma.moe API scraper for club data fetching
 """
 from typing import Dict, Optional, List
 import logging
@@ -147,12 +147,16 @@ class UmaMoeAPIScraper(BaseScraper):
             current_day = calendar_day if calendar_day else now.day
             current_day_index = current_day - 1
             
-            # Sample first member to check if current day data exists
+            # Check if current day data exists by sampling active members
             data_exists = False
-            if members and members[0].get("daily_fans"):
-                sample_fans = members[0]["daily_fans"]
-                if current_day_index < len(sample_fans) and sample_fans[current_day_index] > 0:
-                    data_exists = True
+            if members:
+                # Find a member with recent activity to check data availability
+                for member in members:
+                    sample_fans = member.get("daily_fans", [])
+                    if sample_fans and len(sample_fans) > current_day_index and sample_fans[current_day_index] > 0:
+                        data_exists = True
+                        logger.debug(f"Found current day data in member {member.get('trainer_name')}")
+                        break
             
             if not data_exists:
                 # Current day data not available yet, use previous day
@@ -160,9 +164,12 @@ class UmaMoeAPIScraper(BaseScraper):
                 logger.warning(f"Current day {now.day} data not available yet (Uma.moe updates ~15:10 UTC). Using day {current_day} data.")
                 self._data_date = date(now.year, now.month, current_day)
             else:
-                # Current day data exists, but report as yesterday (competition is one day behind)
-                logger.info(f"Current day {current_day} data is available")
+                # Current day data exists (Day 5 on Feb 5 = Feb 4 competition)
+                # current_day = day number to read from array
+                # _data_date = actual competition date it represents
+                current_day = now.day
                 self._data_date = date(now.year, now.month, now.day - 1)
+                logger.info(f"Day {current_day} data is available (represents day {now.day - 1} competition results)")
         
         self.current_day_count = current_day
         
