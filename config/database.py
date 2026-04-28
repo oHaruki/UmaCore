@@ -363,8 +363,26 @@ class Database:
         
         -- Unique constraint for trainer_id per club
         DROP INDEX IF EXISTS members_trainer_id_key;
-        CREATE UNIQUE INDEX IF NOT EXISTS members_trainer_id_club_unique 
+        CREATE UNIQUE INDEX IF NOT EXISTS members_trainer_id_club_unique
             ON members(trainer_id, club_id) WHERE trainer_id IS NOT NULL;
+
+        -- Audit log table (web dashboard actions)
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+            actor_id    TEXT        NOT NULL,
+            actor_name  TEXT        NOT NULL,
+            action      TEXT        NOT NULL,
+            entity_type TEXT        NOT NULL,
+            entity_id   TEXT,
+            club_id     UUID        REFERENCES clubs(club_id) ON DELETE CASCADE,
+            details     JSONB,
+            created_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_club_created
+            ON audit_logs(club_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_created
+            ON audit_logs(created_at DESC);
         """
         
         try:
