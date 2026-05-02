@@ -156,6 +156,20 @@ class Database:
             END IF;
         END $$;
 
+        -- Migration: Add public_slug column if it doesn't exist
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='clubs' AND column_name='public_slug'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN public_slug TEXT;
+                UPDATE clubs SET public_slug = LOWER(REGEXP_REPLACE(REGEXP_REPLACE(club_name, '[^a-zA-Z0-9]+', '-', 'g'), '^-+|-+$', '', 'g'));
+                CREATE UNIQUE INDEX clubs_public_slug_unique ON clubs(public_slug);
+                RAISE NOTICE 'Added public_slug column to clubs';
+            END IF;
+        END $$;
+
         -- Members table
         CREATE TABLE IF NOT EXISTS members (
             member_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
