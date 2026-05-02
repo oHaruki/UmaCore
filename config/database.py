@@ -144,6 +144,18 @@ class Database:
             END IF;
         END $$;
 
+        -- Migration: Add public_enabled column if it doesn't exist
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='clubs' AND column_name='public_enabled'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN public_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+                RAISE NOTICE 'Added public_enabled column to clubs';
+            END IF;
+        END $$;
+
         -- Members table
         CREATE TABLE IF NOT EXISTS members (
             member_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
