@@ -178,7 +178,7 @@ class Database:
                                    ELSE ranked.circle_id || '-' || ranked.rn::text END
             FROM (
                 SELECT club_id, circle_id,
-                       ROW_NUMBER() OVER (PARTITION BY circle_id ORDER BY club_name) AS rn
+                       ROW_NUMBER() OVER (PARTITION BY circle_id ORDER BY club_name, club_id) AS rn
                 FROM clubs
                 WHERE circle_id IS NOT NULL AND circle_id != ''
             ) ranked
