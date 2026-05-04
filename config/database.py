@@ -164,9 +164,37 @@ class Database:
                 WHERE table_name='clubs' AND column_name='public_slug'
             ) THEN
                 ALTER TABLE clubs ADD COLUMN public_slug TEXT;
-                UPDATE clubs SET public_slug = LOWER(REGEXP_REPLACE(REGEXP_REPLACE(club_name, '[^a-zA-Z0-9]+', '-', 'g'), '^-+|-+$', '', 'g'));
-                CREATE UNIQUE INDEX clubs_public_slug_unique ON clubs(public_slug);
                 RAISE NOTICE 'Added public_slug column to clubs';
+            END IF;
+        END $$;
+
+        -- Migration: Set public_slug from circle_id (authoritative source)
+        -- Clubs sharing a circle_id get suffixes: 481227375, 481227375-2, 481227375-3, ...
+        DO $$
+        BEGIN
+            UPDATE clubs SET public_slug = NULL;
+            UPDATE clubs c
+            SET public_slug = CASE WHEN ranked.rn = 1 THEN ranked.circle_id
+                                   ELSE ranked.circle_id || '-' || ranked.rn::text END
+            FROM (
+                SELECT club_id, circle_id,
+                       ROW_NUMBER() OVER (PARTITION BY circle_id ORDER BY club_name) AS rn
+                FROM clubs
+                WHERE circle_id IS NOT NULL AND circle_id != ''
+            ) ranked
+            WHERE c.club_id = ranked.club_id;
+            RAISE NOTICE 'Synced public_slug from circle_id';
+        END $$;
+
+        -- Migration: Create partial unique index on public_slug if it doesn't exist
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_indexes
+                WHERE tablename = 'clubs' AND indexname = 'clubs_public_slug_unique'
+            ) THEN
+                CREATE UNIQUE INDEX clubs_public_slug_unique ON clubs(public_slug) WHERE public_slug IS NOT NULL;
+                RAISE NOTICE 'Created unique index on public_slug';
             END IF;
         END $$;
 
