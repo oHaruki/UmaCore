@@ -18,11 +18,10 @@ class UmamusumeBot(commands.Bot):
     
     def __init__(self):
         intents = discord.Intents.default()
-        intents.message_content = True
         intents.guilds = True
-        
+
         super().__init__(
-            command_prefix="!",
+            command_prefix=commands.when_mentioned,
             intents=intents,
             help_command=None
         )

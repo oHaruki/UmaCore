@@ -7,7 +7,6 @@ from discord.ext import commands
 from datetime import datetime, time
 import logging
 import pytz
-import asyncio
 
 from models import Club
 
@@ -15,6 +14,81 @@ logger = logging.getLogger(__name__)
 
 # Bot author ID for pre-migration club deletion
 AUTHOR_ID = 139769063948681217
+
+
+class DeleteConfirmModal(discord.ui.Modal, title="Confirm Club Deletion"):
+    confirmation = discord.ui.TextInput(
+        label="Type the club name to confirm",
+        required=True,
+    )
+
+    def __init__(self, club_obj, club_name: str):
+        super().__init__()
+        self.club_obj = club_obj
+        self.club_name = club_name
+        self.confirmation.placeholder = club_name
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if self.confirmation.value.strip() != self.club_name:
+            await interaction.response.send_message(
+                f"❌ Incorrect name. Type exactly: `{self.club_name}`", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+        await self.club_obj.delete()
+
+        embed = discord.Embed(
+            title="✅ Club Deleted",
+            description=f"**{self.club_name}** and all associated data have been permanently deleted.",
+            color=discord.Color.dark_gray(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text=f"Deleted by {interaction.user}")
+        await interaction.followup.send(embed=embed)
+        logger.warning(f"Club '{self.club_name}' permanently deleted by {interaction.user} (ID: {interaction.user.id})")
+
+
+class DeleteConfirmView(discord.ui.View):
+    def __init__(self, club_obj, club_name: str, requester_id: int):
+        super().__init__(timeout=60)
+        self.club_obj = club_obj
+        self.club_name = club_name
+        self.requester_id = requester_id
+        self._confirmed = False
+        self.message: discord.Message | None = None
+
+    @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("❌ Only the command invoker can confirm this.", ephemeral=True)
+            return
+        if self._confirmed:
+            await interaction.response.send_message("❌ Already processing deletion.", ephemeral=True)
+            return
+        self._confirmed = True
+        await interaction.response.send_modal(DeleteConfirmModal(self.club_obj, self.club_name))
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("❌ Only the command invoker can cancel this.", ephemeral=True)
+            return
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send("❌ Deletion cancelled.", ephemeral=True)
+        self.stop()
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
 
 
 class ClubManagementCommands(commands.Cog):
@@ -177,14 +251,14 @@ class ClubManagementCommands(commands.Cog):
     async def remove_club(self, interaction: discord.Interaction, club: str):
         """Permanently delete a club and all associated data"""
         await interaction.response.defer()
-        
+
         try:
             club_obj = await Club.get_by_name(club)
-            
+
             if not club_obj:
                 await interaction.followup.send(f"❌ Club '{club}' not found")
                 return
-            
+
             # Pre-migration clubs (guild_id IS NULL) can only be deleted by bot author
             if club_obj.guild_id is None:
                 if interaction.user.id != AUTHOR_ID:
@@ -194,21 +268,18 @@ class ClubManagementCommands(commands.Cog):
                     )
                     return
             else:
-                # Regular clubs must belong to this guild
                 if not club_obj.belongs_to_guild(interaction.guild_id):
                     await interaction.followup.send(
                         f"❌ Club '{club}' is not registered in this server."
                     )
                     return
-            
-            # Create warning embed
+
             warning_embed = discord.Embed(
                 title="⚠️ Confirm Club Deletion",
                 description=f"You are about to **permanently delete** the club: **{club}**",
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow()
             )
-            
             warning_embed.add_field(
                 name="🗑️ What will be deleted",
                 value="• All member records\n"
@@ -219,48 +290,17 @@ class ClubManagementCommands(commands.Cog):
                       "• All settings",
                 inline=False
             )
-            
             warning_embed.add_field(
                 name="⚠️ This action is irreversible",
                 value="**This cannot be undone.** All data will be permanently lost.\n\n"
-                      f"Reply with `confirm delete {club}` within 30 seconds to proceed.",
+                      f"Click **Delete** and type the club name to confirm.",
                 inline=False
             )
-            
             warning_embed.set_footer(text=f"Requested by {interaction.user}")
-            
-            await interaction.followup.send(embed=warning_embed)
-            
-            # Wait for confirmation
-            def check(m):
-                return (m.author.id == interaction.user.id and 
-                       m.channel.id == interaction.channel.id and
-                       m.content.strip().lower() == f"confirm delete {club.lower()}")
-            
-            try:
-                confirmation = await self.bot.wait_for('message', check=check, timeout=30.0)
-            except asyncio.TimeoutError:
-                await interaction.followup.send(
-                    f"⏰ Deletion cancelled - confirmation timed out for **{club}**"
-                )
-                return
-            
-            # Delete the club
-            await club_obj.delete()
-            
-            # Success embed
-            embed = discord.Embed(
-                title="✅ Club Deleted",
-                description=f"**{club}** and all associated data have been permanently deleted.",
-                color=discord.Color.dark_gray(),
-                timestamp=discord.utils.utcnow()
-            )
-            
-            embed.set_footer(text=f"Deleted by {interaction.user}")
-            
-            await interaction.followup.send(embed=embed)
-            logger.warning(f"Club '{club}' permanently deleted by {interaction.user} (ID: {interaction.user.id})")
-            
+
+            view = DeleteConfirmView(club_obj, club, interaction.user.id)
+            view.message = await interaction.followup.send(embed=warning_embed, view=view)
+
         except Exception as e:
             logger.error(f"Error in remove_club: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
