@@ -30,6 +30,9 @@ DAILY_QUOTA = 1_000_000
 BOMB_TRIGGER_DAYS = 3
 BOMB_COUNTDOWN_DAYS = 7
 
+# Internal API server (web UI integration)
+BOT_API_PORT = int(os.getenv("BOT_API_PORT", "7890"))
+
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE = "bot.log"

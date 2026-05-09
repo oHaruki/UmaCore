@@ -50,7 +50,7 @@ class AdminCommands(commands.Cog):
                     try:
                         message = await channel.fetch_message(message_id)
                         updated_embed = await self.monthly_info_service.create_monthly_info_embed(
-                            club_obj.club_id, club_obj.club_name, current_date
+                            club_obj.club_id, club_obj.club_name, current_date, club_obj.quota_period
                         )
                         await message.edit(embed=updated_embed)
                         logger.info(f"Auto-updated monthly info board for {club_obj.club_name}")
@@ -85,8 +85,11 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send("❌ Quota amount must be positive")
                 return
 
-            if amount > 10_000_000:
-                await interaction.followup.send("❌ Quota amount seems unreasonably high (>10M). Please check your input.")
+            period_caps = {'daily': 10_000_000, 'weekly': 100_000_000, 'biweekly': 200_000_000}
+            max_quota = period_caps.get(club_obj.quota_period, 10_000_000)
+            if amount > max_quota:
+                cap_label = f"{max_quota // 1_000_000}M"
+                await interaction.followup.send(f"❌ Quota amount seems unreasonably high (>{cap_label} for {club_obj.quota_period} quota). Please check your input.")
                 return
 
             club_tz = pytz.timezone(club_obj.timezone)
@@ -196,7 +199,8 @@ class AdminCommands(commands.Cog):
             embed = await self.monthly_info_service.create_monthly_info_embed(
                 club_obj.club_id,
                 club_obj.club_name,
-                current_date
+                current_date,
+                club_obj.quota_period
             )
 
             await message.edit(embed=embed)
@@ -482,8 +486,9 @@ class AdminCommands(commands.Cog):
             else:
                 bombs_data = []
 
+            effective_quota = await QuotaRequirement.get_quota_for_date(club_obj.club_id, current_date)
             daily_reports = self.report_generator.create_daily_report(
-                club_obj.club_name, club_obj.daily_quota, status_summary, bombs_data, current_date,
+                club_obj.club_name, effective_quota, status_summary, bombs_data, current_date,
                 rank_data=rank_data, quota_period=club_obj.quota_period
             )
 

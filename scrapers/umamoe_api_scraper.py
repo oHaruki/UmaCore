@@ -5,7 +5,7 @@ from typing import Dict, Optional, List
 import logging
 import calendar
 import aiohttp
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 
 from scrapers.base_scraper import BaseScraper
 
@@ -80,7 +80,7 @@ class UmaMoeAPIScraper(BaseScraper):
             
             logger.info(f"Fetching data from Uma.moe API for circle {self.circle_id}...")
             
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers={"Accept-Encoding": "gzip, deflate"}) as session:
                 # Primary fetch: the month we're actually reporting on
                 primary_data = await self._fetch_month(session, year, month)
                 if not primary_data:
@@ -110,6 +110,23 @@ class UmaMoeAPIScraper(BaseScraper):
                 f"last_month_rank={self._last_month_rank}, "
                 f"yesterday_rank={self._yesterday_rank}"
             )
+
+            # Detect end-of-month JST rollover: uma.moe always returns the CURRENT
+            # competition period's rank fields regardless of the year/month query param.
+            # After ~15:00 UTC on the last day of the month, uma.moe has already switched
+            # to next month's competition internally, so ALL rank fields reflect the new
+            # (nearly empty) period. Drop them entirely so the rank section is omitted.
+            now_utc = datetime.now(timezone.utc)
+            now_jst = now_utc + timedelta(hours=9)
+            last_day_of_month = calendar.monthrange(now_utc.year, now_utc.month)[1]
+            if now_utc.day == last_day_of_month and now_jst.month != now_utc.month:
+                logger.warning(
+                    "End-of-month JST rollover detected: uma.moe rank fields already reflect "
+                    "the new competition period. Dropping all rank data to avoid false display."
+                )
+                self._monthly_rank = None
+                self._last_month_rank = None
+                self._yesterday_rank = None
 
             if not primary_data or "members" not in primary_data:
                 logger.error("API response missing 'members' field")

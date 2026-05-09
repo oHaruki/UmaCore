@@ -1,7 +1,7 @@
 """
 Discord report generation service
 """
-from datetime import date
+from datetime import date, timedelta
 from typing import Dict, List, Optional
 import discord
 import logging
@@ -46,7 +46,10 @@ class ReportGenerator:
         period_label = period_labels.get(quota_period, 'day')
         quota_line = f"**Quota:** {self.format_fans_short(daily_quota)} fans per {period_label}"
 
-        description = f"**Date:** {report_date.strftime('%B %d, %Y')}\n{quota_line}"
+        next_date = report_date + timedelta(days=1)
+        date_range = (f"{report_date.strftime('%B %d')}, 16:00 CEST"
+                      f" ~ {next_date.strftime('%B %d')}, 16:00 CEST")
+        description = f"**Date:** {date_range}\n{quota_line}"
 
         if period_info:
             p_num = period_info['period_number']
@@ -86,7 +89,7 @@ class ReportGenerator:
             inline=False
         )
 
-        if rank_data:
+        if rank_data and rank_data.get('monthly_rank') is not None:
             rank_text = self._format_rank_section(rank_data)
             summary_embed.add_field(
                 name="🏆 Club Rankings",

@@ -6,10 +6,15 @@ from datetime import time
 from typing import Optional, List
 from uuid import UUID
 import logging
+import re
 
 from config.database import db
 
 logger = logging.getLogger(__name__)
+
+
+def _make_slug(name: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
 
 
 @dataclass
@@ -34,6 +39,7 @@ class Club:
     monthly_info_message_id: Optional[int]
     created_at: Optional[str]
     updated_at: Optional[str]
+    public_slug: Optional[str] = None
     
     @classmethod
     async def create(cls, club_name: str, scrape_url: str, circle_id: Optional[str] = None,
@@ -48,15 +54,16 @@ class Club:
 
         query = """
             INSERT INTO clubs (club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
-                             timezone, scrape_time, bomb_trigger_days, bomb_countdown_days)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                             timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, public_slug)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                      timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
                      is_active, report_channel_id, alert_channel_id, monthly_info_channel_id,
-                     monthly_info_message_id, created_at, updated_at
+                     monthly_info_message_id, created_at, updated_at, public_slug
         """
         row = await db.fetchrow(query, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
-                                timezone, scrape_time, bomb_trigger_days, bomb_countdown_days)
+                                timezone, scrape_time, bomb_trigger_days, bomb_countdown_days,
+                                _make_slug(club_name))
         logger.info(f"Created new club: {club_name} (circle_id: {circle_id}, guild_id: {guild_id})")
         return cls(**dict(row))
     
@@ -67,7 +74,7 @@ class Club:
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
                    is_active, report_channel_id, alert_channel_id, monthly_info_channel_id,
-                   monthly_info_message_id, created_at, updated_at
+                   monthly_info_message_id, created_at, updated_at, public_slug
             FROM clubs
             WHERE club_id = $1
         """
@@ -83,7 +90,7 @@ class Club:
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
                    is_active, report_channel_id, alert_channel_id, monthly_info_channel_id,
-                   monthly_info_message_id, created_at, updated_at
+                   monthly_info_message_id, created_at, updated_at, public_slug
             FROM clubs
             WHERE club_name = $1
         """
@@ -99,7 +106,7 @@ class Club:
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
                    is_active, report_channel_id, alert_channel_id, monthly_info_channel_id,
-                   monthly_info_message_id, created_at, updated_at
+                   monthly_info_message_id, created_at, updated_at, public_slug
             FROM clubs
             WHERE is_active = TRUE
             ORDER BY club_name
@@ -114,7 +121,7 @@ class Club:
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
                    is_active, report_channel_id, alert_channel_id, monthly_info_channel_id,
-                   monthly_info_message_id, created_at, updated_at
+                   monthly_info_message_id, created_at, updated_at, public_slug
             FROM clubs
             ORDER BY club_name
         """
@@ -128,7 +135,7 @@ class Club:
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
                    is_active, report_channel_id, alert_channel_id, monthly_info_channel_id,
-                   monthly_info_message_id, created_at, updated_at
+                   monthly_info_message_id, created_at, updated_at, public_slug
             FROM clubs
             WHERE guild_id = $1 OR guild_id IS NULL
             ORDER BY club_name

@@ -219,9 +219,10 @@ class SettingsCommands(commands.Cog):
             current_date = current_datetime.date()
             
             embed = await self.monthly_info_service.create_monthly_info_embed(
-                club_obj.club_id, 
-                club_obj.club_name, 
-                current_date
+                club_obj.club_id,
+                club_obj.club_name,
+                current_date,
+                club_obj.quota_period
             )
             
             message = await target_channel.send(embed=embed)

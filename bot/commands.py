@@ -167,8 +167,8 @@ class QuotaCommands(commands.Cog):
                 await interaction.followup.send("❌ Quota amount must be positive")
                 return
             
-            if amount > 10_000_000:
-                await interaction.followup.send("❌ Quota amount seems unreasonably high (>10M). Please check your input.")
+            if amount > 200_000_000:
+                await interaction.followup.send("❌ Quota amount seems unreasonably high (>200M). Please check your input.")
                 return
             
             # Get current date in configured timezone

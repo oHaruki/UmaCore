@@ -6,8 +6,9 @@ import logging
 import sys
 
 from config.database import db
-from config.settings import DISCORD_TOKEN, DATABASE_URL
+from config.settings import DISCORD_TOKEN, DATABASE_URL, BOT_API_PORT
 from bot import create_bot
+from bot.api_server import start_api_server
 from utils.logger import setup_logging
 
 # Setup logging
@@ -41,9 +42,15 @@ async def main():
         # Create and start bot
         logger.info("Starting Discord bot...")
         bot = create_bot()
-        
-        async with bot:
-            await bot.start(DISCORD_TOKEN)
+
+        logger.info(f"Starting internal API server on port {BOT_API_PORT}...")
+        api_runner = await start_api_server(BOT_API_PORT)
+
+        try:
+            async with bot:
+                await bot.start(DISCORD_TOKEN)
+        finally:
+            await api_runner.cleanup()
             
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt, shutting down...")

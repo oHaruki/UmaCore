@@ -18,7 +18,8 @@ class MonthlyInfoService:
     """Generates and updates the monthly information board"""
     
     @staticmethod
-    async def create_monthly_info_embed(club_id: UUID, club_name: str, current_date: date) -> discord.Embed:
+    async def create_monthly_info_embed(club_id: UUID, club_name: str, current_date: date,
+                                        quota_period: str = 'daily') -> discord.Embed:
         """
         Create the monthly info embed with quota history and commands
         
@@ -49,10 +50,13 @@ class MonthlyInfoService:
             quota_formatted = f"{current_quota / 1_000:.1f}K"
         else:
             quota_formatted = str(current_quota)
-        
+
+        period_label = {'daily': 'day', 'weekly': 'week', 'biweekly': 'biweek'}.get(quota_period, 'day')
+        quota_field_name = {'daily': 'Daily', 'weekly': 'Weekly', 'biweekly': 'Biweekly'}.get(quota_period, 'Daily')
+
         embed.add_field(
-            name="📊 Current Daily Quota",
-            value=f"**{quota_formatted} fans/day** ({current_quota:,} fans)",
+            name=f"📊 Current {quota_field_name} Quota",
+            value=f"**{quota_formatted} fans/{period_label}** ({current_quota:,} fans)",
             inline=False
         )
         
@@ -62,7 +66,7 @@ class MonthlyInfoService:
         if quota_history:
             # Create visualization
             visualization = MonthlyInfoService._create_quota_visualization(
-                current_date, quota_history, current_quota
+                current_date, quota_history, current_quota, quota_period
             )
             
             embed.add_field(
@@ -100,7 +104,8 @@ class MonthlyInfoService:
         return embed
     
     @staticmethod
-    def _create_quota_visualization(current_date: date, quota_history: list, current_quota: int) -> str:
+    def _create_quota_visualization(current_date: date, quota_history: list, current_quota: int,
+                                    quota_period: str = 'daily') -> str:
         """
         Create a visual representation of quota changes throughout the month
         
@@ -163,10 +168,14 @@ class MonthlyInfoService:
                 start_day, last_day, current_quota_val, current_date.day
             ))
         
+        period_label = {'daily': 'day', 'weekly': 'week', 'biweekly': 'biweek'}.get(quota_period, 'day')
+
         if not lines:
             return f"No quota changes. Default: {MonthlyInfoService._format_quota(default_quota)}"
-        
-        return "\n".join(lines)
+
+        return "\n".join(
+            line.replace('/day', f'/{period_label}') for line in lines
+        )
     
     @staticmethod
     def _format_quota_range(start_day: int, end_day: int, quota: int, current_day: int) -> str:
@@ -182,7 +191,7 @@ class MonthlyInfoService:
         else:
             date_range = f"Day {start_day:2d}-{end_day:2d}"
         
-        return f"{indicator} `{date_range}` → **{quota_str}**/day"
+        return f"{indicator} `{date_range}` → **{quota_str}**/day"  # caller replaces /day with correct label
     
     @staticmethod
     def _format_quota(quota: int) -> str:

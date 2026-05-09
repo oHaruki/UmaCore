@@ -144,6 +144,60 @@ class Database:
             END IF;
         END $$;
 
+        -- Migration: Add public_enabled column if it doesn't exist
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='clubs' AND column_name='public_enabled'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN public_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+                RAISE NOTICE 'Added public_enabled column to clubs';
+            END IF;
+        END $$;
+
+        -- Migration: Add public_slug column if it doesn't exist
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='clubs' AND column_name='public_slug'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN public_slug TEXT;
+                RAISE NOTICE 'Added public_slug column to clubs';
+            END IF;
+        END $$;
+
+        -- Migration: Set public_slug from circle_id (authoritative source)
+        -- Clubs sharing a circle_id get suffixes: 481227375, 481227375-2, 481227375-3, ...
+        DO $$
+        BEGIN
+            UPDATE clubs SET public_slug = NULL;
+            UPDATE clubs c
+            SET public_slug = CASE WHEN ranked.rn = 1 THEN ranked.circle_id
+                                   ELSE ranked.circle_id || '-' || ranked.rn::text END
+            FROM (
+                SELECT club_id, circle_id,
+                       ROW_NUMBER() OVER (PARTITION BY circle_id ORDER BY club_name, club_id) AS rn
+                FROM clubs
+                WHERE circle_id IS NOT NULL AND circle_id != ''
+            ) ranked
+            WHERE c.club_id = ranked.club_id;
+            RAISE NOTICE 'Synced public_slug from circle_id';
+        END $$;
+
+        -- Migration: Create partial unique index on public_slug if it doesn't exist
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_indexes
+                WHERE tablename = 'clubs' AND indexname = 'clubs_public_slug_unique'
+            ) THEN
+                CREATE UNIQUE INDEX clubs_public_slug_unique ON clubs(public_slug) WHERE public_slug IS NOT NULL;
+                RAISE NOTICE 'Created unique index on public_slug';
+            END IF;
+        END $$;
+
         -- Members table
         CREATE TABLE IF NOT EXISTS members (
             member_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -363,8 +417,26 @@ class Database:
         
         -- Unique constraint for trainer_id per club
         DROP INDEX IF EXISTS members_trainer_id_key;
-        CREATE UNIQUE INDEX IF NOT EXISTS members_trainer_id_club_unique 
+        CREATE UNIQUE INDEX IF NOT EXISTS members_trainer_id_club_unique
             ON members(trainer_id, club_id) WHERE trainer_id IS NOT NULL;
+
+        -- Audit log table (web dashboard actions)
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+            actor_id    TEXT        NOT NULL,
+            actor_name  TEXT        NOT NULL,
+            action      TEXT        NOT NULL,
+            entity_type TEXT        NOT NULL,
+            entity_id   TEXT,
+            club_id     UUID        REFERENCES clubs(club_id) ON DELETE CASCADE,
+            details     JSONB,
+            created_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_club_created
+            ON audit_logs(club_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_created
+            ON audit_logs(created_at DESC);
         """
         
         try:
