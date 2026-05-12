@@ -37,6 +37,7 @@ After inviting, use `/add_club` to register your club and `/set_report_channel` 
 - **Mid-month quota changes** — supports changing the quota requirement partway through a month with automatic recalculation
 - **Monthly reset detection** — automatically handles Uma Musume's monthly game resets
 - **Multi-club support** — track multiple clubs independently with separate quotas, schedules, and channels
+- **Visual image reports** — optional PNG quota report with progress bars, rank movement, and bomb indicators (opt-in per club)
 - **Web dashboard** — pair with [UmaCore Web](https://github.com/oHaruki/UmaCore-web) for a visual management interface
 
 ---
@@ -113,7 +114,7 @@ After inviting, use `/add_club` to register your club and `/set_report_channel` 
 
 4. In Discord, add your first club:
    ```
-   /add_club club_name:YourClubName circle_id:860280110
+   /add_club club_name:YourClubName circle_id:860280110 daily_quota:1000000
    ```
    Find your `circle_id` at [uma.moe/circles](https://uma.moe/circles/) — it's the number at the end of the URL.
 
@@ -138,6 +139,10 @@ Cloud platforms (Railway, Render, Fly.io) also work — use a `Procfile` with `w
 UmaCore is free and open source. If it saves your club leadership time, consider supporting development:
 
 [![Ko-Fi](https://img.shields.io/badge/Buy%20me%20a%20coffee-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi)](https://ko-fi.com/harukidev)
+
+## Credits
+
+- **[rat (rattenschwe1f)](https://github.com/rattenschwe1f)** — visual image report renderer, originally built as [uma-fan-tally-tool](https://github.com/rattenschwe1f/uma-fan-tally-tool). The PNG generation code in `tally/` is adapted from his work.
 
 ## License
 

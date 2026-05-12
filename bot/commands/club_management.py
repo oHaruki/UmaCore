@@ -119,12 +119,12 @@ class ClubManagementCommands(commands.Cog):
     ])
     async def add_club(self, interaction: discord.Interaction,
                        club_name: str,
-                       scrape_url: str,
-                       circle_id: str = None,
-                       daily_quota: int = 1000000,
+                       circle_id: str,
+                       daily_quota: int,
                        quota_period: app_commands.Choice[str] = None,
                        timezone: str = "Europe/Amsterdam",
-                       scrape_time: str = "16:00"):
+                       scrape_time: str = "16:00",
+                       scrape_url: str = None):
         """Register a new club"""
         await interaction.response.defer()
         
@@ -172,7 +172,7 @@ class ClubManagementCommands(commands.Cog):
 
             club = await Club.create(
                 club_name=club_name,
-                scrape_url=scrape_url,
+                scrape_url=scrape_url or "",
                 circle_id=resolved_circle_id,
                 guild_id=interaction.guild_id,
                 daily_quota=daily_quota,
@@ -202,7 +202,7 @@ class ClubManagementCommands(commands.Cog):
                 name="Club Details",
                 value=f"**Name:** {club_name}\n"
                       f"**Circle ID:** {resolved_circle_id or 'Not set'}\n"
-                      f"**URL:** {scrape_url}",
+                      f"**URL:** {scrape_url or 'Not set'}",
                 inline=False
             )
             

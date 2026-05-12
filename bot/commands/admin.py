@@ -6,11 +6,13 @@ from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, time
 import logging
+import os
 import pytz
 import asyncio
 
 from scrapers import ChronoGenesisScraper, UmaMoeAPIScraper
 from services import QuotaCalculator, BombManager, ReportGenerator, MonthlyInfoService
+from services.tally_renderer import generate_tally_image
 from models import Member, QuotaRequirement, BotSettings, Club, ClubRankHistory
 from config.settings import USE_UMAMOE_API
 
@@ -480,20 +482,41 @@ class AdminCommands(commands.Cog):
                 club_obj.club_id, current_date, quota_period=club_obj.quota_period
             )
 
-            # Only fetch bomb data if bombs are enabled
             if club_obj.bombs_enabled:
                 bombs_data = await self.bomb_manager.get_active_bombs_with_members(club_obj.club_id)
             else:
                 bombs_data = []
 
             effective_quota = await QuotaRequirement.get_quota_for_date(club_obj.club_id, current_date)
-            daily_reports = self.report_generator.create_daily_report(
-                club_obj.club_name, effective_quota, status_summary, bombs_data, current_date,
-                rank_data=rank_data, quota_period=club_obj.quota_period
-            )
 
-            for embed in daily_reports:
-                await report_channel.send(embed=embed)
+            if club_obj.image_report_enabled:
+                monthly_rank = rank_data.get("monthly_rank") if rank_data else None
+                img_path = None
+                try:
+                    img_path = await generate_tally_image(
+                        club_obj.club_id, club_obj.club_name, current_date,
+                        daily_quota=effective_quota, monthly_rank=monthly_rank,
+                    )
+                    await report_channel.send(file=discord.File(str(img_path), filename="quota_report.png"))
+                    logger.info(f"✅ Tally image report sent for {club_obj.club_name}")
+                except Exception as img_err:
+                    logger.error(f"❌ Tally image failed for {club_obj.club_name}, falling back to embeds: {img_err}", exc_info=True)
+                    daily_reports = self.report_generator.create_daily_report(
+                        club_obj.club_name, effective_quota, status_summary, bombs_data, current_date,
+                        rank_data=rank_data, quota_period=club_obj.quota_period
+                    )
+                    for embed in daily_reports:
+                        await report_channel.send(embed=embed)
+                finally:
+                    if img_path and img_path.exists():
+                        os.unlink(img_path)
+            else:
+                daily_reports = self.report_generator.create_daily_report(
+                    club_obj.club_name, effective_quota, status_summary, bombs_data, current_date,
+                    rank_data=rank_data, quota_period=club_obj.quota_period
+                )
+                for embed in daily_reports:
+                    await report_channel.send(embed=embed)
 
             if deactivated:
                 deactivation_embeds = self.report_generator.create_bomb_deactivation_report(
