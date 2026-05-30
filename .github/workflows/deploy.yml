@@ -18,6 +18,7 @@ jobs:
           echo "CHANNEL_ID=${{ secrets.CHANNEL_ID }}" >> .env
           echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" >> .env
           echo "LOG_LEVEL=${{ secrets.LOG_LEVEL }}" >> .env
+          echo "UMAMOE_API_KEY=${{ secrets.UMAMOE_API_KEY }}" >> .env
 
       - name: Stop existing containers
         run: docker-compose down || true
