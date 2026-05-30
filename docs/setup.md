@@ -47,9 +47,12 @@ DISCORD_TOKEN=your_bot_token_here
 DATABASE_URL=postgresql://user:password@host:5432/database_name
 LOG_LEVEL=INFO
 USE_UMAMOE_API=true
+UMAMOE_API_KEY=uma_k_your_key_here
 ```
 
 Set `USE_UMAMOE_API=false` to use ChronoGenesis scraping instead of Uma.moe API.
+
+`UMAMOE_API_KEY` is required for all Uma.moe API endpoints. Pass it via the `X-API-Key` request header. Contact the uma.moe admin to obtain a key.
 
 ### 6. Run the bot
 

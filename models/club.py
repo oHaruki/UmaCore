@@ -32,6 +32,7 @@ class Club:
     bomb_trigger_days: int
     bomb_countdown_days: int
     bombs_enabled: bool
+    image_report_enabled: bool
     is_active: bool
     report_channel_id: Optional[int]
     alert_channel_id: Optional[int]
@@ -58,8 +59,8 @@ class Club:
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                      timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
-                     is_active, report_channel_id, alert_channel_id, monthly_info_channel_id,
-                     monthly_info_message_id, created_at, updated_at, public_slug
+                     image_report_enabled, is_active, report_channel_id, alert_channel_id,
+                     monthly_info_channel_id, monthly_info_message_id, created_at, updated_at, public_slug
         """
         row = await db.fetchrow(query, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                                 timezone, scrape_time, bomb_trigger_days, bomb_countdown_days,
@@ -73,8 +74,8 @@ class Club:
         query = """
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
-                   is_active, report_channel_id, alert_channel_id, monthly_info_channel_id,
-                   monthly_info_message_id, created_at, updated_at, public_slug
+                   image_report_enabled, is_active, report_channel_id, alert_channel_id,
+                   monthly_info_channel_id, monthly_info_message_id, created_at, updated_at, public_slug
             FROM clubs
             WHERE club_id = $1
         """
@@ -89,8 +90,8 @@ class Club:
         query = """
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
-                   is_active, report_channel_id, alert_channel_id, monthly_info_channel_id,
-                   monthly_info_message_id, created_at, updated_at, public_slug
+                   image_report_enabled, is_active, report_channel_id, alert_channel_id,
+                   monthly_info_channel_id, monthly_info_message_id, created_at, updated_at, public_slug
             FROM clubs
             WHERE club_name = $1
         """
@@ -105,8 +106,8 @@ class Club:
         query = """
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
-                   is_active, report_channel_id, alert_channel_id, monthly_info_channel_id,
-                   monthly_info_message_id, created_at, updated_at, public_slug
+                   image_report_enabled, is_active, report_channel_id, alert_channel_id,
+                   monthly_info_channel_id, monthly_info_message_id, created_at, updated_at, public_slug
             FROM clubs
             WHERE is_active = TRUE
             ORDER BY club_name
@@ -120,8 +121,8 @@ class Club:
         query = """
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
-                   is_active, report_channel_id, alert_channel_id, monthly_info_channel_id,
-                   monthly_info_message_id, created_at, updated_at, public_slug
+                   image_report_enabled, is_active, report_channel_id, alert_channel_id,
+                   monthly_info_channel_id, monthly_info_message_id, created_at, updated_at, public_slug
             FROM clubs
             ORDER BY club_name
         """
@@ -134,8 +135,8 @@ class Club:
         query = """
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
-                   is_active, report_channel_id, alert_channel_id, monthly_info_channel_id,
-                   monthly_info_message_id, created_at, updated_at, public_slug
+                   image_report_enabled, is_active, report_channel_id, alert_channel_id,
+                   monthly_info_channel_id, monthly_info_message_id, created_at, updated_at, public_slug
             FROM clubs
             WHERE guild_id = $1 OR guild_id IS NULL
             ORDER BY club_name
@@ -171,7 +172,7 @@ class Club:
         """Update club settings"""
         valid_fields = {'scrape_url', 'circle_id', 'daily_quota', 'quota_period', 'timezone',
                        'scrape_time', 'bomb_trigger_days', 'bomb_countdown_days', 'bombs_enabled',
-                       'report_channel_id', 'alert_channel_id'}
+                       'image_report_enabled', 'report_channel_id', 'alert_channel_id'}
 
         updates = {k: v for k, v in kwargs.items() if k in valid_fields}
         if not updates:

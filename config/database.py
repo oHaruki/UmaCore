@@ -420,6 +420,18 @@ class Database:
         CREATE UNIQUE INDEX IF NOT EXISTS members_trainer_id_club_unique
             ON members(trainer_id, club_id) WHERE trainer_id IS NOT NULL;
 
+        -- Migration: Add image_report_enabled column if it doesn't exist
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='clubs' AND column_name='image_report_enabled'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN image_report_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+                RAISE NOTICE 'Added image_report_enabled column to clubs';
+            END IF;
+        END $$;
+
         -- Audit log table (web dashboard actions)
         CREATE TABLE IF NOT EXISTS audit_logs (
             id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
