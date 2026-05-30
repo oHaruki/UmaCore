@@ -1,0 +1,1978 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Discord bot for tracking Umamusume club quotas">
+      
+      
+      
+        <link rel="canonical" href="https://oHaruki.github.io/UmaCore/quota-system/">
+      
+      
+        <link rel="prev" href="../setup/">
+      
+      
+        <link rel="next" href="../data-sources/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Quota System - UmaCore</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#quota-system" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="UmaCore" class="md-header__button md-logo" aria-label="UmaCore" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            UmaCore
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Quota System
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="purple"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="purple"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Introduction
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../getting-started/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting Started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../faq/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  FAQ
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../setup/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Setup Guide
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Quota System
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../data-sources/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Data Sources
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../commands/" class="md-tabs__link">
+          
+  
+  
+  Commands
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../terms-of-service/" class="md-tabs__link">
+          
+  
+  
+  Legal
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="UmaCore" class="md-nav__button md-logo" aria-label="UmaCore" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    UmaCore
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Setup Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quota System
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quota System
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#how-quotas-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How Quotas Work
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="How Quotas Work">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#deficit-surplus" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deficit &amp; Surplus
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#quota-periods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quota Periods
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mid-month-quota-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mid-Month Quota Changes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bomb-system" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bomb System
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Bomb System">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How It Works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#monthly-reset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Monthly Reset
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edge Cases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Edge Cases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#member-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Member Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Member Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new-trainer-joins-mid-month" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        New Trainer Joins Mid-Month
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trainer-leaves-the-club" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trainer Leaves the Club
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#manually-deactivated-vs-auto-deactivated" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Manually Deactivated vs Auto-Deactivated
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bomb-edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bomb Edge Cases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Bomb Edge Cases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#bomb-countdown-only-decrements-once-per-day" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bomb Countdown Only Decrements Once Per Day
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bomb-urgency-colours" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bomb Urgency Colours
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#consecutive-days-resets-each-month" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consecutive Days Resets Each Month
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bombs-are-cleared-on-monthly-reset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bombs Are Cleared on Monthly Reset
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bomb-alerts-for-already-removed-members" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bomb Alerts for Already-Removed Members
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#quota-period-edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quota Period Edge Cases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Quota Period Edge Cases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#weekly-biweekly-periods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Weekly / Biweekly Periods
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multiple-quota-changes-on-the-same-day" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multiple Quota Changes on the Same Day
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#monthly-reset-edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Monthly Reset Edge Cases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Monthly Reset Edge Cases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#automatic-reset-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Automatic Reset Detection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#no-previous-data-first-ever-scrape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        No Previous Data (First Ever Scrape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notifications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notifications
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Notifications">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#dms-disabled-or-user-not-linked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DMs Disabled or User Not Linked
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../data-sources/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Sources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Commands
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Commands
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../commands/club-management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Club Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../commands/quota-management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quota Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../commands/channel-settings/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Channel Settings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../commands/member-management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Member Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../commands/user-commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../commands/charts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Charts & Stats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legal
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Legal
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../terms-of-service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Terms of Service
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../privacy-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Privacy Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#how-quotas-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How Quotas Work
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="How Quotas Work">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#deficit-surplus" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deficit &amp; Surplus
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#quota-periods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quota Periods
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mid-month-quota-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mid-Month Quota Changes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bomb-system" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bomb System
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Bomb System">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How It Works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#monthly-reset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Monthly Reset
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edge Cases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Edge Cases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#member-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Member Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Member Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new-trainer-joins-mid-month" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        New Trainer Joins Mid-Month
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trainer-leaves-the-club" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trainer Leaves the Club
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#manually-deactivated-vs-auto-deactivated" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Manually Deactivated vs Auto-Deactivated
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bomb-edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bomb Edge Cases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Bomb Edge Cases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#bomb-countdown-only-decrements-once-per-day" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bomb Countdown Only Decrements Once Per Day
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bomb-urgency-colours" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bomb Urgency Colours
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#consecutive-days-resets-each-month" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consecutive Days Resets Each Month
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bombs-are-cleared-on-monthly-reset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bombs Are Cleared on Monthly Reset
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bomb-alerts-for-already-removed-members" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bomb Alerts for Already-Removed Members
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#quota-period-edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quota Period Edge Cases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Quota Period Edge Cases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#weekly-biweekly-periods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Weekly / Biweekly Periods
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multiple-quota-changes-on-the-same-day" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multiple Quota Changes on the Same Day
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#monthly-reset-edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Monthly Reset Edge Cases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Monthly Reset Edge Cases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#automatic-reset-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Automatic Reset Detection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#no-previous-data-first-ever-scrape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        No Previous Data (First Ever Scrape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notifications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notifications
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Notifications">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#dms-disabled-or-user-not-linked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DMs Disabled or User Not Linked
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="quota-system">Quota System</h1>
+<h2 id="how-quotas-work">How Quotas Work</h2>
+<p>Each club has a quota — a fan-earning goal that members need to meet. The bot checks progress daily and compares each member's actual fans against the expected cumulative total.</p>
+<h3 id="deficit-surplus">Deficit &amp; Surplus</h3>
+<pre><code>deficit_surplus = cumulative_fans - expected_fans
+</code></pre>
+<ul>
+<li><strong>Positive</strong> → member is ahead of quota</li>
+<li><strong>Negative</strong> → member is behind quota</li>
+<li>Surplus from previous days can cover future deficits</li>
+</ul>
+<h3 id="quota-periods">Quota Periods</h3>
+<table>
+<thead>
+<tr>
+<th>Period</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>daily</code></td>
+<td>Quota applies per day (e.g. 1M/day = 30M/month)</td>
+</tr>
+<tr>
+<td><code>weekly</code></td>
+<td>Quota applies per 7 days (e.g. 5M/week)</td>
+</tr>
+<tr>
+<td><code>biweekly</code></td>
+<td>Quota applies per 14 days (e.g. 10M/2 weeks)</td>
+</tr>
+</tbody>
+</table>
+<p>Set or change the period with <code>/edit_club</code>.</p>
+<h3 id="mid-month-quota-changes">Mid-Month Quota Changes</h3>
+<p>You can change the quota at any time with <code>/quota</code>. The new quota applies from that day forward — historical data is unaffected and expected fans are recalculated automatically. The monthly info board also updates.</p>
+<hr />
+<h2 id="bomb-system">Bomb System</h2>
+<p>The bomb system warns members who consistently fall behind quota.</p>
+<h3 id="how-it-works">How It Works</h3>
+<ol>
+<li>A member falls behind quota for <code>bomb_trigger_days</code> consecutive days (default: 3)</li>
+<li>A bomb is activated — the member is notified via DM (if linked)</li>
+<li>The member has <code>bomb_countdown_days</code> days (default: 7) to get back on track</li>
+<li>If they catch up within the countdown, the bomb is defused</li>
+<li>If they don't, an alert is posted in the alert channel</li>
+</ol>
+<h3 id="configuration">Configuration</h3>
+<p>Configured per club via <code>/edit_club</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bomb_trigger_days</code></td>
+<td>3</td>
+<td>Days behind before bomb activates</td>
+</tr>
+<tr>
+<td><code>bomb_countdown_days</code></td>
+<td>7</td>
+<td>Days to recover before alert</td>
+</tr>
+<tr>
+<td><code>bombs_enabled</code></td>
+<td>true</td>
+<td>Toggle bomb system on/off</td>
+</tr>
+</tbody>
+</table>
+<p>Use <code>/bomb_status</code> to see all active bombs for a club.</p>
+<hr />
+<h2 id="monthly-reset">Monthly Reset</h2>
+<p>At the start of each month, the bot automatically detects when fan counts drop significantly (below 50% of the previous total) and triggers a reset, which:</p>
+<ul>
+<li>Clears quota history</li>
+<li>Clears active bombs</li>
+<li>Clears tracking data</li>
+<li>Starts fresh for the new month</li>
+</ul>
+<p>You can also trigger it manually with <code>/reset_month</code> if something went wrong.</p>
+<hr />
+<h2 id="edge-cases">Edge Cases</h2>
+<h3 id="member-lifecycle">Member Lifecycle</h3>
+<h4 id="new-trainer-joins-mid-month">New Trainer Joins Mid-Month</h4>
+<p>When a trainer joins mid-month, the bot only knows their current total fan count — it has no data on how many fans they earned before joining. Because of this, <strong>their first day is recorded as <code>+0</code></strong> (no daily gain) and they are not held to any quota requirement for that day.</p>
+<p>From the next day onward, the bot can calculate their actual daily gain and quota tracking begins normally.</p>
+<p>This appears in the daily report embed as:</p>
+<pre><code>TrainerName    +0    [total fans]
+</code></pre>
+<p>No bomb strike is issued on the first day regardless of their deficit, since the baseline is being established.</p>
+<h4 id="trainer-leaves-the-club">Trainer Leaves the Club</h4>
+<p>When a trainer no longer appears in the scraped data, the bot automatically deactivates them. Their quota history is preserved in the database but they are removed from all daily reports and their active bombs are cleared.</p>
+<p>If they rejoin later in the same month, the bot reactivates them and treats it as a fresh join — the same first-day <code>+0</code> behaviour applies, and their quota expectations are calculated from the return date, not the original join date.</p>
+<h4 id="manually-deactivated-vs-auto-deactivated">Manually Deactivated vs Auto-Deactivated</h4>
+<p>There are two kinds of deactivation:</p>
+<ul>
+<li><strong>Auto-deactivated</strong> — triggered when a trainer disappears from scrape data. They will be reactivated automatically if they reappear.</li>
+<li><strong>Manually deactivated</strong> — triggered via <code>/deactivate_member</code>. The bot will <strong>not</strong> reactivate them automatically, even if they show up in future scrapes. Use <code>/activate_member</code> to restore them.</li>
+</ul>
+<hr />
+<h3 id="bomb-edge-cases">Bomb Edge Cases</h3>
+<h4 id="bomb-countdown-only-decrements-once-per-day">Bomb Countdown Only Decrements Once Per Day</h4>
+<p>Even if the daily check runs more than once (e.g. after a <code>/force_check</code>), the bomb countdown only decrements once per calendar day. There is no risk of a bomb expiring faster than intended from repeated checks.</p>
+<h4 id="bomb-urgency-colours">Bomb Urgency Colours</h4>
+<p>The bomb emoji colour in the daily report reflects how much time is left:</p>
+<table>
+<thead>
+<tr>
+<th>Colour</th>
+<th>Days Remaining</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>🟡 Yellow</td>
+<td>5 or more</td>
+</tr>
+<tr>
+<td>🟠 Orange</td>
+<td>3–4</td>
+</tr>
+<tr>
+<td>🔴 Red</td>
+<td>0–2</td>
+</tr>
+</tbody>
+</table>
+<h4 id="consecutive-days-resets-each-month">Consecutive Days Resets Each Month</h4>
+<p>The bomb trigger counts consecutive days behind quota <strong>within the current month only</strong>. If a member ends the previous month behind quota, that does not carry over — they start the new month with a clean streak count.</p>
+<h4 id="bombs-are-cleared-on-monthly-reset">Bombs Are Cleared on Monthly Reset</h4>
+<p>When the bot detects a monthly reset, all active bombs for the club are deleted. Members must accumulate new consecutive behind-days in the new month before a bomb is re-issued.</p>
+<h4 id="bomb-alerts-for-already-removed-members">Bomb Alerts for Already-Removed Members</h4>
+<p>If a member is manually deactivated while a bomb is still active, the bot will not send a kick alert for them. The bomb record is kept in the database for history but is otherwise ignored.</p>
+<hr />
+<h3 id="quota-period-edge-cases">Quota Period Edge Cases</h3>
+<h4 id="weekly-biweekly-periods">Weekly / Biweekly Periods</h4>
+<p>When a club uses <code>weekly</code> or <code>biweekly</code> quota periods, the daily report shows progress within the current period rather than a running monthly total:</p>
+<pre><code>TrainerName    500K / 700K this week  (-200K overall)
+</code></pre>
+<p>The "overall" figure is the full month deficit/surplus. The per-period figure resets at the start of each new period.</p>
+<h4 id="multiple-quota-changes-on-the-same-day">Multiple Quota Changes on the Same Day</h4>
+<p>If <code>/quota</code> is run multiple times in a single day, the most recently set value takes effect. The monthly info board reflects the final value for that day.</p>
+<hr />
+<h3 id="monthly-reset-edge-cases">Monthly Reset Edge Cases</h3>
+<h4 id="automatic-reset-detection">Automatic Reset Detection</h4>
+<p>The bot detects a reset when a member's fan count drops to less than 50% of their previous recorded total. This handles the in-game monthly reset without any manual intervention. If a reset is incorrectly triggered, use <code>/reset_month</code> to force a clean state.</p>
+<h4 id="no-previous-data-first-ever-scrape">No Previous Data (First Ever Scrape)</h4>
+<p>On the very first scrape for a new club, there is no prior history to compare against. The bot skips reset detection entirely and adds all members as new. No reset is triggered even if fan counts appear low.</p>
+<hr />
+<h3 id="notifications">Notifications</h3>
+<h4 id="dms-disabled-or-user-not-linked">DMs Disabled or User Not Linked</h4>
+<p>If a member hasn't linked their Discord account via <code>/link</code>, or has Discord DMs disabled, bomb notifications and deficit alerts are simply not delivered to them. The report channel and alert channel still receive all notifications as normal — DM failures do not affect channel output.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../setup/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Setup Guide">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Setup Guide
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../data-sources/" class="md-footer__link md-footer__link--next" aria-label="Next: Data Sources">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Data Sources
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
