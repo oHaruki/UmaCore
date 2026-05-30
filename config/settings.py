@@ -20,6 +20,7 @@ SCRAPE_RETRY_DELAY = 1  # seconds
 
 # Uma.moe API Configuration
 USE_UMAMOE_API = os.getenv("USE_UMAMOE_API", "true").lower() == "true"
+UMAMOE_API_KEY = os.getenv("UMAMOE_API_KEY")
 
 # Timezone Configuration
 TIMEZONE = "Europe/Amsterdam"  # CEST

@@ -8,6 +8,7 @@ import aiohttp
 from datetime import datetime, date, timezone, timedelta
 
 from scrapers.base_scraper import BaseScraper
+from config.settings import UMAMOE_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,10 @@ class UmaMoeAPIScraper(BaseScraper):
             
             logger.info(f"Fetching data from Uma.moe API for circle {self.circle_id}...")
             
-            async with aiohttp.ClientSession(headers={"Accept-Encoding": "gzip, deflate"}) as session:
+            session_headers = {"Accept-Encoding": "gzip, deflate"}
+            if UMAMOE_API_KEY:
+                session_headers["X-API-Key"] = UMAMOE_API_KEY
+            async with aiohttp.ClientSession(headers=session_headers) as session:
                 # Primary fetch: the month we're actually reporting on
                 primary_data = await self._fetch_month(session, year, month)
                 if not primary_data:
