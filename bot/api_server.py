@@ -309,11 +309,28 @@ async def handle_health(request: web.Request) -> web.StreamResponse:
     return await _send_json(request, {'status': 'ok'})
 
 
+async def handle_logs(request: web.Request) -> web.StreamResponse:
+    import os
+    from config.settings import LOG_FILE
+    raw_n = request.rel_url.query.get('lines', '200')
+    all_lines = raw_n == 'all'
+    n = None if all_lines else max(1, min(int(raw_n), 50000))
+    try:
+        log_path = LOG_FILE if os.path.isabs(LOG_FILE) else os.path.join(os.getcwd(), LOG_FILE)
+        with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()
+        out = [l.rstrip() for l in lines] if all_lines else [l.rstrip() for l in lines[-n:]]
+        return await _send_json(request, {'lines': out, 'total': len(lines)})
+    except FileNotFoundError:
+        return await _send_json(request, {'lines': [], 'error': 'Log file not found'})
+
+
 def create_app() -> web.Application:
     app = web.Application()
     app.router.add_post('/sync', handle_sync)
     app.router.add_post('/recalculate', handle_recalculate)
     app.router.add_get('/health', handle_health)
+    app.router.add_get('/logs', handle_logs)
     return app
 
 

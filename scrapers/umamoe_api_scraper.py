@@ -42,7 +42,10 @@ class UmaMoeAPIScraper(BaseScraper):
         async with session.get(self.base_url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
             if response.status != 200:
                 error_text = await response.text()
-                logger.error(f"Uma.moe API returned status {response.status} for {year}-{month:02d}: {error_text[:200]}")
+                if response.status == 429:
+                    logger.error(f"⛔ RATE LIMITED by Uma.moe API (429) for {year}-{month:02d} — slow down or check API key limits. Response: {error_text[:200]}")
+                else:
+                    logger.error(f"Uma.moe API returned status {response.status} for {year}-{month:02d}: {error_text[:200]}")
                 return None
             return await response.json()
     
