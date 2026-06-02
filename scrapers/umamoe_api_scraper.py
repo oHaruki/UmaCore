@@ -282,7 +282,7 @@ class UmaMoeAPIScraper(BaseScraper):
             join_day = 1
             starting_lifetime_fans = 0
 
-            if lifetime_fans and lifetime_fans[0] > 0:
+            if not (lifetime_fans and lifetime_fans[0] < 0):
                 for idx, fans in enumerate(lifetime_fans[:current_day], start=1):
                     if fans > 0:
                         join_day = idx
