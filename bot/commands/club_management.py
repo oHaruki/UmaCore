@@ -428,7 +428,8 @@ class ClubManagementCommands(commands.Cog):
                        timezone: str = None,
                        bomb_trigger_days: int = None,
                        bomb_countdown_days: int = None,
-                       bombs_enabled: bool = None):
+                       bombs_enabled: bool = None,
+                       image_report_enabled: bool = None):
         """Edit club configuration"""
         await interaction.response.defer()
         
@@ -486,6 +487,8 @@ class ClubManagementCommands(commands.Cog):
                 updates['bomb_countdown_days'] = bomb_countdown_days
             if bombs_enabled is not None:
                 updates['bombs_enabled'] = bombs_enabled
+            if image_report_enabled is not None:
+                updates['image_report_enabled'] = image_report_enabled
 
             if not updates:
                 await interaction.followup.send("❌ No changes specified")
