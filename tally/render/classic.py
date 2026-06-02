@@ -205,7 +205,7 @@ class _Renderer:
         dy = y + h
         draw.rectangle((px, dy, self.img_w - px, dy + self.divider_h), fill=theme["divider"])
 
-    def _draw_rank_cell(self, draw, x, y, col_w, rank: int, row: Optional[MemberReport], font):
+    def _draw_rank_cell(self, draw, x, y, col_w, rank: int, row: Optional[MemberReport], font, tiny_font):
         S, theme = self.S, self.theme
         pad = 10 * S
         cy  = y + self.row_h // 2
@@ -231,7 +231,7 @@ class _Renderer:
             rb = draw.textbbox((x + pad, cy), rank_text, font=font, anchor="lm")
             arrow = f"↑{movement}" if movement > 0 else f"↓{abs(movement)}"
             arrow_color = theme["rank_up"] if movement > 0 else theme["rank_down"]
-            draw.text((rb[2] + 4 * S, cy), arrow, font=fonts["tiny"], fill=arrow_color, anchor="lm")
+            draw.text((rb[2] + 4 * S, cy), arrow, font=tiny_font, fill=arrow_color, anchor="lm")
 
     def _draw_name_cell(self, draw, x, y, col_w, row: MemberReport, rank: int, font, tag_font):
         S, theme = self.S, self.theme
@@ -430,7 +430,7 @@ class _Renderer:
                 cw = col.width * S
 
                 if col.key == "rank":
-                    self._draw_rank_cell(draw, x, y, cw, rank, row, fonts["rank"])
+                    self._draw_rank_cell(draw, x, y, cw, rank, row, fonts["rank"], fonts["tiny"])
 
                 elif row is None:
                     pass
