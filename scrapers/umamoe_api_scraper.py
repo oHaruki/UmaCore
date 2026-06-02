@@ -276,26 +276,27 @@ class UmaMoeAPIScraper(BaseScraper):
             
             viewer_id_str = str(viewer_id)
             
-            # Detect join day (first non-zero value) and starting lifetime fans
+            # Detect join day and starting baseline.
+            # Transferred members have a negative day-1 value (uma.moe transfer marker);
+            # treat them as starting from 0 so their positive later values are used directly.
             join_day = 1
             starting_lifetime_fans = 0
-            
+
             for idx, fans in enumerate(lifetime_fans[:current_day], start=1):
                 if fans > 0:
                     join_day = idx
                     starting_lifetime_fans = fans
                     break
-            
-            # Convert lifetime cumulative fans to monthly cumulative fans
+
+            # Convert lifetime cumulative fans to monthly cumulative fans.
+            # Negative values are transfer markers — treat them as 0.
             monthly_fans = []
             for day_idx in range(current_day):
                 lifetime_total = lifetime_fans[day_idx]
-                
-                if lifetime_total == 0:
+                if lifetime_total <= 0:
                     fans_this_month = 0
                 else:
                     fans_this_month = lifetime_total - starting_lifetime_fans
-                
                 monthly_fans.append(fans_this_month)
             
             # Day 1 endpoint correction
