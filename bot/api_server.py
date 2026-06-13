@@ -10,6 +10,8 @@ from datetime import datetime, date, timedelta
 import pytz
 from aiohttp import web
 
+from utils.timezone_helper import resolve_timezone
+
 from config.database import db
 from models import Club
 from scrapers import UmaMoeAPIScraper, ChronoGenesisScraper
@@ -166,7 +168,7 @@ async def handle_sync(request: web.Request) -> web.StreamResponse:
 
     try:
         async with ScrapeContext(club.club_id, f"web_sync_{club.club_name}"):
-            club_tz = pytz.timezone(club.timezone)
+            club_tz = resolve_timezone(club.timezone)
             current_date = datetime.now(club_tz).date()
 
             scraped_data = await scraper.scrape()

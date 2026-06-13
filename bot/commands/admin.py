@@ -16,6 +16,7 @@ from services.tally_renderer import generate_tally_image
 from models import Member, QuotaRequirement, BotSettings, Club, ClubRankHistory
 from config.settings import USE_UMAMOE_API, UMAMOE_RATE_PER_MIN, UMAMOE_RATE_BURST
 from utils.rate_limiter import umamoe_limiter
+from utils.timezone_helper import resolve_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Quota amount seems unreasonably high (>{cap_label} for {club_obj.quota_period} quota). Please check your input.")
                 return
 
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
 
@@ -195,7 +196,7 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Message not found. Use `/post_monthly_info` to create a new one.")
                 return
 
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
 
@@ -229,7 +230,7 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
 
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
 
@@ -368,7 +369,7 @@ class AdminCommands(commands.Cog):
             if not alert_channel:
                 alert_channel = report_channel
 
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
 
@@ -753,7 +754,7 @@ class AdminCommands(commands.Cog):
 
             from config.database import db as _db
 
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             current_date = datetime.now(club_tz).date()
 
             await interaction.followup.send(f"🔄 Recalculating for {club}...")

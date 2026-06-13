@@ -5,7 +5,6 @@ import discord
 from discord.ext import tasks
 from datetime import datetime, time, timedelta, timezone
 import logging
-import pytz
 import asyncio
 
 import os
@@ -17,6 +16,7 @@ from services import (
     ScrapeLockManager, ScrapeContext, ScrapeScheduler,
 )
 from services.tally_renderer import generate_tally_image
+from utils.timezone_helper import resolve_timezone
 from config.settings import (
     USE_UMAMOE_API, SCRAPE_DEFAULT_UTC_TIME, SCRAPE_ROLLOVER_WINDOW_MIN,
     SCRAPE_ROLLOUT_PER_SEC, SCRAPE_RANK_BUFFER_SEC, SCRAPE_MAX_RANK_DELAY_SEC,
@@ -88,7 +88,7 @@ class BotTasks:
 
         for club in clubs:
             try:
-                club_tz = pytz.timezone(club.timezone)
+                club_tz = resolve_timezone(club.timezone)
                 now_in_club_tz = now_utc.astimezone(club_tz)
                 current_date = now_in_club_tz.date()
 
@@ -127,7 +127,7 @@ class BotTasks:
         gets a rank-aware delay so its data has rolled out before we fetch.
         Clubs outside the window read already-settled data and fire on time.
         """
-        club_tz = pytz.timezone(club.timezone)
+        club_tz = resolve_timezone(club.timezone)
         target_local = club_tz.localize(
             datetime.combine(now_utc.astimezone(club_tz).date(),
                              time(club.scrape_time.hour, club.scrape_time.minute))
@@ -182,7 +182,7 @@ class BotTasks:
                     logger.warning(f"Alert channel not found for {club.club_name}, using report channel")
                     alert_channel = report_channel
 
-                club_tz = pytz.timezone(club.timezone)
+                club_tz = resolve_timezone(club.timezone)
                 current_datetime = datetime.now(club_tz)
                 current_date = current_datetime.date()
 

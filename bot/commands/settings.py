@@ -10,6 +10,7 @@ import pytz
 
 from models import Club
 from services import MonthlyInfoService
+from utils.timezone_helper import resolve_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +215,7 @@ class SettingsCommands(commands.Cog):
             # Use current channel if none specified
             target_channel = channel or interaction.channel
             
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
             
