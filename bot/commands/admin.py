@@ -14,7 +14,9 @@ from scrapers import ChronoGenesisScraper, UmaMoeAPIScraper
 from services import QuotaCalculator, BombManager, ReportGenerator, MonthlyInfoService
 from services.tally_renderer import generate_tally_image
 from models import Member, QuotaRequirement, BotSettings, Club, ClubRankHistory
-from config.settings import USE_UMAMOE_API
+from config.settings import USE_UMAMOE_API, UMAMOE_RATE_PER_MIN, UMAMOE_RATE_BURST
+from utils.rate_limiter import umamoe_limiter
+from utils.timezone_helper import resolve_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +96,7 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Quota amount seems unreasonably high (>{cap_label} for {club_obj.quota_period} quota). Please check your input.")
                 return
 
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
 
@@ -194,7 +196,7 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Message not found. Use `/post_monthly_info` to create a new one.")
                 return
 
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
 
@@ -228,7 +230,7 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
 
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
 
@@ -367,7 +369,7 @@ class AdminCommands(commands.Cog):
             if not alert_channel:
                 alert_channel = report_channel
 
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             current_datetime = datetime.now(club_tz)
             current_date = current_datetime.date()
 
@@ -752,7 +754,7 @@ class AdminCommands(commands.Cog):
 
             from config.database import db as _db
 
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             current_date = datetime.now(club_tz).date()
 
             await interaction.followup.send(f"🔄 Recalculating for {club}...")
@@ -874,6 +876,127 @@ class AdminCommands(commands.Cog):
             logger.error(f"Error in reset_month: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
+    @app_commands.command(
+        name="limiter_test",
+        description="[DEV] Fire N concurrent requests to verify the Uma.moe rate limiter holds",
+    )
+    @app_commands.describe(
+        count="How many requests to fire at once (default 50, max 300)",
+        mode="dry = limiter only, no API call (default); real = actual scrapes (needs a club)",
+        club="Club to scrape in 'real' mode (ignored in dry mode)",
+    )
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="dry (limiter only, no API hit)", value="dry"),
+        app_commands.Choice(name="real (actual API scrapes)", value="real"),
+    ])
+    async def limiter_test(self, interaction: discord.Interaction,
+                           count: int = 50,
+                           mode: app_commands.Choice[str] = None,
+                           club: str = None):
+        """Stress-test the shared Uma.moe limiter: fire `count` requests at once
+        and report whether the aggregate rate ever exceeded the cap.
+
+        Owner-only: it consumes the shared global API budget, so it must not be
+        runnable by every server admin the bot is invited to.
+        """
+        if not await self.bot.is_owner(interaction.user):
+            await interaction.response.send_message(
+                "❌ `/limiter_test` is a developer tool restricted to the bot owner "
+                "(it draws from the shared API budget that every server's scrapes share).",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+
+        mode_val = mode.value if mode else "dry"
+        count = max(1, min(count, 300))
+
+        circle_id = None
+        if mode_val == "real":
+            if not USE_UMAMOE_API:
+                await interaction.followup.send("❌ Real mode needs `USE_UMAMOE_API` enabled.")
+                return
+            if not club:
+                await interaction.followup.send("❌ Real mode needs a `club` to scrape against.")
+                return
+            club_obj = await Club.get_by_name(club)
+            if not club_obj or not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' not found in this server.")
+                return
+            if not club_obj.is_circle_id_valid():
+                await interaction.followup.send(f"❌ Club '{club}' has no valid circle_id.")
+                return
+            circle_id = club_obj.circle_id
+
+        loop = asyncio.get_running_loop()
+        stamps = []   # acquisition/completion time per request (seconds from start)
+        order = []    # request index in completion order (FIFO check, dry mode)
+        errors = []
+
+        est = count * 60 // max(1, UMAMOE_RATE_PER_MIN)
+        await interaction.followup.send(
+            f"🚦 Firing **{count}** concurrent requests in **{mode_val}** mode through the shared "
+            f"limiter (cap **{UMAMOE_RATE_PER_MIN}/min**, burst {UMAMOE_RATE_BURST}).\n"
+            f"It paces them under the cap, so this should take roughly **~{est}s**…"
+        )
+
+        start = loop.time()
+
+        async def fire(i):
+            try:
+                if mode_val == "real":
+                    await UmaMoeAPIScraper(circle_id).scrape()  # self-limits internally
+                else:
+                    await umamoe_limiter.acquire()
+                stamps.append(loop.time() - start)
+                order.append(i)
+            except Exception as e:
+                errors.append(str(e))
+
+        await asyncio.gather(*[fire(i) for i in range(count)])
+        elapsed = loop.time() - start
+
+        # Peak requests in any 60s sliding window — the number that must stay under cap.
+        times = sorted(stamps)
+        peak, j = 0, 0
+        for i in range(len(times)):
+            while times[i] - times[j] > 60:
+                j += 1
+            peak = max(peak, i - j + 1)
+
+        cap = UMAMOE_RATE_PER_MIN + UMAMOE_RATE_BURST
+        rate = (len(times) / elapsed * 60) if elapsed > 0 else 0
+        under_cap = peak <= cap
+
+        embed = discord.Embed(
+            title="🚦 Rate Limiter Test",
+            color=discord.Color.green() if under_cap and not errors else discord.Color.orange(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Mode", value=mode_val, inline=True)
+        embed.add_field(name="Completed", value=f"{len(times)}/{count}", inline=True)
+        embed.add_field(name="Errors", value=str(len(errors)), inline=True)
+        embed.add_field(name="Wall time", value=f"{elapsed:.1f}s", inline=True)
+        embed.add_field(name="Effective rate", value=f"{rate:.0f}/min", inline=True)
+        embed.add_field(name="Peak / 60s", value=f"{peak} (cap {cap})", inline=True)
+        if mode_val == "dry":
+            embed.add_field(name="FIFO order",
+                            value="✅ preserved" if order == sorted(order) else "⚠️ reordered",
+                            inline=True)
+        embed.add_field(
+            name="Verdict",
+            value=("✅ Limiter held — aggregate never exceeded the cap."
+                   if under_cap else "❌ Cap exceeded — investigate!"),
+            inline=False,
+        )
+        if errors:
+            embed.add_field(name="Sample error", value=f"`{errors[0][:300]}`", inline=False)
+
+        await interaction.followup.send(embed=embed)
+        logger.info(f"limiter_test: mode={mode_val} count={count} peak60={peak} "
+                    f"rate={rate:.0f}/min elapsed={elapsed:.1f}s errors={len(errors)}")
+
     # Register autocomplete for all club arguments
     set_quota.autocomplete('club')(club_autocomplete)
     update_monthly_info.autocomplete('club')(club_autocomplete)
@@ -886,6 +1009,7 @@ class AdminCommands(commands.Cog):
     bomb_status.autocomplete('club')(club_autocomplete)
     recalculate.autocomplete('club')(club_autocomplete)
     reset_month.autocomplete('club')(club_autocomplete)
+    limiter_test.autocomplete('club')(club_autocomplete)
 
 
 async def setup(bot):

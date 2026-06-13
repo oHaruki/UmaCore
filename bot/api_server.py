@@ -10,6 +10,8 @@ from datetime import datetime, date, timedelta
 import pytz
 from aiohttp import web
 
+from utils.timezone_helper import resolve_timezone
+
 from config.database import db
 from models import Club
 from scrapers import UmaMoeAPIScraper, ChronoGenesisScraper
@@ -166,7 +168,7 @@ async def handle_sync(request: web.Request) -> web.StreamResponse:
 
     try:
         async with ScrapeContext(club.club_id, f"web_sync_{club.club_name}"):
-            club_tz = pytz.timezone(club.timezone)
+            club_tz = resolve_timezone(club.timezone)
             current_date = datetime.now(club_tz).date()
 
             scraped_data = await scraper.scrape()
@@ -309,11 +311,28 @@ async def handle_health(request: web.Request) -> web.StreamResponse:
     return await _send_json(request, {'status': 'ok'})
 
 
+async def handle_logs(request: web.Request) -> web.StreamResponse:
+    import os
+    from config.settings import LOG_FILE
+    raw_n = request.rel_url.query.get('lines', '200')
+    all_lines = raw_n == 'all'
+    n = None if all_lines else max(1, min(int(raw_n), 50000))
+    try:
+        log_path = LOG_FILE if os.path.isabs(LOG_FILE) else os.path.join(os.getcwd(), LOG_FILE)
+        with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()
+        out = [l.rstrip() for l in lines] if all_lines else [l.rstrip() for l in lines[-n:]]
+        return await _send_json(request, {'lines': out, 'total': len(lines)})
+    except FileNotFoundError:
+        return await _send_json(request, {'lines': [], 'error': 'Log file not found'})
+
+
 def create_app() -> web.Application:
     app = web.Application()
     app.router.add_post('/sync', handle_sync)
     app.router.add_post('/recalculate', handle_recalculate)
     app.router.add_get('/health', handle_health)
+    app.router.add_get('/logs', handle_logs)
     return app
 
 

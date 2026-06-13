@@ -52,5 +52,6 @@ def setup_logging():
     logging.getLogger('discord.http').setLevel(logging.WARNING)
     logging.getLogger('selenium').setLevel(logging.WARNING)
     logging.getLogger('urllib3').setLevel(logging.WARNING)
+    logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
     
     logger.info("Logging configured successfully")

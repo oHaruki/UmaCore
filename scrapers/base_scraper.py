@@ -9,6 +9,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class StaleDataError(Exception):
+    """Raised when fetched data isn't fresh yet for the target day.
+
+    Distinct from a hard failure: the request succeeded but uma.moe hasn't
+    finished rolling out today's update for this circle. The scheduler treats
+    this as a signal to re-queue the club later rather than retry immediately
+    or surface an error to users.
+    """
+
+
 class BaseScraper(ABC):
     """Abstract base class for web scrapers"""
     

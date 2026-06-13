@@ -14,6 +14,7 @@ import aiohttp
 
 from models import Club, QuotaHistory, QuotaRequirement
 from scrapers import UmaMoeAPIScraper
+from utils.timezone_helper import resolve_timezone
 
 UMAMOE_API_URL = "https://uma.moe/api/v4/circles"
 
@@ -229,7 +230,7 @@ class ChartCommands(commands.Cog):
                 )
                 return
 
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             now = datetime.now(club_tz)
 
             display_month_label = now.strftime("%B %Y")
@@ -337,7 +338,7 @@ class ChartCommands(commands.Cog):
                 )
                 return
 
-            club_tz = pytz.timezone(club_obj.timezone)
+            club_tz = resolve_timezone(club_obj.timezone)
             now = datetime.now(club_tz)
 
             # Determine previous month

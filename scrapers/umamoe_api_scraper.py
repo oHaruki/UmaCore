@@ -7,10 +7,20 @@ import calendar
 import aiohttp
 from datetime import datetime, date, timezone, timedelta
 
-from scrapers.base_scraper import BaseScraper
+from scrapers.base_scraper import BaseScraper, StaleDataError
 from config.settings import UMAMOE_API_KEY
+from utils.rate_limiter import umamoe_limiter
 
 logger = logging.getLogger(__name__)
+
+# Rollover/freshness fields uma.moe is known to return. We don't yet rely on
+# their exact semantics for the gate — they're logged once per scrape so the
+# real values can be confirmed on a live run and wired into is_data_fresh().
+FRESHNESS_FIELDS = (
+    "last_updated", "last_update", "updated_at",
+    "last_live_update", "yesterday_updated",
+    "live_points", "live_rank",
+)
 
 
 class UmaMoeAPIScraper(BaseScraper):
@@ -30,6 +40,8 @@ class UmaMoeAPIScraper(BaseScraper):
         self._monthly_rank: Optional[int] = None
         self._last_month_rank: Optional[int] = None
         self._yesterday_rank: Optional[int] = None
+        # Raw rollout/freshness fields from the response, captured for diagnostics.
+        self._freshness: Dict = {}
         super().__init__(self.base_url)
     
     async def _fetch_month(self, session: aiohttp.ClientSession, year: int, month: int) -> Optional[dict]:
@@ -39,10 +51,16 @@ class UmaMoeAPIScraper(BaseScraper):
             "year": year,
             "month": month
         }
+        # Gate every outbound request through the shared limiter so the bot stays
+        # under the API's per-minute cap no matter how many clubs fire at once.
+        await umamoe_limiter.acquire()
         async with session.get(self.base_url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
             if response.status != 200:
                 error_text = await response.text()
-                logger.error(f"Uma.moe API returned status {response.status} for {year}-{month:02d}: {error_text[:200]}")
+                if response.status == 429:
+                    logger.error(f"⛔ RATE LIMITED by Uma.moe API (429) for {year}-{month:02d} — slow down or check API key limits. Response: {error_text[:200]}")
+                else:
+                    logger.error(f"Uma.moe API returned status {response.status} for {year}-{month:02d}: {error_text[:200]}")
                 return None
             return await response.json()
     
@@ -114,6 +132,17 @@ class UmaMoeAPIScraper(BaseScraper):
                 f"last_month_rank={self._last_month_rank}, "
                 f"yesterday_rank={self._yesterday_rank}"
             )
+
+            # Capture rollout/freshness fields for diagnostics. Logged once so the
+            # exact field names/semantics can be confirmed on a live run before
+            # they're wired into a precise freshness gate (see is_data_fresh).
+            self._freshness = {}
+            for key in FRESHNESS_FIELDS:
+                if isinstance(rank_source, dict) and key in rank_source:
+                    self._freshness[key] = rank_source.get(key)
+                elif key in circle_data:
+                    self._freshness[f"circle.{key}"] = circle_data.get(key)
+            logger.info(f"🕒 Freshness fields for circle {self.circle_id}: {self._freshness or '(none returned)'}")
 
             # Detect end-of-month JST rollover: uma.moe always returns the CURRENT
             # competition period's rank fields regardless of the year/month query param.
@@ -219,10 +248,10 @@ class UmaMoeAPIScraper(BaseScraper):
                         for m in relevant
                     )
                     if relevant and not any_growth:
-                        raise ValueError(
+                        raise StaleDataError(
                             f"Day {fallback_day} data appears stale — fan counts are unchanged from "
                             f"day {fallback_day - 1} for all sampled members. "
-                            f"Uma.moe likely hasn't published today's update yet (typically ~15:10 UTC)."
+                            f"Uma.moe likely hasn't finished rolling out today's update for this circle yet."
                         )
 
                 current_day = fallback_day
@@ -354,3 +383,7 @@ class UmaMoeAPIScraper(BaseScraper):
     def get_yesterday_rank(self) -> Optional[int]:
         """Return the club's rank as of yesterday (from circle.yesterday_rank)."""
         return self._yesterday_rank
+
+    def get_freshness(self) -> Dict:
+        """Return the raw rollout/freshness fields captured from the last response."""
+        return self._freshness
