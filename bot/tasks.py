@@ -3,7 +3,7 @@ Scheduled tasks for the Discord bot
 """
 import discord
 from discord.ext import tasks
-from datetime import datetime
+from datetime import datetime, time, timedelta, timezone
 import logging
 import pytz
 import asyncio
@@ -11,10 +11,18 @@ import asyncio
 import os
 
 from models import Club, Member, ClubRankHistory, QuotaRequirement
-from scrapers import ChronoGenesisScraper, UmaMoeAPIScraper
-from services import QuotaCalculator, BombManager, ReportGenerator, NotificationService, ScrapeLockManager, ScrapeContext
+from scrapers import ChronoGenesisScraper, UmaMoeAPIScraper, StaleDataError
+from services import (
+    QuotaCalculator, BombManager, ReportGenerator, NotificationService,
+    ScrapeLockManager, ScrapeContext, ScrapeScheduler,
+)
 from services.tally_renderer import generate_tally_image
-from config.settings import USE_UMAMOE_API
+from config.settings import (
+    USE_UMAMOE_API, SCRAPE_DEFAULT_UTC_TIME, SCRAPE_ROLLOVER_WINDOW_MIN,
+    SCRAPE_ROLLOUT_PER_SEC, SCRAPE_RANK_BUFFER_SEC, SCRAPE_MAX_RANK_DELAY_SEC,
+    SCRAPE_UNKNOWN_RANK_DELAY_SEC, SCRAPE_MAX_FRESHNESS_RETRIES,
+    SCRAPE_FRESHNESS_RETRY_DELAY_SEC, SCRAPE_MAX_CONCURRENCY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,66 +40,130 @@ class BotTasks:
         # Track last run per club per day (club_id_YYYY-MM-DD -> True)
         self.last_runs = {}
 
-        logger.info("Multi-club tasks configured - will check all clubs hourly")
+        # Rank-ordered dispatcher: the tick enqueues due clubs, the scheduler
+        # releases them in rank/time order and re-queues stale fetches.
+        self.scheduler = ScrapeScheduler(
+            worker=self._scheduled_worker,
+            concurrency=SCRAPE_MAX_CONCURRENCY,
+            max_retries=SCRAPE_MAX_FRESHNESS_RETRIES,
+            retry_delay=SCRAPE_FRESHNESS_RETRY_DELAY_SEC,
+        )
+
+        # Parse the shared default scrape time (UTC) once for default-club detection.
+        try:
+            dh, dm = map(int, SCRAPE_DEFAULT_UTC_TIME.split(":"))
+            self._default_utc = time(dh, dm)
+        except Exception:
+            logger.warning(f"Invalid SCRAPE_DEFAULT_UTC_TIME '{SCRAPE_DEFAULT_UTC_TIME}', defaulting to 17:00")
+            self._default_utc = time(17, 0)
+
+        logger.info("Multi-club tasks configured - rank-ordered scheduler, tick every minute")
 
     def start_tasks(self):
         """Start all scheduled tasks"""
-        self.hourly_check.start()
-        logger.info("Scheduled tasks started (checking all clubs hourly)")
+        self.scheduler.start()
+        self.scrape_tick.start()
+        logger.info("Scheduled tasks started (per-minute tick + rank-ordered scheduler)")
 
     def stop_tasks(self):
         """Stop all scheduled tasks"""
-        self.hourly_check.cancel()
+        self.scrape_tick.cancel()
+        self.scheduler.stop()
         logger.info("Scheduled tasks stopped")
 
-    @tasks.loop(hours=1)
-    async def hourly_check(self):
-        """Check every hour if it's time to run any club's daily report"""
-        logger.info("=" * 80)
-        logger.info("Hourly check - scanning all clubs...")
-        logger.info("=" * 80)
+    @tasks.loop(minutes=1)
+    async def scrape_tick(self):
+        """Every minute, enqueue any club that's reached its scrape time.
+
+        Enqueueing (not running) lets the scheduler release clubs in rank order
+        and stagger the 17:00 default clump across the rollout window.
+        """
+        now_utc = datetime.now(timezone.utc)
 
         try:
             clubs = await Club.get_all_active()
-            logger.info(f"Found {len(clubs)} active club(s)")
+        except Exception as e:
+            logger.error(f"scrape_tick: failed to load clubs: {e}", exc_info=True)
+            return
 
-            for club in clubs:
-                try:
-                    club_tz = pytz.timezone(club.timezone)
-                    now_in_club_tz = datetime.now(club_tz)
-                    current_date = now_in_club_tz.date()
+        for club in clubs:
+            try:
+                club_tz = pytz.timezone(club.timezone)
+                now_in_club_tz = now_utc.astimezone(club_tz)
+                current_date = now_in_club_tz.date()
 
-                    target_hour = club.scrape_time.hour
-                    target_minute = club.scrape_time.minute
+                target_hour = club.scrape_time.hour
+                target_minute = club.scrape_time.minute
 
-                    if (now_in_club_tz.hour == target_hour and
-                            now_in_club_tz.minute >= target_minute):
-
-                        run_key = f"{club.club_id}_{current_date}"
-                        if self.last_runs.get(run_key):
-                            logger.debug(f"{club.club_name}: Already ran today ({current_date})")
-                            continue
-
-                        logger.info(f"⏰ Time to check {club.club_name} ({now_in_club_tz.strftime('%H:%M')} {club.timezone})")
-
-                        self.last_runs[run_key] = True
-
-                        asyncio.create_task(self.daily_check_for_club(club))
-                    else:
-                        logger.debug(
-                            f"{club.club_name}: Not time yet "
-                            f"(current: {now_in_club_tz.strftime('%H:%M')}, "
-                            f"target: {target_hour:02d}:{target_minute:02d} {club.timezone})"
-                        )
-
-                except Exception as e:
-                    logger.error(f"Error checking club {club.club_name}: {e}", exc_info=True)
+                if not (now_in_club_tz.hour == target_hour and now_in_club_tz.minute >= target_minute):
                     continue
 
-        except Exception as e:
-            logger.error(f"Error in hourly_check: {e}", exc_info=True)
+                run_key = f"{club.club_id}_{current_date}"
+                if self.last_runs.get(run_key):
+                    continue
+                self.last_runs[run_key] = True
 
-    async def daily_check_for_club(self, club: Club):
+                dispatch_dt, rank, in_window = await self._compute_dispatch_utc(club, now_utc)
+                tag = (f"rollout window, rank={rank if rank is not None else 'unknown'}"
+                       if in_window else "off-peak → on time")
+                logger.info(
+                    f"⏰ {club.club_name} due ({now_in_club_tz.strftime('%H:%M')} {club.timezone}) — "
+                    f"dispatch {dispatch_dt.strftime('%H:%M:%S')} UTC [{tag}]"
+                )
+                self.scheduler.enqueue(club, dispatch_dt)
+
+            except Exception as e:
+                logger.error(f"scrape_tick: error for {club.club_name}: {e}", exc_info=True)
+                continue
+
+    async def _compute_dispatch_utc(self, club: Club, now_utc: datetime):
+        """Decide when a due club should actually be fetched.
+
+        Returns (dispatch_dt_utc, monthly_rank, in_window).
+
+        uma.moe publishes today's data gradually starting at the rollover time
+        (SCRAPE_DEFAULT_UTC_TIME). Any club scheduled within the rollout window
+        — not just the exact default minute, so 17:00, 17:01, 17:05 all count —
+        gets a rank-aware delay so its data has rolled out before we fetch.
+        Clubs outside the window read already-settled data and fire on time.
+        """
+        club_tz = pytz.timezone(club.timezone)
+        target_local = club_tz.localize(
+            datetime.combine(now_utc.astimezone(club_tz).date(),
+                             time(club.scrape_time.hour, club.scrape_time.minute))
+        )
+        target_utc = target_local.astimezone(timezone.utc)
+
+        # Rollover window in UTC for today.
+        rollover_start = now_utc.replace(
+            hour=self._default_utc.hour, minute=self._default_utc.minute,
+            second=0, microsecond=0,
+        )
+        window_end = rollover_start + timedelta(minutes=SCRAPE_ROLLOVER_WINDOW_MIN)
+        in_window = rollover_start <= target_utc <= window_end
+
+        if not in_window:
+            return target_utc, None, False
+
+        rank = await ClubRankHistory.get_latest_monthly_rank(club.club_id)
+        if rank and rank > 0:
+            delay = min(SCRAPE_MAX_RANK_DELAY_SEC,
+                        rank / SCRAPE_ROLLOUT_PER_SEC + SCRAPE_RANK_BUFFER_SEC)
+        else:
+            # No rank history yet (new club): wait a fixed safe interval.
+            delay = SCRAPE_UNKNOWN_RANK_DELAY_SEC
+
+        # Don't fetch before the data is fresh (rollover_start + rank delay), but
+        # never before the club's own scheduled time either.
+        fresh_at = rollover_start + timedelta(seconds=delay)
+        dispatch_dt = max(target_utc, fresh_at)
+        return dispatch_dt, rank, True
+
+    async def _scheduled_worker(self, club: Club, attempt: int, is_final: bool) -> str:
+        """Adapter the scheduler calls. Returns 'ok' | 'stale' | 'failed'."""
+        return await self.daily_check_for_club(club, attempt=attempt, is_final=is_final)
+
+    async def daily_check_for_club(self, club: Club, attempt: int = 1, is_final: bool = True) -> str:
         """Daily quota check and report generation for a specific club"""
         logger.info("=" * 80)
         logger.info(f"Starting daily check for {club.club_name}")
@@ -104,7 +176,7 @@ class BotTasks:
 
                 if not report_channel:
                     logger.error(f"Report channel {club.report_channel_id} not found for {club.club_name}")
-                    return
+                    return "failed"
 
                 if not alert_channel:
                     logger.warning(f"Alert channel not found for {club.club_name}, using report channel")
@@ -120,6 +192,7 @@ class BotTasks:
                 scraped_data = None
                 current_day = None
                 last_error = None
+                stale = False
 
                 # STEP 1: Select and initialize scraper with validation
                 if USE_UMAMOE_API:
@@ -137,7 +210,7 @@ class BotTasks:
                             f"3. Copy the number from the URL"
                         )
                         await report_channel.send(embed=error_embed)
-                        return
+                        return "failed"
 
                     if not club.is_circle_id_valid():
                         logger.error(f"Invalid circle_id format for {club.club_name}: '{club.circle_id}' (must be numeric)")
@@ -146,7 +219,7 @@ class BotTasks:
                             club.get_circle_id_help_message()
                         )
                         await report_channel.send(embed=error_embed)
-                        return
+                        return "failed"
 
                     scraper = UmaMoeAPIScraper(club.circle_id)
                     logger.info(f"Using Uma.moe API scraper for {club.club_name} (circle_id: {club.circle_id})")
@@ -155,9 +228,9 @@ class BotTasks:
                     logger.info(f"Using ChronoGenesis scraper for {club.club_name}")
 
                 # STEP 2: Scrape with retries
-                for attempt in range(1, max_retries + 1):
+                for scrape_attempt in range(1, max_retries + 1):
                     try:
-                        logger.info(f"🔍 Scraping {club.club_name} (attempt {attempt}/{max_retries})...")
+                        logger.info(f"🔍 Scraping {club.club_name} (attempt {scrape_attempt}/{max_retries})...")
                         scraped_data = await scraper.scrape()
                         current_day = scraper.get_current_day()
 
@@ -167,14 +240,40 @@ class BotTasks:
                         else:
                             raise ValueError("Scraper returned empty data")
 
+                    except StaleDataError as e:
+                        # Data isn't a failure — it just hasn't rolled out yet. Don't
+                        # burn the quick local retries (rollout takes minutes); let the
+                        # scheduler re-queue this club on a longer, rank-aware delay.
+                        last_error = e
+                        stale = True
+                        logger.warning(f"🕒 {club.club_name} data not fresh yet (scheduler attempt {attempt}): {e}")
+                        break
+
                     except Exception as e:
                         last_error = e
-                        logger.error(f"❌ Scraping failed for {club.club_name} (attempt {attempt}/{max_retries}): {e}")
+                        logger.error(f"❌ Scraping failed for {club.club_name} (attempt {scrape_attempt}/{max_retries}): {e}")
 
-                        if attempt < max_retries:
+                        if scrape_attempt < max_retries:
                             logger.info(f"Retrying in {retry_delay} seconds...")
                             await asyncio.sleep(retry_delay)
                             retry_delay *= 2
+
+                # STEP 2b: Data still rolling out — hand back to the scheduler to re-queue
+                if stale and not scraped_data:
+                    if is_final:
+                        logger.error(
+                            f"{club.club_name}: data still not fresh after {SCRAPE_MAX_FRESHNESS_RETRIES} "
+                            f"scheduler attempts — giving up for today."
+                        )
+                        error_embed = self.report_generator.create_error_report(
+                            club.club_name,
+                            "⏳ **Data not available yet**\n\n"
+                            "Uma.moe hadn't finished rolling out today's update for this club "
+                            "after several retries. This is usually temporary.\n\n"
+                            f"Run `/force_check club:{club.club_name}` in a bit to retry manually."
+                        )
+                        await report_channel.send(embed=error_embed)
+                    return "stale"
 
                 # STEP 3: Handle scraping failure
                 if not scraped_data:
@@ -200,7 +299,7 @@ class BotTasks:
                         f"⚠️ **Manual intervention required for {club.club_name}!**\n"
                         f"Administrators can run `/force_check club:{club.club_name}` to retry manually."
                     )
-                    return
+                    return "failed"
 
                 # Use the scraper's data date in case of previous-month fallback (e.g. Day 1)
                 data_date = scraper.get_data_date()
@@ -248,7 +347,7 @@ class BotTasks:
                         f"Data processing failed: {str(e)}"
                     )
                     await report_channel.send(embed=error_embed)
-                    return
+                    return "failed"
 
                 # STEP 5: Bomb management
                 newly_activated_bombs = []
@@ -397,6 +496,8 @@ class BotTasks:
                 logger.info(f"   • Members to kick: {len(members_to_kick)}")
                 logger.info("=" * 80)
 
+                return "ok"
+
         except Exception as e:
             logger.error(f"Fatal error in daily check for {club.club_name}: {e}", exc_info=True)
 
@@ -411,8 +512,10 @@ class BotTasks:
             except Exception:
                 pass
 
-    @hourly_check.before_loop
-    async def before_hourly_check(self):
+            return "failed"
+
+    @scrape_tick.before_loop
+    async def before_scrape_tick(self):
         """Wait for bot to be ready before starting tasks"""
         await self.bot.wait_until_ready()
-        logger.info("Bot ready, multi-club hourly check loop starting")
+        logger.info("Bot ready, per-minute scrape tick starting")
