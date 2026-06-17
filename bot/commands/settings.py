@@ -11,6 +11,7 @@ import pytz
 from models import Club
 from services import MonthlyInfoService
 from utils.timezone_helper import resolve_timezone
+from utils.permissions import ensure_can_manage
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,6 @@ class SettingsCommands(commands.Cog):
             return []
     
     @app_commands.command(name="set_report_channel", description="Set the channel for daily reports")
-    @app_commands.checks.has_permissions(administrator=True)
     async def set_report_channel(self, interaction: discord.Interaction, channel: discord.TextChannel, club: str):
         """Set the channel where daily reports will be posted"""
         await interaction.response.defer()
@@ -50,7 +50,10 @@ class SettingsCommands(commands.Cog):
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
-            
+
+            if not await ensure_can_manage(interaction, club_obj):
+                return
+
             await club_obj.set_channels(report_channel_id=channel.id)
             
             embed = discord.Embed(
@@ -68,7 +71,6 @@ class SettingsCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
     @app_commands.command(name="set_alert_channel", description="Set the channel for alerts (bombs, kicks)")
-    @app_commands.checks.has_permissions(administrator=True)
     async def set_alert_channel(self, interaction: discord.Interaction, channel: discord.TextChannel, club: str):
         """Set the channel where alerts will be posted"""
         await interaction.response.defer()
@@ -82,7 +84,10 @@ class SettingsCommands(commands.Cog):
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
-            
+
+            if not await ensure_can_manage(interaction, club_obj):
+                return
+
             await club_obj.set_channels(alert_channel_id=channel.id)
             
             embed = discord.Embed(
@@ -100,7 +105,6 @@ class SettingsCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
     @app_commands.command(name="channel_settings", description="View current channel configuration")
-    @app_commands.checks.has_permissions(administrator=True)
     async def channel_settings(self, interaction: discord.Interaction, club: str):
         """View current channel settings"""
         await interaction.response.defer()
@@ -114,7 +118,10 @@ class SettingsCommands(commands.Cog):
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
-            
+
+            if not await ensure_can_manage(interaction, club_obj):
+                return
+
             embed = discord.Embed(
                 title=f"⚙️ Channel Settings - {club}",
                 color=discord.Color.blue(),
@@ -197,7 +204,6 @@ class SettingsCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
     @app_commands.command(name="post_monthly_info", description="Post the monthly info board (auto-updates)")
-    @app_commands.checks.has_permissions(administrator=True)
     async def post_monthly_info(self, interaction: discord.Interaction, club: str, channel: discord.TextChannel = None):
         """Post or update the monthly information board"""
         await interaction.response.defer()
@@ -211,7 +217,10 @@ class SettingsCommands(commands.Cog):
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
-            
+
+            if not await ensure_can_manage(interaction, club_obj):
+                return
+
             # Use current channel if none specified
             target_channel = channel or interaction.channel
             

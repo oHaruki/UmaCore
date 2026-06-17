@@ -44,7 +44,7 @@ async def main():
         bot = create_bot()
 
         logger.info(f"Starting internal API server on port {BOT_API_PORT}...")
-        api_runner = await start_api_server(BOT_API_PORT)
+        api_runner = await start_api_server(BOT_API_PORT, bot)
 
         try:
             async with bot:
