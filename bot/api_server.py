@@ -307,6 +307,61 @@ async def handle_recalculate(request: web.Request) -> web.StreamResponse:
     return await _send_json(request, {'recalculated': updated})
 
 
+async def handle_guild_roles(request: web.Request) -> web.StreamResponse:
+    """List assignable roles for a guild, from the bot's gateway cache.
+
+    Used by the web dashboard to populate the club-editor role picker, since
+    Discord only exposes the full role list to the bot token, not user OAuth.
+    """
+    guild_id_str = request.rel_url.query.get('guild_id')
+    if not guild_id_str:
+        return await _send_json(request, {'error': 'guild_id required'}, status=400)
+
+    try:
+        guild_id = int(guild_id_str)
+    except ValueError:
+        return await _send_json(request, {'error': 'Invalid guild_id'}, status=400)
+
+    bot = request.app.get('bot')
+    if bot is None:
+        return await _send_json(request, {'error': 'Bot unavailable'}, status=503)
+
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        return await _send_json(
+            request,
+            {'error': 'Guild not found (bot is not in this server or not ready yet)'},
+            status=404,
+        )
+
+    roles = [
+        {
+            'id': str(role.id),
+            'name': role.name,
+            'color': role.color.value,
+            'position': role.position,
+            'managed': role.managed,
+        }
+        for role in guild.roles
+        if not role.is_default()  # exclude @everyone
+    ]
+    roles.sort(key=lambda r: r['position'], reverse=True)
+    return await _send_json(request, {'roles': roles})
+
+
+async def handle_bot_guilds(request: web.Request) -> web.StreamResponse:
+    """List the guilds the bot is actually a member of.
+
+    The web dashboard intersects this with the user's admin guilds so you can
+    only add a club to a server the bot is present in.
+    """
+    bot = request.app.get('bot')
+    if bot is None:
+        return await _send_json(request, {'guilds': []}, status=503)
+    guilds = [{'id': str(g.id), 'name': g.name} for g in bot.guilds]
+    return await _send_json(request, {'guilds': guilds})
+
+
 async def handle_health(request: web.Request) -> web.StreamResponse:
     return await _send_json(request, {'status': 'ok'})
 
@@ -327,17 +382,20 @@ async def handle_logs(request: web.Request) -> web.StreamResponse:
         return await _send_json(request, {'lines': [], 'error': 'Log file not found'})
 
 
-def create_app() -> web.Application:
+def create_app(bot=None) -> web.Application:
     app = web.Application()
+    app['bot'] = bot
     app.router.add_post('/sync', handle_sync)
     app.router.add_post('/recalculate', handle_recalculate)
+    app.router.add_get('/guild_roles', handle_guild_roles)
+    app.router.add_get('/bot_guilds', handle_bot_guilds)
     app.router.add_get('/health', handle_health)
     app.router.add_get('/logs', handle_logs)
     return app
 
 
-async def start_api_server(port: int) -> web.AppRunner:
-    app = create_app()
+async def start_api_server(port: int, bot=None) -> web.AppRunner:
+    app = create_app(bot)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '127.0.0.1', port)

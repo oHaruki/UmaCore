@@ -15,6 +15,8 @@ import aiohttp
 from models import Club, QuotaHistory, QuotaRequirement
 from scrapers import UmaMoeAPIScraper
 from utils.timezone_helper import resolve_timezone
+from utils.rate_limiter import umamoe_limiter
+from utils.api_metrics import track_api_call
 
 UMAMOE_API_URL = "https://uma.moe/api/v4/circles"
 
@@ -29,15 +31,19 @@ async def _fetch_previous_month_totals(circle_id: str, year: int, month: int) ->
     `joined_mid_month` is True if they weren't in the club on day 1.
     """
     params = {"circle_id": circle_id, "year": year, "month": month}
+    await umamoe_limiter.acquire()
     async with aiohttp.ClientSession() as session:
-        async with session.get(
-            UMAMOE_API_URL,
-            params=params,
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            if resp.status != 200:
-                raise ValueError(f"Uma.moe API returned HTTP {resp.status}")
-            data = await resp.json()
+        async with track_api_call("uma.moe", "circles", context=f"prev_month:{circle_id}") as m:
+            async with session.get(
+                UMAMOE_API_URL,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                m["status_code"] = resp.status
+                if resp.status != 200:
+                    raise ValueError(f"Uma.moe API returned HTTP {resp.status}")
+                data = await resp.json()
+                m["ok"] = True
 
     members = data.get("members", [])
     results = []

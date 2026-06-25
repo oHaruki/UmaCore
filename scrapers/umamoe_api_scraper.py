@@ -10,6 +10,7 @@ from datetime import datetime, date, timezone, timedelta
 from scrapers.base_scraper import BaseScraper, StaleDataError
 from config.settings import UMAMOE_API_KEY
 from utils.rate_limiter import umamoe_limiter
+from utils.api_metrics import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +55,19 @@ class UmaMoeAPIScraper(BaseScraper):
         # Gate every outbound request through the shared limiter so the bot stays
         # under the API's per-minute cap no matter how many clubs fire at once.
         await umamoe_limiter.acquire()
-        async with session.get(self.base_url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
-            if response.status != 200:
-                error_text = await response.text()
-                if response.status == 429:
-                    logger.error(f"⛔ RATE LIMITED by Uma.moe API (429) for {year}-{month:02d} — slow down or check API key limits. Response: {error_text[:200]}")
-                else:
-                    logger.error(f"Uma.moe API returned status {response.status} for {year}-{month:02d}: {error_text[:200]}")
-                return None
-            return await response.json()
+        async with track_api_call("uma.moe", "circles", context=str(self.circle_id)) as m:
+            async with session.get(self.base_url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                m["status_code"] = response.status
+                if response.status != 200:
+                    error_text = await response.text()
+                    if response.status == 429:
+                        logger.error(f"⛔ RATE LIMITED by Uma.moe API (429) for {year}-{month:02d} — slow down or check API key limits. Response: {error_text[:200]}")
+                    else:
+                        logger.error(f"Uma.moe API returned status {response.status} for {year}-{month:02d}: {error_text[:200]}")
+                    return None
+                data = await response.json()
+                m["ok"] = True
+                return data
     
     async def scrape(self) -> Dict[str, Dict]:
         """

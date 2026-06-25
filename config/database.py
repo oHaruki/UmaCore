@@ -449,6 +449,55 @@ class Database:
             ON audit_logs(club_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_audit_logs_created
             ON audit_logs(created_at DESC);
+
+        -- Club editor role permissions: which Discord roles may manage which club.
+        -- A user holding any of a club's bound roles can manage that club (but not others).
+        -- Holding any editor role also grants the ability to create new clubs.
+        CREATE TABLE IF NOT EXISTS club_role_permissions (
+            club_id UUID NOT NULL REFERENCES clubs(club_id) ON DELETE CASCADE,
+            role_id BIGINT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (club_id, role_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_club_role_permissions_role
+            ON club_role_permissions(role_id);
+
+        -- Guild manager roles: a role that can manage EVERY club in its guild
+        -- (create, edit, delete, assign club editors) — role-based equivalent of
+        -- a Discord administrator for this bot. Does NOT include the ability to
+        -- assign manager roles (that stays Discord-admin only).
+        CREATE TABLE IF NOT EXISTS guild_manager_roles (
+            guild_id BIGINT NOT NULL,
+            role_id BIGINT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (guild_id, role_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_guild_manager_roles_role
+            ON guild_manager_roles(role_id);
+
+        -- External API usage log: one row per outbound request to a third-party
+        -- API (uma.moe circle/profile data, gametora portraits). Powers the
+        -- owner-only API analytics page so we can watch volume, error/429 rate
+        -- and rate-limit headroom now that the bot makes more requests.
+        CREATE TABLE IF NOT EXISTS api_usage (
+            id          BIGSERIAL   PRIMARY KEY,
+            provider    TEXT        NOT NULL,   -- 'uma.moe' | 'gametora'
+            endpoint    TEXT        NOT NULL,   -- 'circles' | 'profile' | 'portrait'
+            status_code INTEGER,                -- HTTP status, NULL on network error
+            ok          BOOLEAN     NOT NULL,   -- request succeeded
+            duration_ms INTEGER,                -- round-trip latency
+            context     TEXT,                   -- free-form: circle/viewer/card id, caller
+            created_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_api_usage_created
+            ON api_usage(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_api_usage_provider_created
+            ON api_usage(provider, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_api_usage_endpoint_created
+            ON api_usage(endpoint, created_at DESC);
         """
         
         try:

@@ -8,7 +8,8 @@ from datetime import datetime, time
 import logging
 import pytz
 
-from models import Club
+from models import Club, ClubPermission, GuildManagerRole
+from utils.permissions import ensure_can_manage, can_create_club, creator_role_ids, is_full_manager
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +111,7 @@ class ClubManagementCommands(commands.Cog):
             logger.error(f"Error in club autocomplete: {e}")
             return []
     
-    @app_commands.command(name="add_club", description="Register a new club to track (Admin only)")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="add_club", description="Register a new club to track (Admin or club editor role)")
     @app_commands.choices(quota_period=[
         app_commands.Choice(name="Daily", value="daily"),
         app_commands.Choice(name="Weekly", value="weekly"),
@@ -127,8 +127,17 @@ class ClubManagementCommands(commands.Cog):
                        scrape_url: str = None):
         """Register a new club"""
         await interaction.response.defer()
-        
+
         try:
+            # Permission: admin, or a holder of any club-editor role in this guild
+            auto_bind_roles = await creator_role_ids(interaction)
+            if not await is_full_manager(interaction) and not auto_bind_roles:
+                await interaction.followup.send(
+                    "❌ You don't have permission to create a club.\n"
+                    "You need Discord administrator, or a role that an admin has assigned to an existing club."
+                )
+                return
+
             # Check for duplicate
             existing = await Club.get_by_name(club_name)
             if existing:
@@ -180,6 +189,11 @@ class ClubManagementCommands(commands.Cog):
                 timezone=timezone,
                 scrape_time=scrape_time_obj
             )
+
+            # Auto-bind the creator's editor roles so the new club lands "under them".
+            # (Admins keep blanket access regardless; this only matters for editor-role creators.)
+            for role_id in auto_bind_roles:
+                await ClubPermission.add(club.club_id, role_id)
 
             # Format quota for display
             if daily_quota >= 1_000_000:
@@ -246,8 +260,7 @@ class ClubManagementCommands(commands.Cog):
             logger.error(f"Error in add_club: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
-    @app_commands.command(name="remove_club", description="Permanently delete a club (Admin only)")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="remove_club", description="Permanently delete a club (Admin or manager role)")
     async def remove_club(self, interaction: discord.Interaction, club: str):
         """Permanently delete a club and all associated data"""
         await interaction.response.defer()
@@ -271,6 +284,13 @@ class ClubManagementCommands(commands.Cog):
                 if not club_obj.belongs_to_guild(interaction.guild_id):
                     await interaction.followup.send(
                         f"❌ Club '{club}' is not registered in this server."
+                    )
+                    return
+                # Deletion requires full manager rights (admin or manager role) — not a per-club editor.
+                if not await is_full_manager(interaction):
+                    await interaction.followup.send(
+                        "❌ You don't have permission to delete clubs.\n"
+                        "Only Discord admins or holders of a manager role can delete a club."
                     )
                     return
 
@@ -305,23 +325,25 @@ class ClubManagementCommands(commands.Cog):
             logger.error(f"Error in remove_club: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
-    @app_commands.command(name="activate_club", description="Reactivate a club (Admin only)")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="activate_club", description="Reactivate a club (Admin or club editor role)")
     async def activate_club(self, interaction: discord.Interaction, club: str):
         """Reactivate a deactivated club"""
         await interaction.response.defer()
-        
+
         try:
             club_obj = await Club.get_by_name(club)
-            
+
             if not club_obj:
                 await interaction.followup.send(f"❌ Club '{club}' not found")
                 return
-            
+
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
-            
+
+            if not await ensure_can_manage(interaction, club_obj):
+                return
+
             if club_obj.is_active:
                 await interaction.followup.send(f"ℹ️ Club '{club}' is already active")
                 return
@@ -412,8 +434,7 @@ class ClubManagementCommands(commands.Cog):
             logger.error(f"Error in list_clubs: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
-    @app_commands.command(name="edit_club", description="Edit club settings (Admin only)")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="edit_club", description="Edit club settings (Admin or club editor role)")
     @app_commands.choices(quota_period=[
         app_commands.Choice(name="Daily", value="daily"),
         app_commands.Choice(name="Weekly", value="weekly"),
@@ -443,7 +464,10 @@ class ClubManagementCommands(commands.Cog):
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
                 return
-            
+
+            if not await ensure_can_manage(interaction, club_obj):
+                return
+
             # Validate circle_id if being updated
             if circle_id is not None and circle_id != "" and not circle_id.isdigit():
                 await interaction.followup.send(
@@ -566,10 +590,211 @@ class ClubManagementCommands(commands.Cog):
             logger.error(f"Error in edit_club: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
+    @app_commands.command(name="add_club_editor", description="Give a role permission to manage a club (Admin or manager role)")
+    async def add_club_editor(self, interaction: discord.Interaction, club: str, role: discord.Role):
+        """Bind a Discord role to a club so its holders can manage that club"""
+        await interaction.response.defer()
+
+        try:
+            club_obj = await Club.get_by_name(club)
+            if not club_obj:
+                await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await is_full_manager(interaction):
+                await interaction.followup.send(
+                    "❌ Only Discord admins or manager-role holders can assign club editors."
+                )
+                return
+
+            await ClubPermission.add(club_obj.club_id, role.id)
+
+            embed = discord.Embed(
+                title="✅ Club Editor Added",
+                description=f"{role.mention} can now manage **{club_obj.club_name}**.",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.add_field(
+                name="What this grants",
+                value="• Edit settings, channels, quota, and members for **this club only**\n"
+                      "• Create new clubs (auto-assigned to this role)\n"
+                      "• ❌ Cannot delete clubs (admin only)",
+                inline=False
+            )
+            embed.set_footer(text=f"Added by {interaction.user}")
+            await interaction.followup.send(embed=embed)
+            logger.info(f"Role {role.id} bound to club '{club_obj.club_name}' by {interaction.user}")
+
+        except Exception as e:
+            logger.error(f"Error in add_club_editor: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+
+    @app_commands.command(name="remove_club_editor", description="Revoke a role's permission to manage a club (Admin or manager role)")
+    async def remove_club_editor(self, interaction: discord.Interaction, club: str, role: discord.Role):
+        """Unbind a Discord role from a club"""
+        await interaction.response.defer()
+
+        try:
+            club_obj = await Club.get_by_name(club)
+            if not club_obj:
+                await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await is_full_manager(interaction):
+                await interaction.followup.send(
+                    "❌ Only Discord admins or manager-role holders can revoke club editors."
+                )
+                return
+
+            await ClubPermission.remove(club_obj.club_id, role.id)
+
+            embed = discord.Embed(
+                title="✅ Club Editor Removed",
+                description=f"{role.mention} can no longer manage **{club_obj.club_name}**.",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_footer(text=f"Removed by {interaction.user}")
+            await interaction.followup.send(embed=embed)
+            logger.info(f"Role {role.id} unbound from club '{club_obj.club_name}' by {interaction.user}")
+
+        except Exception as e:
+            logger.error(f"Error in remove_club_editor: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+
+    @app_commands.command(name="list_club_editors", description="List roles that can manage a club")
+    async def list_club_editors(self, interaction: discord.Interaction, club: str):
+        """Show which roles are bound to a club"""
+        await interaction.response.defer()
+
+        try:
+            club_obj = await Club.get_by_name(club)
+            if not club_obj:
+                await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            role_ids = await ClubPermission.get_role_ids(club_obj.club_id)
+            if not role_ids:
+                await interaction.followup.send(
+                    f"ℹ️ **{club_obj.club_name}** has no editor roles. Only admins can manage it.\n"
+                    f"Use `/add_club_editor` to grant a role access."
+                )
+                return
+
+            mentions = []
+            for rid in role_ids:
+                role = interaction.guild.get_role(rid)
+                mentions.append(role.mention if role else f"`(deleted role {rid})`")
+
+            embed = discord.Embed(
+                title=f"🛡️ Club Editors — {club_obj.club_name}",
+                description="\n".join(f"• {m}" for m in mentions),
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_footer(text="These roles can manage this club (not delete it).")
+            await interaction.followup.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in list_club_editors: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+
+    @app_commands.command(name="add_manager_role", description="Grant a role full management of ALL clubs in this server (Admin only)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def add_manager_role(self, interaction: discord.Interaction, role: discord.Role):
+        """Bind a guild-wide manager role (full powers over every club here)"""
+        await interaction.response.defer()
+        try:
+            await GuildManagerRole.add(interaction.guild_id, role.id)
+            embed = discord.Embed(
+                title="✅ Manager Role Added",
+                description=f"{role.mention} can now manage **every club** in this server.",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.add_field(
+                name="What this grants",
+                value="• Manage, create and **delete** any club in this server\n"
+                      "• Assign club-editor roles\n"
+                      "• ❌ Cannot assign manager roles (admins only)",
+                inline=False,
+            )
+            embed.set_footer(text=f"Added by {interaction.user}")
+            await interaction.followup.send(embed=embed)
+            logger.info(f"Manager role {role.id} added for guild {interaction.guild_id} by {interaction.user}")
+        except Exception as e:
+            logger.error(f"Error in add_manager_role: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+
+    @app_commands.command(name="remove_manager_role", description="Revoke a server-wide manager role (Admin only)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def remove_manager_role(self, interaction: discord.Interaction, role: discord.Role):
+        """Unbind a guild-wide manager role"""
+        await interaction.response.defer()
+        try:
+            await GuildManagerRole.remove(interaction.guild_id, role.id)
+            embed = discord.Embed(
+                title="✅ Manager Role Removed",
+                description=f"{role.mention} no longer manages clubs in this server.",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.set_footer(text=f"Removed by {interaction.user}")
+            await interaction.followup.send(embed=embed)
+            logger.info(f"Manager role {role.id} removed for guild {interaction.guild_id} by {interaction.user}")
+        except Exception as e:
+            logger.error(f"Error in remove_manager_role: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+
+    @app_commands.command(name="list_manager_roles", description="List server-wide manager roles (Admin only)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def list_manager_roles(self, interaction: discord.Interaction):
+        """Show roles that can manage every club in this server"""
+        await interaction.response.defer()
+        try:
+            role_ids = await GuildManagerRole.get_role_ids(interaction.guild_id)
+            if not role_ids:
+                await interaction.followup.send(
+                    "ℹ️ No manager roles set for this server.\n"
+                    "Use `/add_manager_role` to grant a role full management of all clubs."
+                )
+                return
+            mentions = []
+            for rid in role_ids:
+                r = interaction.guild.get_role(rid)
+                mentions.append(r.mention if r else f"`(deleted role {rid})`")
+            embed = discord.Embed(
+                title="🛡️ Manager Roles",
+                description="\n".join(f"• {m}" for m in mentions),
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.set_footer(text="These roles can manage every club in this server.")
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error in list_manager_roles: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+
     # Autocomplete for club parameter
     remove_club.autocomplete('club')(club_autocomplete)
     activate_club.autocomplete('club')(club_autocomplete)
     edit_club.autocomplete('club')(club_autocomplete)
+    add_club_editor.autocomplete('club')(club_autocomplete)
+    remove_club_editor.autocomplete('club')(club_autocomplete)
+    list_club_editors.autocomplete('club')(club_autocomplete)
 
 
 async def setup(bot):

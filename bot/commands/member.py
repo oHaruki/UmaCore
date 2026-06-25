@@ -4,10 +4,9 @@ Member status and user linking commands
 import discord
 from discord import app_commands
 from discord.ext import commands
-from datetime import date as date_class
 import logging
 
-from models import Member, QuotaHistory, Bomb, UserLink, Club, QuotaRequirement
+from models import Member, UserLink, Club
 
 logger = logging.getLogger(__name__)
 
@@ -270,266 +269,34 @@ class MemberCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
     async def _send_member_status(self, interaction: discord.Interaction, member: Member):
-        """Send a detailed status embed for a member"""
-        latest_history = await QuotaHistory.get_latest_for_member(member.member_id)
-        
-        if not latest_history:
-            await interaction.followup.send(f"No quota data found for {member.trainer_name}")
+        """Render and send the trainer card image for a member."""
+        import os
+        from services.trainer_card_renderer import generate_trainer_card
+
+        try:
+            card_path = await generate_trainer_card(member)
+        except Exception as e:
+            logger.error(
+                f"Failed to render trainer card for {member.trainer_name}: {e}",
+                exc_info=True,
+            )
+            await interaction.followup.send(f"❌ Couldn't render the trainer card: {str(e)}")
             return
-        
-        active_bomb = await Bomb.get_active_for_member(member.member_id)
-        
-        # Get club info and effective quota
-        from models import Club
-        club = await Club.get_by_id(member.club_id)
-        if club:
-            daily_quota = await QuotaRequirement.get_quota_for_date(club.club_id, date_class.today())
-        else:
-            daily_quota = 1000000
-        
-        # Determine color based on status
-        if active_bomb:
-            color = 0xFF0000  # Red for bomb
-        elif latest_history.deficit_surplus < 0:
-            color = 0xFFA500  # Orange for behind
-        else:
-            color = 0x3498db  # Blue for on track
-        
-        # Build title
-        if active_bomb:
-            title = "💣 Quota Status - Bomb Active"
-        elif latest_history.deficit_surplus < 0:
-            title = "⚠️ Quota Status - Behind"
-        else:
-            title = "📊 Quota Status"
-        
-        embed = discord.Embed(
-            title=title,
-            color=color,
-            timestamp=discord.utils.utcnow()
-        )
-        
-        # Trainer info - split into two columns
-        status_text = "✅ Active" if member.is_active else "❌ Inactive"
-        if member.manually_deactivated:
-            status_text += " (Manually Deactivated)"
-        
-        embed.add_field(
-            name="👤 Trainer Information",
-            value=f"**Name:** {member.trainer_name}\n"
-                  f"**Trainer ID:** `{member.trainer_id or 'N/A'}`\n"
-                  f"**Club:** {club.club_name if club else 'Unknown'}",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="📅 Membership",
-            value=f"**Joined:** {member.join_date.strftime('%b %d, %Y')}\n"
-                  f"**Status:** {status_text}",
-            inline=True
-        )
-        
-        # Progress bar
-        if latest_history.expected_fans > 0:
-            progress_pct = int((latest_history.cumulative_fans / latest_history.expected_fans) * 100)
-        else:
-            progress_pct = 0
-        
-        # Determine color indicator
-        if progress_pct >= 500:
-            color_indicator = "🟨"
-        elif progress_pct >= 400:
-            color_indicator = "🟧"
-        elif progress_pct >= 300:
-            color_indicator = "🟪"
-        elif progress_pct >= 200:
-            color_indicator = "🟦"
-        elif progress_pct >= 100:
-            color_indicator = "🟩"
-        else:
-            color_indicator = "⬜"
-        
-        # Calculate bar display
-        if progress_pct >= 100:
-            bar = "█" * 20
-        else:
-            filled = int(progress_pct / 5)
-            empty = 20 - filled
-            bar = "█" * filled + "░" * empty
-        
-        progress_title = "📈 Current Progress" if latest_history.deficit_surplus >= 0 else "📉 Current Progress"
-        
-        embed.add_field(
-            name=progress_title,
-            value=f"```\nCurrent:  {latest_history.cumulative_fans:,} 👥\n"
-                  f"Expected: {latest_history.expected_fans:,} 👥\n"
-                  f"━━━━━━━━━━━━━━━━━━━━\n"
-                  f"Progress: {bar} {color_indicator}{progress_pct}%\n```",
-            inline=False
-        )
-        
-        # Performance section
-        if latest_history.deficit_surplus >= 0:
-            status_emoji = "🎯"
-            deficit_text = f"+{latest_history.deficit_surplus:,}"
-            performance_title = "🎯 Performance"
-        else:
-            status_emoji = "⚠️"
-            deficit_text = f"{latest_history.deficit_surplus:,}"
-            performance_title = "⚠️ Performance"
-        
-        embed.add_field(
-            name=performance_title,
-            value=f"**Surplus/Deficit:** {deficit_text} fans {status_emoji}\n"
-                  f"**Days Behind:** {latest_history.days_behind} days\n"
-                  f"**Daily Quota:** {daily_quota:,} fans/day",
-            inline=True
-        )
-        
-        # Bomb status
-        if active_bomb:
-            urgency_emoji = "🔴" if active_bomb.days_remaining <= 2 else "🟠" if active_bomb.days_remaining <= 4 else "🟡"
-            
-            embed.add_field(
-                name="💣 Active Bomb",
-                value=f"{urgency_emoji} **{active_bomb.days_remaining} days remaining**\n"
-                      f"Activated: {active_bomb.activation_date.strftime('%b %d, %Y')}\n"
-                      f"Get back on track!",
-                inline=True
+
+        if card_path is None:
+            await interaction.followup.send(
+                f"No quota data found for **{member.trainer_name}** yet."
             )
-        elif latest_history.days_behind == 2:
-            embed.add_field(
-                name="💣 Bomb Warning",
-                value=f"🟡 **1 more day** behind\n"
-                      f"and a bomb will activate!\n"
-                      f"Get on track today.",
-                inline=True
-            )
-        else:
-            embed.add_field(name="\u200b", value="\u200b", inline=True)
-        
-        # Recommendations
-        if latest_history.deficit_surplus < 0:
-            deficit = abs(latest_history.deficit_surplus)
-            catchup_days = (club.bomb_countdown_days - latest_history.days_behind) if club else 7
-            recommended_daily = daily_quota + (deficit // max(1, catchup_days))
-            
-            embed.add_field(
-                name="💡 To Catch Up",
-                value=f"Earn **{deficit:,}+ fans** total\n"
-                      f"Target: **{recommended_daily:,} fans/day**",
-                inline=False
-            )
-        
-        # Statistics
-        current_date = date_class.today()
-        
-        # Calculate streak and get history
-        history_records = await QuotaHistory.get_last_n_days(member.member_id, 100)
-        
-        # Use actual number of days with data
-        days_active = len(history_records) if history_records else 1
-        avg_daily = latest_history.cumulative_fans / max(1, days_active) if days_active > 0 else 0
-        
-        # Calculate streak
-        streak_days = 0
-        
-        if latest_history.deficit_surplus >= 0:
-            streak_days = 1
-            for record in history_records[1:]:
-                if record.deficit_surplus >= 0:
-                    streak_days += 1
-                else:
-                    break
-        
-        # Get best day
-        best_day_fans = 0
-        if len(history_records) >= 2:
-            for i in range(len(history_records) - 1):
-                current = history_records[i]
-                previous = history_records[i + 1]
-                daily_gain = current.cumulative_fans - previous.cumulative_fans
-                if daily_gain > best_day_fans:
-                    best_day_fans = daily_gain
-        
-        # Format stats
-        if avg_daily >= 1_000_000:
-            avg_formatted = f"{avg_daily / 1_000_000:.2f}M"
-        elif avg_daily >= 1_000:
-            avg_formatted = f"{avg_daily / 1_000:.1f}K"
-        else:
-            avg_formatted = f"{int(avg_daily)}"
-        
-        if best_day_fans >= 1_000_000:
-            best_formatted = f"{best_day_fans / 1_000_000:.2f}M"
-        elif best_day_fans >= 1_000:
-            best_formatted = f"{best_day_fans / 1_000:.1f}K"
-        else:
-            best_formatted = f"{best_day_fans}"
-        
-        # Streak emoji
-        if streak_days >= 30:
-            streak_emoji = "🔥🔥🔥"
-        elif streak_days >= 14:
-            streak_emoji = "🔥🔥"
-        elif streak_days >= 7:
-            streak_emoji = "🔥"
-        elif streak_days >= 3:
-            streak_emoji = "✨"
-        else:
-            streak_emoji = ""
-        
-        embed.add_field(
-            name="📊 Statistics",
-            value=f"**Days Active:** {days_active}\n"
-                  f"**Avg Daily:** {avg_formatted}/day\n"
-                  f"**Best Day:** +{best_formatted}\n"
-                  f"**Streak:** {streak_days} day{'s' if streak_days != 1 else ''} {streak_emoji}",
-            inline=True
-        )
-        
-        # Rank
-        all_members = await Member.get_all_active(member.club_id)
-        member_rankings = []
-        
-        for m in all_members:
-            m_history = await QuotaHistory.get_latest_for_member(m.member_id)
-            if m_history:
-                member_rankings.append({
-                    'member_id': m.member_id,
-                    'deficit_surplus': m_history.deficit_surplus
-                })
-        
-        member_rankings.sort(key=lambda x: x['deficit_surplus'], reverse=True)
-        
-        member_rank = 0
-        for idx, ranking in enumerate(member_rankings, start=1):
-            if ranking['member_id'] == member.member_id:
-                member_rank = idx
-                break
-        
-        total_members = len(member_rankings)
-        percentile = 100 - int((member_rank / total_members) * 100) if total_members > 0 else 0
-        
-        if percentile >= 90:
-            percentile_desc = f"Top {100 - percentile}%"
-        elif percentile >= 75:
-            percentile_desc = f"Top {100 - percentile}%"
-        elif percentile >= 50:
-            percentile_desc = f"Top {100 - percentile}%"
-        else:
-            percentile_desc = f"Bottom {percentile}%"
-        
-        embed.add_field(
-            name="🏆 Rank",
-            value=f"**Club Rank:** #{member_rank} of {total_members}\n"
-                  f"**Percentile:** {percentile_desc}",
-            inline=True
-        )
-        
-        embed.set_footer(text=f"Last updated: {latest_history.date.strftime('%b %d, %Y')}")
-        
-        await interaction.followup.send(embed=embed)
+            return
+
+        try:
+            file = discord.File(str(card_path), filename="trainer_card.png")
+            await interaction.followup.send(file=file)
+        finally:
+            try:
+                os.remove(card_path)
+            except OSError:
+                pass
     
     # Apply autocomplete
     link_trainer.autocomplete('club')(club_autocomplete)

@@ -17,6 +17,7 @@ from models import Member, QuotaRequirement, BotSettings, Club, ClubRankHistory
 from config.settings import USE_UMAMOE_API, UMAMOE_RATE_PER_MIN, UMAMOE_RATE_BURST
 from utils.rate_limiter import umamoe_limiter
 from utils.timezone_helper import resolve_timezone
+from utils.permissions import ensure_can_manage
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,6 @@ class AdminCommands(commands.Cog):
         return False
 
     @app_commands.command(name="quota", description="Set the daily quota requirement")
-    @app_commands.checks.has_permissions(administrator=True)
     async def set_quota(self, interaction: discord.Interaction, amount: int, club: str):
         """Set the daily quota requirement"""
         await interaction.response.defer()
@@ -83,6 +83,9 @@ class AdminCommands(commands.Cog):
 
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await ensure_can_manage(interaction, club_obj):
                 return
 
             if amount < 0:
@@ -162,7 +165,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
     @app_commands.command(name="update_monthly_info", description="Update the monthly info board")
-    @app_commands.checks.has_permissions(administrator=True)
     async def update_monthly_info(self, interaction: discord.Interaction, club: str):
         """Update the existing monthly info board"""
         await interaction.response.defer()
@@ -175,6 +177,9 @@ class AdminCommands(commands.Cog):
 
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await ensure_can_manage(interaction, club_obj):
                 return
 
             channel_id, message_id = await club_obj.get_monthly_info_location()
@@ -215,7 +220,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
     @app_commands.command(name="quota_history", description="View quota changes this month")
-    @app_commands.checks.has_permissions(administrator=True)
     async def quota_history(self, interaction: discord.Interaction, club: str):
         """View quota change history for the current month"""
         await interaction.response.defer()
@@ -228,6 +232,9 @@ class AdminCommands(commands.Cog):
 
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await ensure_can_manage(interaction, club_obj):
                 return
 
             club_tz = resolve_timezone(club_obj.timezone)
@@ -281,7 +288,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
     @app_commands.command(name="delete_quota", description="Delete a specific quota requirement entry by date and amount")
-    @app_commands.checks.has_permissions(administrator=True)
     async def delete_quota(self, interaction: discord.Interaction, club: str, date: str, amount: int):
         """Delete a specific quota requirement entry (use /quota_history to find the values)"""
         await interaction.response.defer()
@@ -294,6 +300,9 @@ class AdminCommands(commands.Cog):
 
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await ensure_can_manage(interaction, club_obj):
                 return
 
             try:
@@ -344,7 +353,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
     @app_commands.command(name="force_check", description="Manually trigger a quota check and report")
-    @app_commands.checks.has_permissions(administrator=True)
     async def force_check(self, interaction: discord.Interaction, club: str):
         """Manually trigger the daily check"""
         await interaction.response.defer()
@@ -357,6 +365,9 @@ class AdminCommands(commands.Cog):
 
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await ensure_can_manage(interaction, club_obj):
                 return
 
             report_channel = self.bot.get_channel(club_obj.report_channel_id)
@@ -557,7 +568,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
     @app_commands.command(name="add_member", description="Manually add a new member")
-    @app_commands.checks.has_permissions(administrator=True)
     async def add_member(self, interaction: discord.Interaction,
                          trainer_name: str, join_date: str, club: str, trainer_id: str = None):
         """Manually add a member (format: YYYY-MM-DD)"""
@@ -571,6 +581,9 @@ class AdminCommands(commands.Cog):
 
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await ensure_can_manage(interaction, club_obj):
                 return
 
             join_date_obj = datetime.strptime(join_date, "%Y-%m-%d").date()
@@ -597,7 +610,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
     @app_commands.command(name="deactivate_member", description="Manually deactivate a member")
-    @app_commands.checks.has_permissions(administrator=True)
     async def deactivate_member(self, interaction: discord.Interaction, trainer_name: str, club: str):
         """Manually deactivate a member"""
         await interaction.response.defer()
@@ -610,6 +622,9 @@ class AdminCommands(commands.Cog):
 
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await ensure_can_manage(interaction, club_obj):
                 return
 
             member = await Member.get_by_name(club_obj.club_id, trainer_name)
@@ -645,7 +660,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
     @app_commands.command(name="activate_member", description="Reactivate a member")
-    @app_commands.checks.has_permissions(administrator=True)
     async def activate_member(self, interaction: discord.Interaction, trainer_name: str, club: str):
         """Reactivate a deactivated member"""
         await interaction.response.defer()
@@ -658,6 +672,9 @@ class AdminCommands(commands.Cog):
 
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await ensure_can_manage(interaction, club_obj):
                 return
 
             member = await Member.get_by_name(club_obj.club_id, trainer_name)
@@ -687,7 +704,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
     @app_commands.command(name="bomb_status", description="View all active bombs")
-    @app_commands.checks.has_permissions(administrator=True)
     async def bomb_status(self, interaction: discord.Interaction, club: str):
         """View all active bombs for a club"""
         await interaction.response.defer()
@@ -700,6 +716,9 @@ class AdminCommands(commands.Cog):
 
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await ensure_can_manage(interaction, club_obj):
                 return
 
             bombs_data = await self.bomb_manager.get_active_bombs_with_members(club_obj.club_id)
@@ -737,7 +756,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
     @app_commands.command(name="recalculate", description="Recalculate days-behind counts and bomb statuses from current history without clearing data")
-    @app_commands.checks.has_permissions(administrator=True)
     async def recalculate(self, interaction: discord.Interaction, club: str):
         """Recalculate days_behind and bombs based on existing quota history"""
         await interaction.response.defer()
@@ -750,6 +768,9 @@ class AdminCommands(commands.Cog):
 
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await ensure_can_manage(interaction, club_obj):
                 return
 
             from config.database import db as _db
@@ -829,7 +850,6 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
     @app_commands.command(name="reset_month", description="Manually trigger monthly reset: clears all history, bombs, and quota requirements")
-    @app_commands.checks.has_permissions(administrator=True)
     async def reset_month(self, interaction: discord.Interaction, club: str):
         """Manually reset all monthly data for a club (for use when auto-reset fails)"""
         await interaction.response.defer()
@@ -842,6 +862,9 @@ class AdminCommands(commands.Cog):
 
             if not club_obj.belongs_to_guild(interaction.guild_id):
                 await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await ensure_can_manage(interaction, club_obj):
                 return
 
             from config.database import db as _db
