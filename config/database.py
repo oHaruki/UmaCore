@@ -476,6 +476,28 @@ class Database:
 
         CREATE INDEX IF NOT EXISTS idx_guild_manager_roles_role
             ON guild_manager_roles(role_id);
+
+        -- External API usage log: one row per outbound request to a third-party
+        -- API (uma.moe circle/profile data, gametora portraits). Powers the
+        -- owner-only API analytics page so we can watch volume, error/429 rate
+        -- and rate-limit headroom now that the bot makes more requests.
+        CREATE TABLE IF NOT EXISTS api_usage (
+            id          BIGSERIAL   PRIMARY KEY,
+            provider    TEXT        NOT NULL,   -- 'uma.moe' | 'gametora'
+            endpoint    TEXT        NOT NULL,   -- 'circles' | 'profile' | 'portrait'
+            status_code INTEGER,                -- HTTP status, NULL on network error
+            ok          BOOLEAN     NOT NULL,   -- request succeeded
+            duration_ms INTEGER,                -- round-trip latency
+            context     TEXT,                   -- free-form: circle/viewer/card id, caller
+            created_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_api_usage_created
+            ON api_usage(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_api_usage_provider_created
+            ON api_usage(provider, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_api_usage_endpoint_created
+            ON api_usage(endpoint, created_at DESC);
         """
         
         try:
