@@ -1,9 +1,14 @@
 """Leader-character portrait cache.
 
-Resolves a trainer's leader card id (uma.moe ``leader_chara_dress_id``, a 6-digit
-``CCCCDD`` card id) to a local PNG, downloading it once from gametora and caching
-it on disk. Subsequent renders — for any trainer with that character — reuse the
-cached file, so we hit the network at most once per character.
+Resolves a trainer's leader id (uma.moe ``leader_chara_dress_id``, a 6-digit
+``CCCCDD`` value) to a local PNG, downloading it once from gametora and caching
+it on disk. Subsequent renders reuse the cached file, so we hit the network at
+most once per leader id.
+
+The leader id is the *equipped dress*, not necessarily a playable card costume,
+and gametora only hosts stand art for actual card costumes. So we try the exact
+id first, then fall back to the character's base cards (``CCCC01`` / ``CCCC02``)
+so a trainer wearing a non-card outfit still gets that character's default art.
 
 Images are a runtime cache (gitignored), not bundled assets.
 """
@@ -29,8 +34,39 @@ _UA = (
 _failed: set[str] = set()
 
 
+def _candidate_ids(card: str, chara: str) -> list[str]:
+    """Exact id first, then the character's base card costumes as fallbacks."""
+    ordered = [card, f"{chara}01", f"{chara}02"]
+    seen: list[str] = []
+    for c in ordered:
+        if c not in seen:
+            seen.append(c)
+    return seen
+
+
+async def _download(session: aiohttp.ClientSession, candidate: str, context: str) -> Optional[bytes]:
+    """Fetch one gametora stand image. Returns image bytes, or None if unavailable."""
+    url = _URL.format(chara=candidate[:4], card=candidate)
+    async with track_api_call("gametora", "portrait", context=context) as m:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            m["status_code"] = resp.status
+            is_image = "image" in resp.headers.get("Content-Type", "")
+            m["ok"] = resp.status == 200 and is_image
+            if resp.status != 200 or not is_image:
+                logger.info(f"No gametora portrait for id {candidate} (HTTP {resp.status})")
+                return None
+            data = await resp.read()
+    if len(data) < 200:  # guard against empty/placeholder responses
+        return None
+    return data
+
+
 async def get_portrait_path(card_id) -> Optional[Path]:
-    """Return a local PNG path for the leader card id, downloading if needed."""
+    """Return a local PNG path for the leader id, downloading if needed.
+
+    The image is cached under the originally-requested id, so even when a
+    fallback costume supplies the art, that leader resolves from disk next time.
+    """
     if not card_id:
         return None
 
@@ -45,33 +81,31 @@ async def get_portrait_path(card_id) -> Optional[Path]:
         return None
 
     chara = card[:4]
-    url = _URL.format(chara=chara, card=card)
     headers = {"User-Agent": _UA, "Referer": "https://gametora.com/"}
 
     try:
         _PORTRAIT_DIR.mkdir(parents=True, exist_ok=True)
         async with aiohttp.ClientSession(headers=headers) as session:
-            async with track_api_call("gametora", "portrait", context=card) as m:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                    m["status_code"] = resp.status
-                    is_image = "image" in resp.headers.get("Content-Type", "")
-                    m["ok"] = resp.status == 200 and is_image
-                    if resp.status != 200 or not is_image:
-                        logger.info(f"No gametora portrait for card {card} (HTTP {resp.status})")
-                        _failed.add(card)
-                        return None
-                    data = await resp.read()
+            data: Optional[bytes] = None
+            for candidate in _candidate_ids(card, chara):
+                context = candidate if candidate == card else f"{card}->{candidate}"
+                data = await _download(session, candidate, context)
+                if data is not None:
+                    if candidate != card:
+                        logger.info(f"Using fallback costume {candidate} for leader {card}")
+                    break
 
-        if len(data) < 200:  # guard against empty/placeholder responses
+        if data is None:
+            logger.info(f"No gametora portrait available for leader {card} (tried base costumes)")
             _failed.add(card)
             return None
 
         tmp = path.with_suffix(".tmp")
         tmp.write_bytes(data)
         tmp.replace(path)
-        logger.info(f"Cached leader portrait for card {card} ({len(data)} bytes)")
+        logger.info(f"Cached leader portrait for {card} ({len(data)} bytes)")
         return path
     except Exception as e:
-        logger.warning(f"Failed to fetch portrait for card {card}: {e}")
+        logger.warning(f"Failed to fetch portrait for leader {card}: {e}")
         _failed.add(card)
         return None
