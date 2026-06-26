@@ -60,6 +60,8 @@ BOMB_COUNTDOWN_DAYS = 7
 
 # Internal API server (web UI integration)
 BOT_API_PORT = int(os.getenv("BOT_API_PORT", "7890"))
+# Shared secret for the localhost-only HTTP API (must match umacore-web BOT_API_SECRET).
+BOT_API_SECRET = os.getenv("BOT_API_SECRET")
 
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
