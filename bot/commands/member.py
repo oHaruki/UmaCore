@@ -1,6 +1,7 @@
 """
 Member status and user linking commands
 """
+import os
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -9,6 +10,80 @@ import logging
 from models import Member, UserLink, Club
 
 logger = logging.getLogger(__name__)
+
+
+class CardCarousel(discord.ui.View):
+    """A ◀ ▶ carousel that pages between a member's status card and team card.
+
+    Each page is a pre-rendered PNG on disk; flipping re-attaches the relevant
+    file to the original message. Only the invoker can use the buttons, and the
+    controls disable themselves on timeout. The temp PNGs are cleaned up when the
+    view times out.
+    """
+
+    def __init__(self, invoker_id: int, pages: list, *, timeout: float = 180):
+        super().__init__(timeout=timeout)
+        # pages: list of (path, filename, label)
+        self.invoker_id = invoker_id
+        self.pages = pages
+        self.index = 0
+        self.message: discord.Message = None
+        self._sync_state()
+
+    def current_file(self) -> discord.File:
+        path, filename, _ = self.pages[self.index]
+        return discord.File(path, filename=filename)
+
+    def _sync_state(self):
+        self.prev_button.disabled = self.index <= 0
+        self.next_button.disabled = self.index >= len(self.pages) - 1
+        _, _, label = self.pages[self.index]
+        self.page_label.label = label
+        self.page_label.disabled = True
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message(
+                "Only the person who ran the command can flip these cards.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def _show(self, interaction: discord.Interaction):
+        self._sync_state()
+        await interaction.response.edit_message(
+            attachments=[self.current_file()], view=self
+        )
+
+    @discord.ui.button(emoji="◀", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.index > 0:
+            self.index -= 1
+        await self._show(interaction)
+
+    @discord.ui.button(label="Status", style=discord.ButtonStyle.primary, disabled=True)
+    async def page_label(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Non-interactive page indicator.
+        pass
+
+    @discord.ui.button(emoji="▶", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.index < len(self.pages) - 1:
+            self.index += 1
+        await self._show(interaction)
+
+    async def on_timeout(self):
+        if self.message is not None:
+            try:
+                await self.message.edit(view=None)
+            except Exception:
+                pass
+        for path, _, _ in self.pages:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 class MemberCommands(commands.Cog):
@@ -269,12 +344,15 @@ class MemberCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
     async def _send_member_status(self, interaction: discord.Interaction, member: Member):
-        """Render and send the trainer card image for a member."""
-        import os
-        from services.trainer_card_renderer import generate_trainer_card
+        """Render and send the trainer card(s) for a member.
+
+        Sends a single image when there's no team data, or a ◀ ▶ carousel
+        (status card + Team Trials card) when the trainer has team_stadium data.
+        """
+        from services.trainer_card_renderer import generate_member_cards
 
         try:
-            card_path = await generate_trainer_card(member)
+            status_path, team_path = await generate_member_cards(member)
         except Exception as e:
             logger.error(
                 f"Failed to render trainer card for {member.trainer_name}: {e}",
@@ -283,20 +361,40 @@ class MemberCommands(commands.Cog):
             await interaction.followup.send(f"❌ Couldn't render the trainer card: {str(e)}")
             return
 
-        if card_path is None:
+        if status_path is None:
             await interaction.followup.send(
                 f"No quota data found for **{member.trainer_name}** yet."
             )
             return
 
-        try:
-            file = discord.File(str(card_path), filename="trainer_card.png")
-            await interaction.followup.send(file=file)
-        finally:
+        # Single-page: no team data, just send the status card and clean up.
+        if not team_path:
             try:
-                os.remove(card_path)
-            except OSError:
-                pass
+                file = discord.File(str(status_path), filename="trainer_card.png")
+                await interaction.followup.send(file=file)
+            finally:
+                try:
+                    os.remove(status_path)
+                except OSError:
+                    pass
+            return
+
+        # Two-page carousel. The view owns temp-file cleanup on timeout.
+        pages = [
+            (str(status_path), "trainer_card.png", "Status"),
+            (str(team_path), "team_card.png", "Team Trials"),
+        ]
+        view = CardCarousel(interaction.user.id, pages)
+        try:
+            message = await interaction.followup.send(file=view.current_file(), view=view, wait=True)
+            view.message = message
+        except Exception:
+            for path, _, _ in pages:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            raise
     
     # Apply autocomplete
     link_trainer.autocomplete('club')(club_autocomplete)
