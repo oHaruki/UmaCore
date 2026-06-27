@@ -18,6 +18,11 @@ from models import Member, QuotaHistory, Bomb, Club, QuotaRequirement
 from scrapers import fetch_trainer_profile
 from services.portrait_cache import get_portrait_path
 from tally.render.trainer_card import TrainerCardData, render
+from tally.render.team_card import (
+    TeamCardData,
+    TeamMemberCard,
+    render as render_team,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +52,15 @@ def _pick_monthly_entry(monthly: list, today: date_class) -> Optional[dict]:
         return monthly[0]
 
 
-async def build_trainer_card_data(member: Member) -> Optional[TrainerCardData]:
-    """Assemble all card data for a member, or None if there's no quota data."""
+async def build_trainer_card_data(
+    member: Member, profile: Optional[dict] = None
+) -> Optional[TrainerCardData]:
+    """Assemble all card data for a member, or None if there's no quota data.
+
+    ``profile`` may be a pre-fetched uma.moe profile dict (so the orchestrator
+    can fetch it once and reuse it for the team card). When ``None``, it's
+    fetched here as before.
+    """
     latest = await QuotaHistory.get_latest_for_member(member.member_id)
     if not latest:
         return None
@@ -100,7 +112,7 @@ async def build_trainer_card_data(member: Member) -> Optional[TrainerCardData]:
     club_rank, club_total, percentile = await _compute_club_rank(member)
 
     # uma.moe enrichment (best-effort)
-    api = await _fetch_api_fields(member, date_class.today())
+    api = await _fetch_api_fields(member, date_class.today(), profile=profile)
 
     # Resolve the leader portrait (downloads + caches once per character)
     portrait_path = None
@@ -159,8 +171,14 @@ async def _compute_club_rank(member: Member) -> tuple:
     return rank, total, percentile
 
 
-async def _fetch_api_fields(member: Member, today: date_class) -> dict:
-    """Pull optional uma.moe profile fields. Always returns a dict (may be empty-ish)."""
+async def _fetch_api_fields(
+    member: Member, today: date_class, profile: Optional[dict] = None
+) -> dict:
+    """Pull optional uma.moe profile fields. Always returns a dict (may be empty-ish).
+
+    Accepts a pre-fetched ``profile`` to avoid hitting the API twice when the
+    caller also needs team-stadium data.
+    """
     fields = {
         "has_api_data": False,
         "team_evaluation_point": None,
@@ -177,7 +195,8 @@ async def _fetch_api_fields(member: Member, today: date_class) -> dict:
         "alltime_total_fans": None,
     }
 
-    profile = await fetch_trainer_profile(member.trainer_id)
+    if profile is None:
+        profile = await fetch_trainer_profile(member.trainer_id)
     if not profile:
         return fields
 
@@ -219,10 +238,147 @@ async def generate_trainer_card(member: Member) -> Optional[Path]:
     if data is None:
         return None
 
+    out_path = await _render_to_temp(lambda p: render(data, p))
+    logger.info(f"Trainer card generated for {member.trainer_name} → {out_path}")
+    return out_path
+
+
+# ── team-stadium parsing ─────────────────────────────────────────────────────
+
+def _first(d: dict, *keys):
+    """Return the first present key's value from ``d`` (handles API name drift)."""
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return None
+
+
+def _parse_team_member(raw: dict) -> TeamMemberCard:
+    """Map one raw team_stadium entry to a TeamMemberCard (defensive on names)."""
+    distance = {
+        "short":  _safe_int(_first(raw, "proper_distance_short", "distance_short")),
+        "mile":   _safe_int(_first(raw, "proper_distance_mile", "distance_mile")),
+        "middle": _safe_int(_first(raw, "proper_distance_middle", "distance_middle")),
+        "long":   _safe_int(_first(raw, "proper_distance_long", "distance_long")),
+    }
+    ground = {
+        "turf": _safe_int(_first(raw, "proper_ground_turf", "ground_turf")),
+        "dirt": _safe_int(_first(raw, "proper_ground_dirt", "ground_dirt")),
+    }
+    style_apt = {
+        "front": _safe_int(_first(raw, "proper_running_style_nige", "proper_running_style_front", "running_style_nige")),
+        "pace":  _safe_int(_first(raw, "proper_running_style_senko", "proper_running_style_senkou", "proper_running_style_pace")),
+        "late":  _safe_int(_first(raw, "proper_running_style_sashi", "proper_running_style_late")),
+        "end":   _safe_int(_first(raw, "proper_running_style_oikomi", "proper_running_style_ooikomi", "proper_running_style_end")),
+    }
+    skills = raw.get("skills")
+    skill_count = len(skills) if isinstance(skills, list) else 0
+
+    return TeamMemberCard(
+        card_id=_safe_int(_first(raw, "card_id", "trained_chara_id", "chara_id")),
+        distance_type=_safe_int(raw.get("distance_type")),
+        member_id=_safe_int(raw.get("member_id")),
+        skill_count=skill_count,
+        speed=_safe_int(raw.get("speed")) or 0,
+        stamina=_safe_int(raw.get("stamina")) or 0,
+        power=_safe_int(raw.get("power")) or 0,
+        guts=_safe_int(raw.get("guts")) or 0,
+        wiz=_safe_int(_first(raw, "wiz", "wisdom", "wit")) or 0,
+        rarity=_safe_int(raw.get("rarity")),
+        talent_level=_safe_int(_first(raw, "talent_level", "talent_lv")),
+        running_style=_safe_int(raw.get("running_style")),
+        rank_score=_safe_int(raw.get("rank_score")),
+        team_rating=_safe_int(_first(raw, "team_rating", "rating")),
+        fans=_safe_int(raw.get("fans")),
+        distance=distance,
+        ground=ground,
+        style_apt=style_apt,
+    )
+
+
+def _extract_team_stadium(profile: Optional[dict]) -> list:
+    """Pull the raw team_stadium array from a profile dict (top-level or nested)."""
+    if not isinstance(profile, dict):
+        return []
+    raw = profile.get("team_stadium")
+    if raw is None:
+        trainer = profile.get("trainer") or {}
+        raw = trainer.get("team_stadium")
+    return raw if isinstance(raw, list) else []
+
+
+async def build_team_card_data(
+    member: Member, profile: Optional[dict], status_api: dict
+) -> Optional[TeamCardData]:
+    """Assemble the team card from a profile's team_stadium. None when absent."""
+    raw_members = _extract_team_stadium(profile)
+    if not raw_members:
+        return None
+
+    members = [_parse_team_member(r) for r in raw_members if isinstance(r, dict)]
+    if not members:
+        return None
+
+    # Resolve portraits concurrently (cached on disk after first fetch).
+    async def _resolve(m: TeamMemberCard):
+        if m.card_id:
+            p = await get_portrait_path(m.card_id)
+            m.portrait_path = str(p) if p else None
+
+    await asyncio.gather(*(_resolve(m) for m in members))
+
+    club = await Club.get_by_id(member.club_id)
+    return TeamCardData(
+        trainer_name=member.trainer_name,
+        trainer_id=member.trainer_id,
+        club_name=club.club_name if club else "Unknown Club",
+        members=members,
+        team_evaluation_point=status_api.get("team_evaluation_point"),
+        team_class=status_api.get("team_class"),
+        has_api_data=bool(status_api.get("has_api_data")),
+    )
+
+
+async def _render_to_temp(render_fn) -> Path:
+    """Render via ``render_fn(path)`` on the executor; return the temp PNG path."""
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     tmp.close()
     out_path = Path(tmp.name)
-
-    await asyncio.get_running_loop().run_in_executor(None, lambda: render(data, out_path))
-    logger.info(f"Trainer card generated for {member.trainer_name} → {out_path}")
+    await asyncio.get_running_loop().run_in_executor(None, lambda: render_fn(out_path))
     return out_path
+
+
+async def generate_member_cards(member: Member) -> tuple:
+    """Build both the status card and (when available) the team card.
+
+    Fetches the uma.moe profile once and reuses it for both. Returns
+    ``(status_path, team_path)`` where either may be ``None`` (status is ``None``
+    only when there's no quota data at all; team is ``None`` when the trainer has
+    no/private team_stadium).
+    """
+    profile = await fetch_trainer_profile(member.trainer_id)
+
+    status_data = await build_trainer_card_data(member, profile=profile)
+    if status_data is None:
+        return None, None
+
+    status_path = await _render_to_temp(lambda p: render(status_data, p))
+    logger.info(f"Trainer card generated for {member.trainer_name} → {status_path}")
+
+    team_path = None
+    status_api = {
+        "team_evaluation_point": status_data.team_evaluation_point,
+        "team_class": status_data.team_class,
+        "has_api_data": status_data.has_api_data,
+    }
+    try:
+        team_data = await build_team_card_data(member, profile, status_api)
+        if team_data is not None:
+            team_path = await _render_to_temp(lambda p: render_team(team_data, p))
+            logger.info(f"Team card generated for {member.trainer_name} → {team_path}")
+    except Exception as e:
+        # Team card is a best-effort extra; never let it break /my_status.
+        logger.warning(f"Failed to build team card for {member.trainer_name}: {e}", exc_info=True)
+        team_path = None
+
+    return status_path, team_path

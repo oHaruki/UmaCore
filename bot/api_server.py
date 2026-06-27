@@ -1,9 +1,11 @@
 """
 Internal HTTP API server for web UI integration.
 Binds to 127.0.0.1 only — never exposed publicly.
+Requires Authorization: Bearer <BOT_API_SECRET> on every request.
 """
 import json
 import logging
+import secrets
 from uuid import UUID
 from datetime import datetime, date, timedelta
 
@@ -16,9 +18,26 @@ from config.database import db
 from models import Club
 from scrapers import UmaMoeAPIScraper, ChronoGenesisScraper
 from services import QuotaCalculator, BombManager, ScrapeContext
-from config.settings import USE_UMAMOE_API
+from config.settings import USE_UMAMOE_API, BOT_API_SECRET
 
 logger = logging.getLogger(__name__)
+
+
+@web.middleware
+async def auth_middleware(request: web.Request, handler):
+    """Reject requests without a valid shared secret."""
+    if not BOT_API_SECRET:
+        return await _send_json(request, {'error': 'API not configured'}, status=503)
+
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return await _send_json(request, {'error': 'Unauthorized'}, status=401)
+
+    token = auth_header[7:]
+    if not token or not secrets.compare_digest(token, BOT_API_SECRET):
+        return await _send_json(request, {'error': 'Unauthorized'}, status=401)
+
+    return await handler(request)
 
 
 async def _send_json(request: web.Request, data: dict, status: int = 200) -> web.StreamResponse:
@@ -383,7 +402,7 @@ async def handle_logs(request: web.Request) -> web.StreamResponse:
 
 
 def create_app(bot=None) -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[auth_middleware])
     app['bot'] = bot
     app.router.add_post('/sync', handle_sync)
     app.router.add_post('/recalculate', handle_recalculate)

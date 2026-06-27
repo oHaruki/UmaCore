@@ -143,6 +143,10 @@ debug_screenshot.png
 screenshot_*.png
 *.png
 
+# ...but keep bundled rank-badge assets (overrides the *.png ignore above)
+!tally/assets/ranks/
+!tally/assets/ranks/*.png
+
 # ============================================
 # Database
 # ============================================

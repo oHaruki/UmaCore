@@ -44,28 +44,28 @@ def _candidate_ids(card: str, chara: str) -> list[str]:
     return seen
 
 
-async def _download(session: aiohttp.ClientSession, candidate: str, context: str) -> Optional[bytes]:
-    """Fetch one gametora stand image. Returns image bytes, or None if unavailable."""
+async def _try_download(session: aiohttp.ClientSession, candidate: str):
+    """Fetch one gametora stand image. Returns (bytes|None, status_code|None)."""
     url = _URL.format(chara=candidate[:4], card=candidate)
-    async with track_api_call("gametora", "portrait", context=context) as m:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-            m["status_code"] = resp.status
-            is_image = "image" in resp.headers.get("Content-Type", "")
-            m["ok"] = resp.status == 200 and is_image
-            if resp.status != 200 or not is_image:
-                logger.info(f"No gametora portrait for id {candidate} (HTTP {resp.status})")
-                return None
-            data = await resp.read()
+    async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        is_image = "image" in resp.headers.get("Content-Type", "")
+        if resp.status != 200 or not is_image:
+            logger.debug(f"gametora has no stand for id {candidate} (HTTP {resp.status})")
+            return None, resp.status
+        data = await resp.read()
     if len(data) < 200:  # guard against empty/placeholder responses
-        return None
-    return data
+        return None, resp.status
+    return data, resp.status
 
 
 async def get_portrait_path(card_id) -> Optional[Path]:
     """Return a local PNG path for the leader id, downloading if needed.
 
-    The image is cached under the originally-requested id, so even when a
-    fallback costume supplies the art, that leader resolves from disk next time.
+    Tries the exact equipped-dress id, then the character's base cards. Only one
+    api_usage row is recorded per resolution — marked failed solely when no
+    candidate yields art — so the expected first-probe miss isn't logged as an
+    error. The image is cached under the originally-requested id, so even a
+    fallback costume resolves from disk next time.
     """
     if not card_id:
         return None
@@ -85,25 +85,34 @@ async def get_portrait_path(card_id) -> Optional[Path]:
 
     try:
         _PORTRAIT_DIR.mkdir(parents=True, exist_ok=True)
+        data: Optional[bytes] = None
+        used: Optional[str] = None
+        last_status: Optional[int] = None
+
         async with aiohttp.ClientSession(headers=headers) as session:
-            data: Optional[bytes] = None
-            for candidate in _candidate_ids(card, chara):
-                context = candidate if candidate == card else f"{card}->{candidate}"
-                data = await _download(session, candidate, context)
-                if data is not None:
-                    if candidate != card:
-                        logger.info(f"Using fallback costume {candidate} for leader {card}")
-                    break
+            async with track_api_call("gametora", "portrait", context=card) as m:
+                for candidate in _candidate_ids(card, chara):
+                    d, status = await _try_download(session, candidate)
+                    if status is not None:
+                        last_status = status
+                    if d is not None:
+                        data, used = d, candidate
+                        break
+                m["status_code"] = 200 if data is not None else last_status
+                m["ok"] = data is not None
 
         if data is None:
             logger.info(f"No gametora portrait available for leader {card} (tried base costumes)")
             _failed.add(card)
             return None
 
+        if used != card:
+            logger.info(f"Using fallback costume {used} for leader {card}")
+
         tmp = path.with_suffix(".tmp")
         tmp.write_bytes(data)
         tmp.replace(path)
-        logger.info(f"Cached leader portrait for {card} ({len(data)} bytes)")
+        logger.info(f"Cached leader portrait for {card} via {used} ({len(data)} bytes)")
         return path
     except Exception as e:
         logger.warning(f"Failed to fetch portrait for leader {card}: {e}")

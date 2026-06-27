@@ -104,7 +104,9 @@ After inviting, use `/add_club` to register your club and `/set_report_channel` 
    DATABASE_URL=postgresql://user:password@host:5432/database_name
    LOG_LEVEL=INFO
    USE_UMAMOE_API=true
+   BOT_API_SECRET=your_random_secret_here
    ```
+   Generate `BOT_API_SECRET` with `openssl rand -hex 32` and use the same value in the web app's `.env.local`.
 
 3. Run the bot:
    ```bash

@@ -6,7 +6,7 @@ import logging
 import sys
 
 from config.database import db
-from config.settings import DISCORD_TOKEN, DATABASE_URL, BOT_API_PORT
+from config.settings import DISCORD_TOKEN, DATABASE_URL, BOT_API_PORT, BOT_API_SECRET
 from bot import create_bot
 from bot.api_server import start_api_server
 from utils.logger import setup_logging
@@ -25,6 +25,10 @@ async def main():
     
     if not DATABASE_URL:
         logger.error("DATABASE_URL not set in environment variables")
+        sys.exit(1)
+
+    if not BOT_API_SECRET:
+        logger.error("BOT_API_SECRET not set in environment variables")
         sys.exit(1)
     
     # Set database URL
