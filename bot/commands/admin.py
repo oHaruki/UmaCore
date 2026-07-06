@@ -755,7 +755,7 @@ class AdminCommands(commands.Cog):
             logger.error(f"Error in bomb_status: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
-    @app_commands.command(name="recalculate", description="Recalculate expected fans, days-behind counts, and bomb statuses from current history without clearing data")
+    @app_commands.command(name="recalculate", description="Recalculate quota, days-behind, and bomb statuses without clearing data")
     async def recalculate(self, interaction: discord.Interaction, club: str):
         """Fully recalculate quota history (expected_fans/deficit_surplus/days_behind) and bombs"""
         await interaction.response.defer()
