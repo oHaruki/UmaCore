@@ -785,6 +785,7 @@ class AdminCommands(commands.Cog):
             # recalculate days_behind by walking the corrected history in date order.
             members = await Member.get_all_active(club_obj.club_id)
             updated_entries = 0
+            corrected_join_dates = 0
 
             for member in members:
                 rows = await _db.fetch(
@@ -798,6 +799,18 @@ class AdminCommands(commands.Cog):
                     """,
                     member.member_id, current_date.year, current_date.month
                 )
+
+                # Self-heal a backdated join_date: if it predates our earliest tracked
+                # day for this member AND cumulative_fans has been completely flat the
+                # whole time (no growth ever recorded), that backdating was almost
+                # certainly wrong (e.g. a transferred member whose pre-existing career
+                # total got misread as an early join). Bump join_date to the most
+                # recent tracked day instead of trusting the stale value.
+                if rows and member.join_date < rows[0]['date']:
+                    baseline = rows[0]['cumulative_fans']
+                    if all(r['cumulative_fans'] == baseline for r in rows):
+                        await member.update_join_date(rows[-1]['date'])
+                        corrected_join_dates += 1
 
                 consecutive = 0
                 for row in rows:
@@ -834,6 +847,7 @@ class AdminCommands(commands.Cog):
                 title=f"✅ Recalculation Complete - {club}",
                 description=(
                     f"**History entries updated:** {updated_entries}\n"
+                    f"**Join dates corrected:** {corrected_join_dates}\n"
                     f"**Bombs cleared and re-evaluated**\n"
                     f"**Bombs re-activated:** {len(newly_activated)}\n\n"
                     "Expected fans, deficits, days-behind counts, and bomb statuses now reflect current rules.\n"

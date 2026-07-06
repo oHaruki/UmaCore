@@ -311,16 +311,31 @@ class UmaMoeAPIScraper(BaseScraper):
             viewer_id_str = str(viewer_id)
             
             # Detect join day and starting baseline.
-            # Transferred members have a negative day-1 value (uma.moe transfer marker);
-            # treat them as starting from 0 so their positive later values are used directly.
+            # Transferred members carry their pre-existing career fan total into the array,
+            # so it may be flat and positive from day 1 (e.g. [50M,50M,50M,50M,50M]) rather
+            # than starting at 0 — the first positive day is just their old total, not when
+            # they actually joined this club. If that value never changes across the whole
+            # window we have, there's no evidence of any progress since then (a genuinely
+            # active member would show growth), so fall back to "joined today" rather than
+            # back-charging quota for days we can't confirm they were even in this club.
             join_day = 1
             starting_lifetime_fans = 0
 
+            baseline_idx = None
             for idx, fans in enumerate(lifetime_fans[:current_day], start=1):
                 if fans > 0:
-                    join_day = idx
+                    baseline_idx = idx
                     starting_lifetime_fans = fans
                     break
+
+            if baseline_idx is not None:
+                fully_flat = all(
+                    lifetime_fans[idx] == starting_lifetime_fans
+                    for idx in range(baseline_idx, current_day)
+                )
+                join_day = current_day if fully_flat else baseline_idx
+            else:
+                join_day = current_day
 
             # Convert lifetime cumulative fans to monthly cumulative fans.
             # Negative values are transfer markers — treat them as 0.
