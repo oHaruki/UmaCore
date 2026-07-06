@@ -755,9 +755,9 @@ class AdminCommands(commands.Cog):
             logger.error(f"Error in bomb_status: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
-    @app_commands.command(name="recalculate", description="Recalculate days-behind counts and bomb statuses from current history without clearing data")
+    @app_commands.command(name="recalculate", description="Recalculate expected fans, days-behind counts, and bomb statuses from current history without clearing data")
     async def recalculate(self, interaction: discord.Interaction, club: str):
-        """Recalculate days_behind and bombs based on existing quota history"""
+        """Fully recalculate quota history (expected_fans/deficit_surplus/days_behind) and bombs"""
         await interaction.response.defer()
 
         try:
@@ -780,15 +780,16 @@ class AdminCommands(commands.Cog):
 
             await interaction.followup.send(f"🔄 Recalculating for {club}...")
 
-            # Step 1: Recalculate days_behind for all members in the current month.
-            # Walk each member's history in date order and track consecutive deficit days.
+            # Step 1: Recompute expected_fans/deficit_surplus for all members in the current
+            # month from scratch (using current quota rules and each member's join_date), then
+            # recalculate days_behind by walking the corrected history in date order.
             members = await Member.get_all_active(club_obj.club_id)
             updated_entries = 0
 
             for member in members:
                 rows = await _db.fetch(
                     """
-                    SELECT id, date, deficit_surplus
+                    SELECT id, date, cumulative_fans
                     FROM quota_history
                     WHERE member_id = $1
                       AND date_part('year', date) = $2
@@ -800,13 +801,25 @@ class AdminCommands(commands.Cog):
 
                 consecutive = 0
                 for row in rows:
-                    if row['deficit_surplus'] < 0:
+                    expected_fans = await QuotaCalculator.calculate_expected_fans(
+                        club_obj.club_id, member.join_date, row['date'], club_obj.quota_period
+                    )
+                    deficit_surplus = QuotaCalculator.calculate_deficit_surplus(
+                        row['cumulative_fans'], expected_fans
+                    )
+
+                    if deficit_surplus < 0:
                         consecutive += 1
                     else:
                         consecutive = 0
+
                     await _db.execute(
-                        "UPDATE quota_history SET days_behind = $1 WHERE id = $2",
-                        consecutive, row['id']
+                        """
+                        UPDATE quota_history
+                        SET expected_fans = $1, deficit_surplus = $2, days_behind = $3
+                        WHERE id = $4
+                        """,
+                        expected_fans, deficit_surplus, consecutive, row['id']
                     )
                     updated_entries += 1
 
@@ -823,7 +836,7 @@ class AdminCommands(commands.Cog):
                     f"**History entries updated:** {updated_entries}\n"
                     f"**Bombs cleared and re-evaluated**\n"
                     f"**Bombs re-activated:** {len(newly_activated)}\n\n"
-                    "Days-behind counts and bomb statuses now reflect current data.\n"
+                    "Expected fans, deficits, days-behind counts, and bomb statuses now reflect current rules.\n"
                     "Run `/force_check` to generate a fresh report."
                 ),
                 color=discord.Color.green(),

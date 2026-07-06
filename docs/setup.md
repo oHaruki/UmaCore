@@ -48,11 +48,14 @@ DATABASE_URL=postgresql://user:password@host:5432/database_name
 LOG_LEVEL=INFO
 USE_UMAMOE_API=true
 UMAMOE_API_KEY=uma_k_your_key_here
+BOT_API_SECRET=your_random_secret_here
 ```
 
 Set `USE_UMAMOE_API=false` to use ChronoGenesis scraping instead of Uma.moe API.
 
 `UMAMOE_API_KEY` is required for all Uma.moe API endpoints. Pass it via the `X-API-Key` request header. Contact the uma.moe admin to obtain a key.
+
+`BOT_API_SECRET` secures the bot's internal HTTP API (used by the [web dashboard](https://github.com/oHaruki/UmaCore-web)). Generate with `openssl rand -hex 32` and use the **same value** in the web app's `.env.local` as `BOT_API_SECRET`.
 
 ### 6. Run the bot
 
@@ -61,6 +64,10 @@ python main.py
 ```
 
 On first run, the bot automatically creates all database tables, syncs slash commands, and starts the scheduler.
+
+### Web dashboard
+
+If you use [UmaCore Web](https://github.com/oHaruki/UmaCore-web), set the same `BOT_API_SECRET` in the web app's `.env.local`. The bot's internal API listens on `127.0.0.1:7890` and rejects requests without a valid `Authorization: Bearer` token.
 
 ---
 
@@ -119,11 +126,17 @@ worker: python main.py
 
 ### Linux (systemd)
 
+See `VPS_SETUP.md` in the repository root for a full Ubuntu guide including `BOT_API_SECRET` and optional web dashboard setup.
+
 ```bash
 sudo nano /etc/systemd/system/umacore.service
 sudo systemctl enable umacore
 sudo systemctl start umacore
 ```
+
+### GitHub Actions (Raspberry Pi / Docker)
+
+If you deploy via `.github/workflows/deploy.yml`, add `BOT_API_SECRET` as a repository secret in GitHub (Settings → Secrets → Actions). The workflow writes it into the bot `.env` on each deploy.
 
 ---
 

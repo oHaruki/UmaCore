@@ -48,6 +48,12 @@ class QuotaCalculator:
         day_count = (current_date - start_date).days + 1
         current_day = start_date
         for _ in range(day_count):
+            # A member's join day establishes their baseline (actual gain is always
+            # recorded as +0 that day), so it carries no quota requirement either.
+            if current_day == member_join_date:
+                current_day += timedelta(days=1)
+                continue
+
             period_quota = await QuotaRequirement.get_quota_for_date(club_id, current_day)
             total_expected += period_quota / period_days
             current_day += timedelta(days=1)
