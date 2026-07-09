@@ -58,6 +58,11 @@ DAILY_QUOTA = 1_000_000
 BOMB_TRIGGER_DAYS = 3
 BOMB_COUNTDOWN_DAYS = 7
 
+# Rank-promotion milestones (club position ranks). The /promotion command and the
+# daily report use these as the default "next target" a club is climbing toward: the
+# best milestone strictly above the club's current rank. Editable — order doesn't matter.
+PROMOTION_MILESTONES = [10, 50, 100, 500, 3000]
+
 # Internal API server (web UI integration)
 BOT_API_PORT = int(os.getenv("BOT_API_PORT", "7890"))
 # Shared secret for the localhost-only HTTP API (must match umacore-web BOT_API_SECRET).

@@ -10,6 +10,7 @@ async def setup(bot):
     from .club_management import ClubManagementCommands
     from .author import AuthorCommands
     from .charts import ChartCommands
+    from .promotion import PromotionCommands
 
     await bot.add_cog(SettingsCommands(bot))
     await bot.add_cog(AdminCommands(bot))
@@ -17,3 +18,4 @@ async def setup(bot):
     await bot.add_cog(ClubManagementCommands(bot))
     await bot.add_cog(AuthorCommands(bot))
     await bot.add_cog(ChartCommands(bot))
+    await bot.add_cog(PromotionCommands(bot))

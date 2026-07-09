@@ -331,6 +331,21 @@ class BotTasks:
                             f"last_month={last_month_rank}"
                         )
 
+                        # Best-effort: how far to the next rank milestone. Never let
+                        # this optional enrichment break the daily report.
+                        try:
+                            from services.promotion_calculator import compute_promotion
+                            promo = await compute_promotion(club)
+                            if promo and not promo.already_reached and promo.fans_needed:
+                                rank_data['promotion'] = {
+                                    'target_rank': promo.target_rank,
+                                    'fans_needed': promo.fans_needed,
+                                    'extra_per_day': promo.extra_per_day,
+                                    'days_remaining': promo.days_remaining,
+                                }
+                        except Exception as e:
+                            logger.warning(f"Promotion calc failed for {club.club_name}: {e}")
+
                 # STEP 4: Process the scraped data
                 try:
                     logger.info(f"⚙️ Processing scraped data for {club.club_name}...")

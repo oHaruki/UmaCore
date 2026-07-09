@@ -469,6 +469,21 @@ class AdminCommands(commands.Cog):
                         f"last_month={last_month_rank}"
                     )
 
+                    # Best-effort: how far to the next rank milestone. Never let
+                    # this optional enrichment break the report.
+                    try:
+                        from services.promotion_calculator import compute_promotion
+                        promo = await compute_promotion(club_obj)
+                        if promo and not promo.already_reached and promo.fans_needed:
+                            rank_data['promotion'] = {
+                                'target_rank': promo.target_rank,
+                                'fans_needed': promo.fans_needed,
+                                'extra_per_day': promo.extra_per_day,
+                                'days_remaining': promo.days_remaining,
+                            }
+                    except Exception as e:
+                        logger.warning(f"Promotion calc failed for {club_obj.club_name}: {e}")
+
             # Process scraped data
             await interaction.followup.send("⚙️ Processing data...")
             new_members, updated_members = await self.quota_calculator.process_scraped_data(
@@ -787,6 +802,35 @@ class AdminCommands(commands.Cog):
             updated_entries = 0
             corrected_join_dates = 0
 
+            # Re-derive each member's join date from uma.moe's full-month fan history
+            # (the authoritative source). This repairs join dates that got stamped to a
+            # wrong day, which would otherwise zero out expected quota and show everyone
+            # as on-track. Best-effort: if the scrape fails we skip correction and just
+            # recompute deficits from the stored join dates.
+            from datetime import date as _date
+            import calendar as _calendar
+
+            detected_join = {}
+            if club_obj.circle_id and club_obj.is_circle_id_valid():
+                try:
+                    _scraper = UmaMoeAPIScraper(club_obj.circle_id)
+                    _scraped = await _scraper.scrape()
+                    _ref = _scraper.get_data_date() or current_date
+                    _last_day = _calendar.monthrange(_ref.year, _ref.month)[1]
+                    for _tid, _md in _scraped.items():
+                        _jday = _md.get("join_day")
+                        if not _jday:
+                            continue
+                        if 1 <= _jday <= _last_day:
+                            detected_join[str(_tid)] = _date(_ref.year, _ref.month, _jday)
+                        elif _ref.month == 1:
+                            detected_join[str(_tid)] = _date(_ref.year - 1, 12, _jday)
+                        else:
+                            detected_join[str(_tid)] = _date(_ref.year, _ref.month - 1, _jday)
+                    logger.info(f"recalculate: re-derived join days for {len(detected_join)} members of {club_obj.club_name}")
+                except Exception as e:
+                    logger.warning(f"recalculate: join-date re-derivation skipped for {club_obj.club_name}: {e}")
+
             for member in members:
                 rows = await _db.fetch(
                     """
@@ -800,17 +844,17 @@ class AdminCommands(commands.Cog):
                     member.member_id, current_date.year, current_date.month
                 )
 
-                # Self-heal a backdated join_date: if it predates our earliest tracked
-                # day for this member AND cumulative_fans has been completely flat the
-                # whole time (no growth ever recorded), that backdating was almost
-                # certainly wrong (e.g. a transferred member whose pre-existing career
-                # total got misread as an early join). Bump join_date to the most
-                # recent tracked day instead of trusting the stale value.
-                if rows and member.join_date < rows[0]['date']:
-                    baseline = rows[0]['cumulative_fans']
-                    if all(r['cumulative_fans'] == baseline for r in rows):
-                        await member.update_join_date(rows[-1]['date'])
-                        corrected_join_dates += 1
+                # Correct a wrong join_date from the authoritative fan-history detection.
+                # (The scraper already resolves transfers/flat-backfill correctly, so this
+                # both fixes backdated dates and stale "joined today" stamps.)
+                detected = detected_join.get(str(member.trainer_id)) if member.trainer_id else None
+                if detected and detected != member.join_date:
+                    logger.info(
+                        f"recalculate: correcting {member.trainer_name} join_date "
+                        f"{member.join_date} -> {detected}"
+                    )
+                    await member.update_join_date(detected)
+                    corrected_join_dates += 1
 
                 consecutive = 0
                 for row in rows:

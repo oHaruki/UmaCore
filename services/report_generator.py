@@ -259,6 +259,17 @@ class ReportGenerator:
                 monthly_line += f" | Last Month: #{last_month_rank}"
             lines.append(monthly_line)
 
+        # Promotion progress toward the next milestone (best-effort, added by tasks.py)
+        promotion = rank_data.get('promotion')
+        if promotion and promotion.get('fans_needed'):
+            target = promotion['target_rank']
+            need = self.format_fans_short(promotion['fans_needed'])
+            line = f"Next milestone: Top {target} — +{need} fans"
+            extra = promotion.get('extra_per_day')
+            if extra:
+                line += f" (~+{self.format_fans_short(extra)}/day on top of current pace)"
+            lines.append(line)
+
         return "\n".join(lines) if lines else "*No rank data available*"
 
     def create_kick_alert(self, club_name: str, members_to_kick: List) -> List[discord.Embed]:
