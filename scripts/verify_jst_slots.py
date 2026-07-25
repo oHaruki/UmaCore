@@ -26,7 +26,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.database import db
-from config.settings import DATABASE_URL, UMAMOE_CHECKSUM_TOLERANCE
+from config.settings import (
+    DATABASE_URL, UMAMOE_SLOT_ERROR_FRACTION,
+    UMAMOE_CHECKSUM_TOLERANCE, UMAMOE_CHECKSUM_MIN_ABS,
+)
 from models import Club
 from scrapers.base_scraper import StaleDataError
 from scrapers.umamoe_api_scraper import UmaMoeAPIScraper
@@ -54,8 +57,7 @@ def scrape_hour_utc(club) -> float:
 
 async def check(circle_id: str, label: str, club=None) -> str:
     """Returns 'ok' | 'drift' | 'stale' | 'error'."""
-    header = label if label.endswith(circle_id) else f"{label}  (circle {circle_id})"
-    print(f"\n{'-' * 78}\n{header}")
+    print(f"\n{'-' * 78}\n{label}  [circle_id={circle_id}]")
 
     scraper = UmaMoeAPIScraper(circle_id)
     try:
@@ -78,11 +80,25 @@ async def check(circle_id: str, label: str, club=None) -> str:
 
     verdict = "ok"
     if meta.monthly_point:
-        drift = abs(total - meta.monthly_point) / meta.monthly_point
-        mark = f"{GREEN}OK{RESET}" if drift <= UMAMOE_CHECKSUM_TOLERANCE else f"{RED}DRIFT{RESET}"
-        print(f"  checksum   : {mark}  parsed {total:,} vs monthly_point "
-              f"{meta.monthly_point:,}  ({drift:.3%})")
-        if drift > UMAMOE_CHECKSUM_TOLERANCE:
+        diff = abs(total - meta.monthly_point)
+        rel = diff / meta.monthly_point
+        # Scale against one day of fans — that is the size of a slot-index error.
+        day_gain = (meta.monthly_point - meta.yesterday_points
+                    if meta.yesterday_points is not None else None)
+        if day_gain and day_gain > 0:
+            ratio = diff / day_gain
+            bad = ratio > UMAMOE_SLOT_ERROR_FRACTION
+            mark = f"{RED}DRIFT{RESET}" if bad else f"{GREEN}OK{RESET}"
+            print(f"  checksum   : {mark}  parsed {total:,} vs monthly_point "
+                  f"{meta.monthly_point:,}")
+            print(f"               off by {diff:,} = {ratio:.1%} of a day "
+                  f"({day_gain:,}/day), {rel:.2%} of the month")
+        else:
+            bad = rel > UMAMOE_CHECKSUM_TOLERANCE and diff > UMAMOE_CHECKSUM_MIN_ABS
+            mark = f"{RED}DRIFT{RESET}" if bad else f"{GREEN}OK{RESET}"
+            print(f"  checksum   : {mark}  parsed {total:,} vs monthly_point "
+                  f"{meta.monthly_point:,}  ({rel:.3%}, no day reference)")
+        if bad:
             verdict = "drift"
     else:
         print(f"  checksum   : {DIM}skipped (no monthly_point in response){RESET}")
@@ -114,7 +130,7 @@ async def main():
     print(f"\nnow {now.isoformat(timespec='seconds')}")
     print(f"finalized target : {resolve_finalized(now).describe()}")
     print(f"live target      : {resolve_live(now).describe()}")
-    print(f"checksum tolerance: {UMAMOE_CHECKSUM_TOLERANCE:.1%}")
+    print(f"slot-error threshold: {UMAMOE_SLOT_ERROR_FRACTION:.0%} of one day's fans")
 
     results = {}
     if wanted:

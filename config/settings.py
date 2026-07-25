@@ -28,11 +28,22 @@ UMAMOE_API_KEY = os.getenv("UMAMOE_API_KEY")
 UMAMOE_RATE_PER_MIN = int(os.getenv("UMAMOE_RATE_PER_MIN", "100"))   # tokens per minute
 UMAMOE_RATE_BURST = int(os.getenv("UMAMOE_RATE_BURST", "10"))       # bucket capacity (max burst)
 
-# Guard against reading the wrong daily_fans slot. Our parsed club total is
-# compared against uma.moe's own monthly_point/live_points; a one-slot error
-# shows up as ~9% (a full day of fans) while normal member-churn noise measures
-# ~0.2-0.3%, so anything past this tolerance is logged as an error.
+# Guard against reading the wrong daily_fans slot: the parsed club total is
+# compared against uma.moe's own monthly_point/live_points.
+#
+# Scaled against ONE DAY of fans rather than a percentage of the month, because
+# that is what the failure actually looks like — an off-by-one slot is wrong by
+# about a full day's gain. The leftover noise from member churn is a few million
+# fans in absolute terms regardless of club size (measured 2-7M across six clubs
+# spanning 125M-1.66B monthly points), so a flat percentage flags small clubs for
+# ordinary churn while missing nothing on large ones.
+UMAMOE_SLOT_ERROR_FRACTION = float(os.getenv("UMAMOE_SLOT_ERROR_FRACTION", "0.5"))
+
+# Fallback when a full-day reference isn't available (missing yesterday_points):
+# relative tolerance, plus an absolute floor so small clubs aren't flagged for
+# a few million fans of churn.
 UMAMOE_CHECKSUM_TOLERANCE = float(os.getenv("UMAMOE_CHECKSUM_TOLERANCE", "0.02"))
+UMAMOE_CHECKSUM_MIN_ABS = int(os.getenv("UMAMOE_CHECKSUM_MIN_ABS", "25000000"))
 
 # Grace period after the 15:00 UTC daily finalize before we trust a fetch.
 # A club scheduled in the minutes right after rollover can beat uma.moe's write

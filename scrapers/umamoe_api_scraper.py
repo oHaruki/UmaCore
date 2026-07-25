@@ -18,7 +18,10 @@ import aiohttp
 from datetime import datetime, date, timezone
 
 from scrapers.base_scraper import BaseScraper, StaleDataError
-from config.settings import UMAMOE_API_KEY, UMAMOE_CHECKSUM_TOLERANCE
+from config.settings import (
+    UMAMOE_API_KEY, UMAMOE_SLOT_ERROR_FRACTION,
+    UMAMOE_CHECKSUM_TOLERANCE, UMAMOE_CHECKSUM_MIN_ABS,
+)
 from utils.rate_limiter import umamoe_limiter
 from utils.api_metrics import track_api_call
 from utils.jst_calendar import (
@@ -279,26 +282,66 @@ class UmaMoeAPIScraper(BaseScraper):
                 f"member_count is {expected} — response may be incomplete."
             )
 
+    def _reference_day_gain(self) -> Optional[int]:
+        """One full day of club-wide fan gain, used to scale the checksum.
+
+        ``monthly_point`` and ``yesterday_points`` are both finalized totals
+        exactly one JST day apart, so their difference is a complete day.
+        """
+        m = self._meta
+        if m.monthly_point is None or m.yesterday_points is None:
+            return None
+        gain = m.monthly_point - m.yesterday_points
+        return gain if gain > 0 else None
+
     def _verify_checksum(self, parsed: Dict[str, Dict], expected_total: Optional[int],
                          label: str) -> None:
         """Cross-check our parsed sum against uma.moe's own club total.
 
-        A one-slot indexing error shows up as roughly a full day of fans (~9% of
-        the month's total mid-month), while normal member-churn noise measured
-        ~0.2-0.3%. Anything past the tolerance means we're reading the wrong slot.
+        Reading the wrong slot puts us off by about one day's fans, so that is
+        what the discrepancy is measured against. The residual from member churn
+        (we and uma.moe attribute leavers/joiners slightly differently) is a few
+        million fans regardless of club size, which is a large *percentage* for a
+        small club — hence scaling by a day rather than by the monthly total.
         """
         if not expected_total or not parsed:
             return
+
         ours = sum(m["fans"][-1] for m in parsed.values() if m.get("fans"))
-        drift = abs(ours - expected_total) / expected_total
-        if drift > UMAMOE_CHECKSUM_TOLERANCE:
+        diff = abs(ours - expected_total)
+
+        day_gain = self._reference_day_gain()
+        if day_gain:
+            ratio = diff / day_gain
+            if ratio > UMAMOE_SLOT_ERROR_FRACTION:
+                logger.error(
+                    f"⚠️ circle {self.circle_id}: parsed total {ours:,} differs from "
+                    f"{label} {expected_total:,} by {diff:,} — that is {ratio:.0%} of a "
+                    f"day's fans ({day_gain:,}), so we are likely reading the wrong "
+                    f"slot. Check utils/jst_calendar.py against the API."
+                )
+            else:
+                logger.debug(
+                    f"Checksum OK vs {label}: {ours:,} vs {expected_total:,} "
+                    f"(off by {diff:,} = {ratio:.1%} of a day)"
+                )
+            return
+
+        # No full-day reference in this response — fall back to a relative
+        # tolerance gated on an absolute floor, so churn on a small club doesn't
+        # masquerade as a slot error.
+        rel = diff / expected_total
+        if rel > UMAMOE_CHECKSUM_TOLERANCE and diff > UMAMOE_CHECKSUM_MIN_ABS:
             logger.error(
                 f"⚠️ circle {self.circle_id}: parsed total {ours:,} deviates "
-                f"{drift:.1%} from {label} {expected_total:,} — likely a slot-index "
-                f"error. Check utils/jst_calendar.py against the API."
+                f"{rel:.1%} ({diff:,}) from {label} {expected_total:,} — likely a "
+                f"slot-index error. Check utils/jst_calendar.py against the API."
             )
         else:
-            logger.debug(f"Checksum OK vs {label}: {ours:,} vs {expected_total:,} ({drift:.2%})")
+            logger.debug(
+                f"Checksum OK vs {label} (no day reference): {ours:,} vs "
+                f"{expected_total:,} ({rel:.2%})"
+            )
 
     # --------------------------------------------------------------- parsing
 
