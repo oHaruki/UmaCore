@@ -20,7 +20,7 @@ from config.settings import (
     USE_UMAMOE_API, UMAMOE_RATE_PER_MIN, UMAMOE_RATE_BURST,
     COLOR_INFO, COLOR_BOMB, COLOR_ON_TRACK,
 )
-from utils.rate_limiter import umamoe_limiter
+from utils.rate_limiter import umamoe_limiter, PRIORITY_INTERACTIVE
 from utils.timezone_helper import resolve_timezone
 from utils.permissions import ensure_can_manage
 
@@ -411,7 +411,7 @@ class AdminCommands(commands.Cog):
                     logger.error(f"Invalid circle_id format for {club}: '{club_obj.circle_id}'")
                     return
 
-                scraper = UmaMoeAPIScraper(club_obj.circle_id)
+                scraper = UmaMoeAPIScraper(club_obj.circle_id, priority=PRIORITY_INTERACTIVE)
                 await interaction.followup.send(f"Using Uma.moe API scraper for {club}...")
                 logger.info(f"Using Uma.moe API scraper for {club_obj.club_name} (circle_id: {club_obj.circle_id})")
             else:
@@ -820,7 +820,7 @@ class AdminCommands(commands.Cog):
             detected_join = {}
             if club_obj.circle_id and club_obj.is_circle_id_valid():
                 try:
-                    _scraper = UmaMoeAPIScraper(club_obj.circle_id)
+                    _scraper = UmaMoeAPIScraper(club_obj.circle_id, priority=PRIORITY_INTERACTIVE)
                     _scraped = await _scraper.scrape()
                     _ref = _scraper.get_data_date() or current_date
                     _last_day = _calendar.monthrange(_ref.year, _ref.month)[1]

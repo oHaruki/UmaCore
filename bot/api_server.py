@@ -18,6 +18,7 @@ from config.database import db
 from models import Club
 from models.quota_requirement import QuotaSchedule
 from scrapers import UmaMoeAPIScraper, ChronoGenesisScraper
+from utils.rate_limiter import PRIORITY_INTERACTIVE
 from services import QuotaCalculator, BombManager, ScrapeContext
 from config.settings import USE_UMAMOE_API, BOT_API_SECRET
 
@@ -161,7 +162,7 @@ async def handle_sync(request: web.Request) -> web.StreamResponse:
             return await _send_json(request, {'error': 'Club has no circle_id configured'}, status=400)
         if not club.is_circle_id_valid():
             return await _send_json(request, {'error': 'Invalid circle_id (must be numeric)'}, status=400)
-        scraper = UmaMoeAPIScraper(club.circle_id)
+        scraper = UmaMoeAPIScraper(club.circle_id, priority=PRIORITY_INTERACTIVE)
     else:
         scraper = ChronoGenesisScraper(club.scrape_url)
 

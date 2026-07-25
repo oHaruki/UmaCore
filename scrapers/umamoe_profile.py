@@ -15,7 +15,7 @@ import logging
 import aiohttp
 
 from config.settings import UMAMOE_API_KEY
-from utils.rate_limiter import umamoe_limiter
+from utils.rate_limiter import umamoe_limiter, PRIORITY_INTERACTIVE
 from utils.api_metrics import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ async def fetch_trainer_profile(account_id: Optional[str]) -> Optional[Dict]:
     }
 
     try:
-        await umamoe_limiter.acquire()
+        await umamoe_limiter.acquire(PRIORITY_INTERACTIVE)
         async with aiohttp.ClientSession(headers=headers) as session:
             async with track_api_call("uma.moe", "profile", context=str(account_id)) as m:
                 async with session.get(

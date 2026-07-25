@@ -22,7 +22,7 @@ from config.settings import (
     UMAMOE_API_KEY, UMAMOE_SLOT_ERROR_FRACTION,
     UMAMOE_CHECKSUM_TOLERANCE, UMAMOE_CHECKSUM_MIN_ABS,
 )
-from utils.rate_limiter import umamoe_limiter
+from utils.rate_limiter import umamoe_limiter, PRIORITY_BACKGROUND
 from utils.api_metrics import track_api_call
 from utils.jst_calendar import (
     SlotTarget, resolve_finalized, resolve_live, parse_api_timestamp,
@@ -120,8 +120,12 @@ class LiveSnapshot:
 class UmaMoeAPIScraper(BaseScraper):
     """Scraper using Uma.moe API for fast data retrieval"""
 
-    def __init__(self, circle_id: str, now_utc: Optional[datetime] = None):
+    def __init__(self, circle_id: str, now_utc: Optional[datetime] = None,
+                 priority: int = PRIORITY_BACKGROUND):
         self.circle_id = circle_id
+        # Interactive callers (slash commands, web API) pass
+        # PRIORITY_INTERACTIVE so they aren't queued behind a scrape clump.
+        self.priority = priority
         self.base_url = "https://uma.moe/api/v4/circles"
         # Injectable clock so the slot mapping is testable without freezing time.
         self._now_utc = now_utc
@@ -139,7 +143,7 @@ class UmaMoeAPIScraper(BaseScraper):
         params = {"circle_id": self.circle_id, "year": year, "month": month}
         # Gate every outbound request through the shared limiter so the bot stays
         # under the API's per-minute cap no matter how many clubs fire at once.
-        await umamoe_limiter.acquire()
+        await umamoe_limiter.acquire(self.priority)
         async with track_api_call("uma.moe", "circles", context=str(self.circle_id)) as m:
             async with session.get(self.base_url, params=params,
                                    timeout=aiohttp.ClientTimeout(total=30)) as response:
