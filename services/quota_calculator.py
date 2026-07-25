@@ -9,6 +9,7 @@ import calendar
 import math
 
 from models import Member, QuotaHistory, QuotaRequirement, Bomb, Club
+from models.quota_requirement import QuotaSchedule
 from config.database import db
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,8 @@ class QuotaCalculator:
     
     @staticmethod
     async def calculate_expected_fans(club_id: UUID, member_join_date: date,
-                                     current_date: date, quota_period: str = 'daily') -> int:
+                                     current_date: date, quota_period: str = 'daily',
+                                     schedule: Optional[QuotaSchedule] = None) -> int:
         """
         Calculate expected cumulative fans based on days active in current month.
 
@@ -31,10 +33,17 @@ class QuotaCalculator:
             member_join_date: When the member joined the club
             current_date: The date the data belongs to (not necessarily today)
             quota_period: 'daily', 'weekly', or 'biweekly'
+            schedule: Pre-loaded quota timeline. **Pass this when calling in a
+                loop** — otherwise every call reloads it, which is what made this
+                function issue a query per day per member. Omitting it is safe but
+                costs two queries.
 
         Returns:
             Expected cumulative fan count for this month only
         """
+        if schedule is None:
+            schedule = await QuotaSchedule.load(club_id)
+
         # Determine the effective start date for this month
         if member_join_date.year == current_date.year and member_join_date.month == current_date.month:
             start_date = member_join_date
@@ -54,8 +63,7 @@ class QuotaCalculator:
                 current_day += timedelta(days=1)
                 continue
 
-            period_quota = await QuotaRequirement.get_quota_for_date(club_id, current_day)
-            total_expected += period_quota / period_days
+            total_expected += schedule.for_date(current_day) / period_days
             current_day += timedelta(days=1)
 
         result = round(total_expected)
@@ -172,11 +180,15 @@ class QuotaCalculator:
         # Auto-deactivate members who are no longer in the scraped data
         scraped_trainer_ids = set(scraped_data.keys())
         await self._auto_deactivate_missing_members(club_id, scraped_trainer_ids)
-        
+
+        # Load the quota timeline once for the whole batch. Resolving it per day
+        # per member is what made this O(members x days) queries.
+        schedule = await QuotaSchedule.load(club_id)
+
         # Process each member
         new_members = 0
         updated_members = 0
-        
+
         for key, member_data in scraped_data.items():
             trainer_id = member_data.get("trainer_id")
             trainer_name = member_data["name"]
@@ -237,7 +249,7 @@ class QuotaCalculator:
             days_active = self.calculate_days_active_in_month(member.join_date, data_date)
             
             expected_fans = await self.calculate_expected_fans(
-                club_id, member.join_date, data_date, quota_period
+                club_id, member.join_date, data_date, quota_period, schedule=schedule
             )
             
             deficit_surplus = self.calculate_deficit_surplus(cumulative_fans, expected_fans)

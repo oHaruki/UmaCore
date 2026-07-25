@@ -382,6 +382,74 @@ class TestFullMonthPipeline:
 # bomb lifecycle
 # --------------------------------------------------------------------------- #
 
+class TestQueryVolume:
+    """Guards the QuotaSchedule fix: query count must not scale with the month.
+
+    calculate_expected_fans used to resolve the quota one date at a time, at up to
+    two queries each, once per day per member — so a scrape late in the month cost
+    roughly members x days x 2 sequential round trips.
+    """
+
+    @staticmethod
+    def _counting_db(db):
+        """Wrap the db singleton to count statements. Returns (restore, counter)."""
+        counter = {"n": 0}
+        originals = {name: getattr(db, name) for name in
+                     ("fetch", "fetchrow", "fetchval", "execute")}
+
+        def wrap(fn):
+            async def counted(*a, **kw):
+                counter["n"] += 1
+                return await fn(*a, **kw)
+            return counted
+
+        for name, fn in originals.items():
+            setattr(db, name, wrap(fn))
+
+        def restore():
+            for name, fn in originals.items():
+                setattr(db, name, fn)
+
+        return restore, counter
+
+    def _scrape_cost(self, prepared_db, day):
+        async def go(db):
+            from services.quota_calculator import QuotaCalculator
+            club = await _make_club()
+            qc = QuotaCalculator()
+            members = {
+                str(i): {"name": f"M{i}", "trainer_id": str(i),
+                         "fans": [n * 1_000_000 for n in range(1, day + 1)],
+                         "join_day": 1}
+                for i in range(1, 11)          # 10 members
+            }
+            # Seed so the run under measurement is a plain update.
+            await qc.process_scraped_data(club.club_id, members, date(2026, 7, day), day)
+
+            restore, counter = self._counting_db(db)
+            try:
+                await qc.process_scraped_data(
+                    club.club_id, members, date(2026, 7, day), day)
+            finally:
+                restore()
+            return counter["n"]
+        return run_db(prepared_db, go)
+
+    def test_query_count_barely_grows_with_day_of_month(self, prepared_db):
+        early = self._scrape_cost(prepared_db, 5)
+        late = self._scrape_cost(prepared_db, 28)
+        # Before the fix this grew by roughly members x extra_days x 2
+        # (10 x 23 x 2 = 460). Allow generous headroom for the per-member work
+        # that legitimately exists, while still failing loudly on a regression.
+        assert late - early < 60, (
+            f"query count scaled with the month: day 5 = {early}, day 28 = {late}"
+        )
+
+    def test_late_month_scrape_stays_under_a_few_hundred_queries(self, prepared_db):
+        late = self._scrape_cost(prepared_db, 28)
+        assert late < 300, f"day-28 scrape for 10 members issued {late} queries"
+
+
 class TestBombLifecycle:
     def test_bomb_activates_after_consecutive_behind_days(self, prepared_db):
         async def go(db):

@@ -16,6 +16,7 @@ from utils.timezone_helper import resolve_timezone
 
 from config.database import db
 from models import Club
+from models.quota_requirement import QuotaSchedule
 from scrapers import UmaMoeAPIScraper, ChronoGenesisScraper
 from services import QuotaCalculator, BombManager, ScrapeContext
 from config.settings import USE_UMAMOE_API, BOT_API_SECRET
@@ -63,30 +64,19 @@ async def _backfill_month(club: Club, scraped_data: dict, fetched_year: int, fet
     range(join_day, len(fans)) to cover all competition days up to current.
     """
     period_days = {'daily': 1, 'weekly': 7, 'biweekly': 14}.get(club.quota_period, 1)
-    default_quota = club.daily_quota
-
-    quota_reqs = await db.fetch(
-        "SELECT effective_date, daily_quota FROM quota_requirements "
-        "WHERE club_id = $1 ORDER BY effective_date ASC",
-        club.club_id
-    )
-
-    def quota_for(d: date) -> int:
-        q = default_quota
-        for row in quota_reqs:
-            if row['effective_date'] <= d:
-                q = row['daily_quota']
-            else:
-                break
-        return q
+    schedule = await QuotaSchedule.load(club.club_id)
 
     def calc_expected(join_date: date, data_date: date) -> int:
+        # NOTE: unlike QuotaCalculator.calculate_expected_fans, this does not skip
+        # the member's join day, so backfilled rows carry one extra day of quota
+        # for members who joined mid-month. Pre-existing discrepancy, left as-is
+        # because changing it would rewrite stored expected_fans values.
         start_of_month = date(data_date.year, data_date.month, 1)
         start = join_date if join_date >= start_of_month else start_of_month
         total = 0.0
         cur = start
         while cur <= data_date:
-            total += quota_for(cur) / period_days
+            total += schedule.for_date(cur) / period_days
             cur += timedelta(days=1)
         return round(total)
 
@@ -259,30 +249,17 @@ async def handle_recalculate(request: web.Request) -> web.StreamResponse:
         return await _send_json(request, {'error': 'Club not found'}, status=404)
 
     period_days = {'daily': 1, 'weekly': 7, 'biweekly': 14}.get(club.quota_period, 1)
-    default_quota = club.daily_quota
-
-    quota_reqs = await db.fetch(
-        "SELECT effective_date, daily_quota FROM quota_requirements "
-        "WHERE club_id = $1 ORDER BY effective_date ASC",
-        club_id
-    )
-
-    def quota_for(d: date) -> int:
-        q = default_quota
-        for row in quota_reqs:
-            if row['effective_date'] <= d:
-                q = row['daily_quota']
-            else:
-                break
-        return q
+    schedule = await QuotaSchedule.load(club_id)
 
     def calc_expected(join_date: date, data_date: date) -> int:
+        # See the note in _backfill_month: this intentionally matches that
+        # function's join-day handling rather than QuotaCalculator's.
         month_start = date(data_date.year, data_date.month, 1)
         start = join_date if join_date >= month_start else month_start
         total = 0.0
         cur = start
         while cur <= data_date:
-            total += quota_for(cur) / period_days
+            total += schedule.for_date(cur) / period_days
             cur += timedelta(days=1)
         return round(total)
 

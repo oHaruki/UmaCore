@@ -14,6 +14,7 @@ from scrapers import ChronoGenesisScraper, UmaMoeAPIScraper
 from services import QuotaCalculator, BombManager, ReportGenerator, MonthlyInfoService
 from services.tally_renderer import generate_tally_image
 from models import Member, QuotaRequirement, BotSettings, Club, ClubRankHistory
+from models.quota_requirement import QuotaSchedule
 from config.settings import USE_UMAMOE_API, UMAMOE_RATE_PER_MIN, UMAMOE_RATE_BURST
 from utils.rate_limiter import umamoe_limiter
 from utils.timezone_helper import resolve_timezone
@@ -831,6 +832,11 @@ class AdminCommands(commands.Cog):
                 except Exception as e:
                     logger.warning(f"recalculate: join-date re-derivation skipped for {club_obj.club_name}: {e}")
 
+            # Load the quota timeline once. The expected-fans call below sits in a
+            # loop nested inside this one, so resolving it per lookup made this
+            # command issue members x rows x days queries.
+            schedule = await QuotaSchedule.load(club_obj.club_id)
+
             for member in members:
                 rows = await _db.fetch(
                     """
@@ -859,7 +865,8 @@ class AdminCommands(commands.Cog):
                 consecutive = 0
                 for row in rows:
                     expected_fans = await QuotaCalculator.calculate_expected_fans(
-                        club_obj.club_id, member.join_date, row['date'], club_obj.quota_period
+                        club_obj.club_id, member.join_date, row['date'],
+                        club_obj.quota_period, schedule=schedule
                     )
                     deficit_surplus = QuotaCalculator.calculate_deficit_surplus(
                         row['cumulative_fans'], expected_fans
