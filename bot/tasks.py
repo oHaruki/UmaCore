@@ -19,7 +19,7 @@ from services import (
 from services.tally_renderer import generate_tally_image
 from utils.timezone_helper import resolve_timezone
 from utils.jst_calendar import ROLLOVER_UTC_HOUR
-from services.backup_service import create_backup
+from services.backup_service import create_backup, find_pg_dump
 from config.settings import (
     USE_UMAMOE_API, SCRAPE_ROLLOVER_GRACE_SEC, SCRAPE_MAX_FRESHNESS_RETRIES,
     SCRAPE_FRESHNESS_RETRY_DELAY_SEC, SCRAPE_MAX_CONCURRENCY,
@@ -72,10 +72,20 @@ class BotTasks:
         if DB_BACKUP_ENABLED:
             self.daily_backup.change_interval(time=self._backup_time)
             self.daily_backup.start()
+            # Resolve the directory so the log is unambiguous — DB_BACKUP_DIR is
+            # relative to the working directory, which systemd sets.
             logger.info(
                 f"Daily DB backup enabled at {self._backup_time.strftime('%H:%M')} UTC "
-                f"→ {DB_BACKUP_DIR} (keeping {DB_BACKUP_KEEP})"
+                f"→ {Path(DB_BACKUP_DIR).resolve()} (keeping {DB_BACKUP_KEEP})"
             )
+            # Check the one external dependency now rather than discovering it
+            # missing at 03:30, when nobody is watching the logs.
+            if not find_pg_dump():
+                logger.warning(
+                    "⚠️ pg_dump not found — daily backups WILL FAIL. Install it with "
+                    "`sudo apt install postgresql-client`, or set PG_DUMP_PATH if it "
+                    "lives somewhere unusual. Check with /backup status."
+                )
         else:
             logger.info("Daily DB backup disabled (DB_BACKUP_ENABLED=false)")
         logger.info("Scheduled tasks started (per-minute tick + rank-ordered scheduler)")

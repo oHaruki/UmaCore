@@ -66,11 +66,30 @@ SCRAPE_MAX_CONCURRENCY = int(os.getenv("SCRAPE_MAX_CONCURRENCY", "8"))    # club
 # Requires the postgresql client on the host for pg_dump; set PG_DUMP_PATH if it
 # isn't on PATH. Dumps land in DB_BACKUP_DIR and only the newest
 # DB_BACKUP_KEEP are retained.
+#
+# Every value below has a working default, so backups run with nothing set in
+# .env. The numeric ones are parsed tolerantly on purpose: a typo'd backup
+# setting must not stop the bot from reporting quota.
+def _int_env(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"[settings] {name}='{raw}' is not a number, using {default}")
+        return default
+    if value < minimum:
+        print(f"[settings] {name}={value} is below the minimum {minimum}, using {default}")
+        return default
+    return value
+
+
 DB_BACKUP_ENABLED = os.getenv("DB_BACKUP_ENABLED", "true").lower() == "true"
-DB_BACKUP_DIR = os.getenv("DB_BACKUP_DIR", "backups")
-DB_BACKUP_KEEP = int(os.getenv("DB_BACKUP_KEEP", "7"))          # how many dumps to keep
+DB_BACKUP_DIR = os.getenv("DB_BACKUP_DIR", "backups")   # relative to the bot's working dir
+DB_BACKUP_KEEP = _int_env("DB_BACKUP_KEEP", 7)          # how many dumps to keep
 DB_BACKUP_UTC_TIME = os.getenv("DB_BACKUP_UTC_TIME", "03:30")   # HH:MM UTC, quiet hour
-DB_BACKUP_TIMEOUT_SEC = int(os.getenv("DB_BACKUP_TIMEOUT_SEC", "600"))
+DB_BACKUP_TIMEOUT_SEC = _int_env("DB_BACKUP_TIMEOUT_SEC", 600)
 
 # Timezone Configuration
 TIMEZONE = "Europe/Amsterdam"  # CEST
