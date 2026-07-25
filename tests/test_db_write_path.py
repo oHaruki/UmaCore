@@ -382,6 +382,48 @@ class TestFullMonthPipeline:
 # bomb lifecycle
 # --------------------------------------------------------------------------- #
 
+class TestScrapeTimestamp:
+    """The web club page reads MAX(created_at) as "when did the scrape last run".
+
+    A new month's day 1 is deferred, so the 1st rewrites the previous month's
+    final row rather than inserting a new date. If the upsert left created_at
+    alone, every club would look days stale at the start of each month.
+    """
+
+    def test_rewriting_an_existing_date_refreshes_created_at(self, prepared_db):
+        async def go(db):
+            from services.quota_calculator import QuotaCalculator
+            club = await _make_club()
+            qc = QuotaCalculator()
+            payload = {"1": {"name": "A", "trainer_id": "1",
+                             "fans": [0, 1_000_000], "join_day": 1}}
+
+            await qc.process_scraped_data(club.club_id, payload, date(2026, 7, 30), 2)
+            first = await db.fetchval(
+                "SELECT MAX(created_at) FROM quota_history WHERE club_id=$1", club.club_id)
+
+            # Same date again — the month-boundary repeat.
+            await db.execute(
+                "UPDATE quota_history SET created_at = created_at - interval '2 days' "
+                "WHERE club_id = $1", club.club_id)
+            aged = await db.fetchval(
+                "SELECT MAX(created_at) FROM quota_history WHERE club_id=$1", club.club_id)
+
+            await qc.process_scraped_data(club.club_id, payload, date(2026, 7, 30), 2)
+            after = await db.fetchval(
+                "SELECT MAX(created_at) FROM quota_history WHERE club_id=$1", club.club_id)
+
+            rows = await db.fetchval(
+                "SELECT count(*) FROM quota_history WHERE club_id=$1", club.club_id)
+            return first, aged, after, rows
+
+        first, aged, after, rows = run_db(prepared_db, go)
+        assert aged < first, "fixture failed to age the row"
+        assert after > aged, "created_at was not refreshed on rewrite — the web " \
+                             "club page would report the club as stale"
+        assert rows == 1, "the repeat inserted a duplicate instead of updating"
+
+
 class TestQueryVolume:
     """Guards the QuotaSchedule fix: query count must not scale with the month.
 
