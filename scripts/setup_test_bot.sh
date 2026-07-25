@@ -2,7 +2,10 @@
 #
 # Set up a second, isolated UmaCore instance on the same VPS as production.
 #
-#   sudo bash scripts/setup_test_bot.sh <TEST_DISCORD_TOKEN> [branch]
+#   sudo git clone -b umamoe-live-data <repo-url> /opt/umacore-test
+#   sudo bash /opt/umacore-test/scripts/setup_test_bot.sh <TEST_DISCORD_TOKEN>
+#
+# Run it from the checkout it is going to configure. Safe to re-run.
 #
 # Everything the two instances would otherwise fight over is separated:
 #
@@ -36,14 +39,17 @@ BRANCH="${2:-umamoe-live-data}"
 die() { echo "❌ $*" >&2; exit 1; }
 say() { echo -e "\n\033[1m▶ $*\033[0m"; }
 
-[[ -n "$TOKEN" ]] || die "Usage: sudo bash scripts/setup_test_bot.sh <TEST_DISCORD_TOKEN> [branch]
+[[ -n "$TOKEN" ]] || die "Usage:
+  sudo git clone -b umamoe-live-data <repo-url> /opt/umacore-test
+  sudo bash /opt/umacore-test/scripts/setup_test_bot.sh <TEST_DISCORD_TOKEN>
+
 Create a SECOND Discord application first — reusing the production token would
 run the same bot twice and double every report."
 [[ -d "$PROD_DIR" ]] || die "No production install at $PROD_DIR (override with PROD_DIR=...)"
 [[ -f "$PROD_DIR/.env" ]] || die "No $PROD_DIR/.env to copy settings from"
 
-if [[ -e "$TEST_DIR" ]]; then
-    die "$TEST_DIR already exists. Remove it first, or set TEST_DIR=... for a different path."
+if [[ -e "$TEST_DIR" && ! -d "$TEST_DIR/.git" ]]; then
+    die "$TEST_DIR exists but is not a git checkout. Remove it, or set TEST_DIR=..."
 fi
 
 # --- work out the test database URL from the production one ------------------
@@ -71,9 +77,18 @@ echo   "Branch     : $BRANCH"
 echo   "uma.moe    : $TEST_RATE calls/min (production keeps the rest)"
 
 # --- 1. code ------------------------------------------------------------------
-say "Cloning the repo"
-REMOTE="$(git -C "$PROD_DIR" remote get-url origin)"
-git clone --branch "$BRANCH" "$REMOTE" "$TEST_DIR"
+# Normally you clone straight into TEST_DIR and run this script from inside it,
+# so there is nothing to do here. Cloning is only for the case where the script
+# was obtained some other way.
+if [[ -d "$TEST_DIR/.git" ]]; then
+    say "Using the existing checkout at $TEST_DIR"
+    echo "  branch: $(git -C "$TEST_DIR" rev-parse --abbrev-ref HEAD)"
+    echo "  commit: $(git -C "$TEST_DIR" rev-parse --short HEAD)"
+else
+    say "Cloning the repo into $TEST_DIR"
+    REMOTE="$(git -C "$PROD_DIR" remote get-url origin)"
+    git clone --branch "$BRANCH" "$REMOTE" "$TEST_DIR"
+fi
 
 # --- 2. database --------------------------------------------------------------
 say "Creating the test database"
@@ -97,6 +112,10 @@ esac
 
 # --- 3. env -------------------------------------------------------------------
 say "Writing $TEST_DIR/.env"
+if [[ -f "$TEST_DIR/.env" ]]; then
+    cp "$TEST_DIR/.env" "$TEST_DIR/.env.bak.$(date +%s)"
+    echo "  existing .env backed up"
+fi
 # Start from production so API keys and anything else carry over, then override
 # every value that must differ.
 grep -vE '^(DISCORD_TOKEN|DATABASE_URL|BOT_API_PORT|BOT_API_SECRET|UMAMOE_RATE_PER_MIN|LOG_LEVEL)=' \
@@ -116,7 +135,7 @@ chmod 600 "$TEST_DIR/.env"
 
 # --- 4. venv ------------------------------------------------------------------
 say "Creating the virtualenv"
-python3 -m venv "$TEST_DIR/venv"
+[[ -x "$TEST_DIR/venv/bin/python" ]] || python3 -m venv "$TEST_DIR/venv"
 "$TEST_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$TEST_DIR/venv/bin/pip" install --quiet -r "$TEST_DIR/requirements.txt"
 
