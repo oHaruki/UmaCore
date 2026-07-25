@@ -503,7 +503,8 @@ class BotTasks:
                             logger.error(f"❌ Tally image failed for {club.club_name}, falling back to embeds: {img_err}", exc_info=True)
                             daily_reports = self.report_generator.create_daily_report(
                                 club.club_name, effective_quota, status_summary, bombs_data, current_date,
-                                rank_data=rank_data, quota_period=club.quota_period
+                                rank_data=rank_data, quota_period=club.quota_period,
+                                club_timezone=club.timezone,
                             )
                             for embed in daily_reports:
                                 await report_channel.send(embed=embed)
@@ -513,7 +514,8 @@ class BotTasks:
                     else:
                         daily_reports = self.report_generator.create_daily_report(
                             club.club_name, effective_quota, status_summary, bombs_data, current_date,
-                            rank_data=rank_data, quota_period=club.quota_period
+                            rank_data=rank_data, quota_period=club.quota_period,
+                            club_timezone=club.timezone,
                         )
                         for embed in daily_reports:
                             await report_channel.send(embed=embed)

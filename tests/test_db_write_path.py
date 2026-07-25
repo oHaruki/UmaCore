@@ -382,6 +382,88 @@ class TestFullMonthPipeline:
 # bomb lifecycle
 # --------------------------------------------------------------------------- #
 
+class TestJoinDayIsFree:
+    """A member's join day carries no quota — they arrive at +0, never behind.
+
+    The daily scrape always did this. The backfill path in api_server had its own
+    expected-fans loop that did NOT skip the join day, so backfilled rows charged
+    joiners an extra day and showed them behind on arrival. Both now go through
+    QuotaCalculator so they cannot drift apart again.
+    """
+
+    def test_daily_scrape_charges_nothing_on_the_join_day(self, prepared_db):
+        async def go(db):
+            from services.quota_calculator import QuotaCalculator
+            club = await _make_club(daily_quota=1_000_000)
+            qc = QuotaCalculator()
+            # Joined on day 10, reported the same day with 0 fans earned.
+            await qc.process_scraped_data(
+                club.club_id,
+                {"1": {"name": "NewJoiner", "trainer_id": "1",
+                       "fans": [0] * 9 + [0], "join_day": 10}},
+                date(2026, 7, 10), 10)
+            return await db.fetchrow(
+                "SELECT expected_fans, deficit_surplus FROM quota_history "
+                "WHERE club_id=$1", club.club_id)
+
+        row = run_db(prepared_db, go)
+        assert row is not None, "no history written for the new joiner"
+        assert row["expected_fans"] == 0, "joiner was charged quota on their join day"
+        assert row["deficit_surplus"] == 0, "joiner started out behind"
+
+    def test_backfill_matches_the_daily_scrape(self, prepared_db):
+        """The two paths must produce identical expected_fans for the same member."""
+        async def go(db):
+            from services.quota_calculator import QuotaCalculator
+            from models.quota_requirement import QuotaSchedule
+            club = await _make_club(daily_quota=1_000_000)
+            schedule = await QuotaSchedule.load(club.club_id)
+
+            joined = date(2026, 7, 10)
+            results = {}
+            for day in (10, 11, 15):
+                results[day] = await QuotaCalculator.calculate_expected_fans(
+                    club.club_id, joined, date(2026, 7, day), 'daily', schedule=schedule)
+            return results
+
+        r = run_db(prepared_db, go)
+        assert r[10] == 0, "join day should be free"
+        assert r[11] == 1_000_000, "one full day after joining"
+        assert r[15] == 5_000_000, "five days after joining"
+
+    def test_rejoining_member_restarts_at_zero(self, prepared_db):
+        """A reactivated member's join_date is reset, so they get a fresh +0 day."""
+        async def go(db):
+            from services.quota_calculator import QuotaCalculator
+            from models import Member
+            club = await _make_club(daily_quota=1_000_000)
+            qc = QuotaCalculator()
+
+            payload = {"1": {"name": "Returner", "trainer_id": "1",
+                             "fans": [0] * 4 + [5_000_000], "join_day": 1}}
+            await qc.process_scraped_data(club.club_id, payload, date(2026, 7, 5), 5)
+
+            member = (await Member.get_all_active(club.club_id))[0]
+            await member.deactivate() if hasattr(member, "deactivate") else None
+            await db.execute(
+                "UPDATE members SET is_active = FALSE WHERE member_id = $1",
+                member.member_id)
+
+            # They come back on day 20 — reactivation resets join_date to that day.
+            await qc.process_scraped_data(
+                club.club_id,
+                {"1": {"name": "Returner", "trainer_id": "1",
+                       "fans": [0] * 19 + [5_000_000], "join_day": 20}},
+                date(2026, 7, 20), 20)
+
+            return await db.fetchrow(
+                "SELECT join_date FROM members WHERE member_id = $1", member.member_id)
+
+        row = run_db(prepared_db, go)
+        assert row["join_date"] == date(2026, 7, 20), \
+            "returning member's join_date was not reset, so they inherit old quota debt"
+
+
 class TestScrapeTimestamp:
     """The web club page reads MAX(created_at) as "when did the scrape last run".
 

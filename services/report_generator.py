@@ -1,12 +1,14 @@
 """
 Discord report generation service
 """
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional
 import discord
 import logging
 
 from config.settings import COLOR_ON_TRACK, COLOR_BEHIND, COLOR_BOMB, COLOR_INFO
+from utils.jst_calendar import ROLLOVER_UTC_HOUR
+from utils.timezone_helper import resolve_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +30,37 @@ class ReportGenerator:
             return f"{num / 1_000:.1f}K"
         return str(num)
 
+    @staticmethod
+    def _competition_window(report_date: date, club_timezone: Optional[str] = None) -> str:
+        """Describe the competition day this report covers, in the club's timezone.
+
+        uma.moe runs on JST, so a competition day closes at 15:00 UTC and the day
+        reported as ``report_date`` actually spans ``report_date 15:00 UTC`` to the
+        following day at the same time.
+
+        This used to be hardcoded as "16:00 CEST" for every club regardless of its
+        configured timezone — wrong hour in summer, wrong label in winter, and
+        wrong entirely for any club outside central Europe.
+        """
+        start_utc = datetime(report_date.year, report_date.month, report_date.day,
+                             ROLLOVER_UTC_HOUR, 0, tzinfo=timezone.utc)
+        end_utc = start_utc + timedelta(days=1)
+
+        try:
+            tz = resolve_timezone(club_timezone) if club_timezone else timezone.utc
+            start, end = start_utc.astimezone(tz), end_utc.astimezone(tz)
+            label = start.strftime("%Z") or "UTC"
+        except Exception:
+            start, end, label = start_utc, end_utc, "UTC"
+
+        return (f"{start.strftime('%B %d')}, {start.strftime('%H:%M')}"
+                f" ~ {end.strftime('%B %d')}, {end.strftime('%H:%M')} {label}")
+
     def create_daily_report(self, club_name: str, daily_quota: int, status_summary: Dict,
                             bombs_data: List[Dict], report_date: date,
                             rank_data: Optional[Dict] = None,
-                            quota_period: str = 'daily') -> List[discord.Embed]:
+                            quota_period: str = 'daily',
+                            club_timezone: Optional[str] = None) -> List[discord.Embed]:
         """
         Create the main daily report embeds.
 
@@ -46,9 +75,7 @@ class ReportGenerator:
         period_label = period_labels.get(quota_period, 'day')
         quota_line = f"**Quota:** {self.format_fans_short(daily_quota)} fans per {period_label}"
 
-        next_date = report_date + timedelta(days=1)
-        date_range = (f"{report_date.strftime('%B %d')}, 16:00 CEST"
-                      f" ~ {next_date.strftime('%B %d')}, 16:00 CEST")
+        date_range = self._competition_window(report_date, club_timezone)
         description = f"**Date:** {date_range}\n{quota_line}"
 
         if period_info:

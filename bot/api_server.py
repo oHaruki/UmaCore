@@ -63,22 +63,15 @@ async def _backfill_month(club: Club, scraped_data: dict, fetched_year: int, fet
     join_day is the first index that has data (1-based), so we iterate
     range(join_day, len(fans)) to cover all competition days up to current.
     """
-    period_days = {'daily': 1, 'weekly': 7, 'biweekly': 14}.get(club.quota_period, 1)
     schedule = await QuotaSchedule.load(club.club_id)
 
-    def calc_expected(join_date: date, data_date: date) -> int:
-        # NOTE: unlike QuotaCalculator.calculate_expected_fans, this does not skip
-        # the member's join day, so backfilled rows carry one extra day of quota
-        # for members who joined mid-month. Pre-existing discrepancy, left as-is
-        # because changing it would rewrite stored expected_fans values.
-        start_of_month = date(data_date.year, data_date.month, 1)
-        start = join_date if join_date >= start_of_month else start_of_month
-        total = 0.0
-        cur = start
-        while cur <= data_date:
-            total += schedule.for_date(cur) / period_days
-            cur += timedelta(days=1)
-        return round(total)
+    async def calc_expected(join_date: date, data_date: date) -> int:
+        # Delegates rather than reimplementing: this used to have its own loop that
+        # did NOT skip the member's join day, so backfilled rows charged joiners one
+        # extra day of quota and showed them as behind on arrival.
+        return await QuotaCalculator.calculate_expected_fans(
+            club.club_id, join_date, data_date, club.quota_period, schedule=schedule
+        )
 
     month_start = date(fetched_year, fetched_month, 1)
     backfilled = 0
@@ -122,7 +115,7 @@ async def _backfill_month(club: Club, scraped_data: dict, fetched_year: int, fet
                 )
                 continue
 
-            expected = calc_expected(join_date_val, comp_date)
+            expected = await calc_expected(join_date_val, comp_date)
             deficit_surplus = comp_fans - expected
             consecutive_behind = consecutive_behind + 1 if deficit_surplus < 0 else 0
 
@@ -248,20 +241,12 @@ async def handle_recalculate(request: web.Request) -> web.StreamResponse:
     if not club:
         return await _send_json(request, {'error': 'Club not found'}, status=404)
 
-    period_days = {'daily': 1, 'weekly': 7, 'biweekly': 14}.get(club.quota_period, 1)
     schedule = await QuotaSchedule.load(club_id)
 
-    def calc_expected(join_date: date, data_date: date) -> int:
-        # See the note in _backfill_month: this intentionally matches that
-        # function's join-day handling rather than QuotaCalculator's.
-        month_start = date(data_date.year, data_date.month, 1)
-        start = join_date if join_date >= month_start else month_start
-        total = 0.0
-        cur = start
-        while cur <= data_date:
-            total += schedule.for_date(cur) / period_days
-            cur += timedelta(days=1)
-        return round(total)
+    async def calc_expected(join_date: date, data_date: date) -> int:
+        return await QuotaCalculator.calculate_expected_fans(
+            club_id, join_date, data_date, club.quota_period, schedule=schedule
+        )
 
     today = date.today()
     month_start = date(today.year, today.month, 1)
@@ -290,7 +275,7 @@ async def handle_recalculate(request: web.Request) -> web.StreamResponse:
 
         consecutive_behind = 0
         for row in history:
-            expected = calc_expected(member['join_date'], row['date'])
+            expected = await calc_expected(member['join_date'], row['date'])
             deficit_surplus = row['cumulative_fans'] - expected
             consecutive_behind = consecutive_behind + 1 if deficit_surplus < 0 else 0
             await db.execute(
