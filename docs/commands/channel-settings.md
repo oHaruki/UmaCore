@@ -54,3 +54,43 @@ Manually refresh the monthly info board embed.
 | Parameter | Required | Description |
 |---|---|---|
 | `club` | Yes | Target club |
+
+---
+
+## /live_board
+
+Enable or disable the **live board** for a club — a single self-editing message
+that tracks the competition day as it happens.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `club` | Yes | Target club |
+| `channel` | No | Channel for the board. **Leave empty to turn it off.** |
+
+**Off by default.** A club is only polled once you set a channel, so this costs
+nothing for clubs that don't use it.
+
+### How it works
+
+The board follows Uma.moe's clock, not your report time. A competition day opens
+at **15:00 UTC** (00:00 JST):
+
+1. A new message is posted when the day opens
+2. It's edited through the day as fresh figures arrive (roughly hourly)
+3. When the day closes, it gets one **final edit** with the finished numbers
+4. A new message is posted for the next day
+
+So each message ends up as an exact record of one competition day. Edits don't
+notify anyone, so the board updating all day won't spam the channel.
+
+### What it shows
+
+Fans earned so far today, live club rank and how it's moved, month total, and the
+members contributing today.
+
+### Important
+
+The live board is **display only**. Numbers on it are not final — the day is still
+running. Your **daily report is unchanged**: it still posts at the club's own
+scrape time, still uses finalized data, and remains the only thing that drives
+quota tracking, bombs and DMs.

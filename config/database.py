@@ -108,6 +108,22 @@ class Database:
             END IF;
         END $$;
         
+        -- Migration: Add live board columns if they don't exist.
+        -- A NULL live_board_channel_id means the feature is off for that club —
+        -- it is opt-in, so no club is polled until an admin sets a channel.
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='clubs' AND column_name='live_board_channel_id'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN live_board_channel_id BIGINT;
+                ALTER TABLE clubs ADD COLUMN live_board_message_id BIGINT;
+                ALTER TABLE clubs ADD COLUMN live_board_day DATE;
+                RAISE NOTICE 'Added live board columns to clubs';
+            END IF;
+        END $$;
+
         -- Migration: Add guild_id column if it doesn't exist
         DO $$
         BEGIN

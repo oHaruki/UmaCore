@@ -9,6 +9,7 @@ import logging
 import os
 import pytz
 import asyncio
+from typing import Optional
 
 from scrapers import ChronoGenesisScraper, UmaMoeAPIScraper
 from services import QuotaCalculator, BombManager, ReportGenerator, MonthlyInfoService
@@ -1104,6 +1105,89 @@ class AdminCommands(commands.Cog):
                     f"rate={rate:.0f}/min elapsed={elapsed:.1f}s errors={len(errors)}")
 
     @app_commands.command(
+        name="live_board",
+        description="Enable or disable the live board for a club",
+    )
+    @app_commands.describe(
+        club="Which club",
+        channel="Channel for the live board. Leave empty to turn it off.",
+    )
+    async def live_board(self, interaction: discord.Interaction, club: str,
+                         channel: Optional[discord.TextChannel] = None):
+        """Opt a club into the live board, or turn it off.
+
+        The board is one self-editing message per competition day: posted when the
+        day opens at 15:00 UTC, updated through the day, and given a final edit
+        with the finished numbers once it closes. Edits don't ping anyone.
+
+        It is display only — the daily report still runs on the club's own scrape
+        time and remains the thing that drives bombs and DMs.
+        """
+        await interaction.response.defer()
+
+        club_obj = await Club.get_by_name(club)
+        if not club_obj:
+            await interaction.followup.send(f"❌ Club '{club}' not found")
+            return
+        if not club_obj.belongs_to_guild(interaction.guild_id):
+            await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+            return
+        if not await ensure_can_manage(interaction, club_obj):
+            return
+
+        if channel is None:
+            if not club_obj.live_board_enabled:
+                await interaction.followup.send(
+                    f"ℹ️ The live board is already off for **{club}**.\n"
+                    f"Turn it on with `/live_board club:{club} channel:#some-channel`."
+                )
+                return
+            await club_obj.set_live_board(None)
+            await interaction.followup.send(
+                f"✅ Live board disabled for **{club}**. The last message stays where it is."
+            )
+            return
+
+        if not club_obj.is_circle_id_valid():
+            await interaction.followup.send(club_obj.get_circle_id_help_message())
+            return
+
+        perms = channel.permissions_for(interaction.guild.me)
+        missing = [n for n, ok in (("View Channel", perms.view_channel),
+                                   ("Send Messages", perms.send_messages),
+                                   ("Embed Links", perms.embed_links)) if not ok]
+        if missing:
+            await interaction.followup.send(
+                f"❌ I'm missing these permissions in {channel.mention}: "
+                f"**{', '.join(missing)}**"
+            )
+            return
+
+        await club_obj.set_live_board(channel.id)
+
+        embed = discord.Embed(
+            title="✅ Live board enabled",
+            description=f"**{club}** → {channel.mention}",
+            colour=COLOR_ON_TRACK,
+        )
+        embed.add_field(
+            name="How it works",
+            value=("One message per competition day. It's posted when the day opens "
+                   "(15:00 UTC), edited as new figures arrive, then given a final "
+                   "edit once the day closes. Edits don't notify anyone."),
+            inline=False,
+        )
+        embed.add_field(
+            name="Note",
+            value=("Live numbers are **not final** — the day is still running. Your "
+                   "daily report is unchanged and still drives quota, bombs and DMs."),
+            inline=False,
+        )
+        embed.set_footer(text="The first board appears within the hour.")
+        await interaction.followup.send(embed=embed)
+        logger.info(f"Live board enabled for {club} in channel {channel.id}")
+
+    @app_commands.command(
         name="backup",
         description="Run a database backup now, or show the retained backups",
     )
@@ -1219,6 +1303,7 @@ class AdminCommands(commands.Cog):
     recalculate.autocomplete('club')(club_autocomplete)
     reset_month.autocomplete('club')(club_autocomplete)
     limiter_test.autocomplete('club')(club_autocomplete)
+    live_board.autocomplete('club')(club_autocomplete)
 
 
 async def setup(bot):

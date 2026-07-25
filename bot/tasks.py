@@ -8,6 +8,7 @@ import logging
 import asyncio
 
 import os
+import zlib
 from pathlib import Path
 
 from models import Club, Member, ClubRankHistory, QuotaRequirement
@@ -20,6 +21,7 @@ from services.tally_renderer import generate_tally_image
 from utils.timezone_helper import resolve_timezone
 from utils.jst_calendar import ROLLOVER_UTC_HOUR
 from services.backup_service import create_backup, find_pg_dump
+from services.live_board import update_club as update_live_board
 from config.settings import (
     USE_UMAMOE_API, SCRAPE_ROLLOVER_GRACE_SEC, SCRAPE_MAX_FRESHNESS_RETRIES,
     SCRAPE_FRESHNESS_RETRY_DELAY_SEC, SCRAPE_MAX_CONCURRENCY,
@@ -69,6 +71,7 @@ class BotTasks:
         """Start all scheduled tasks"""
         self.scheduler.start()
         self.scrape_tick.start()
+        self.live_board_tick.start()
         if DB_BACKUP_ENABLED:
             self.daily_backup.change_interval(time=self._backup_time)
             self.daily_backup.start()
@@ -93,6 +96,7 @@ class BotTasks:
     def stop_tasks(self):
         """Stop all scheduled tasks"""
         self.scrape_tick.cancel()
+        self.live_board_tick.cancel()
         if self.daily_backup.is_running():
             self.daily_backup.cancel()
         self.scheduler.stop()
@@ -117,6 +121,46 @@ class BotTasks:
 
     @daily_backup.before_loop
     async def before_daily_backup(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=1)
+    async def live_board_tick(self):
+        """Refresh live boards, spread evenly across the hour.
+
+        Each club gets a stable slot minute derived from its id, so 200 clubs
+        become ~3 API calls a minute instead of a 200-call burst that would
+        saturate the shared limiter and stall interactive commands behind it.
+        The spread also matches reality: uma.moe's live batch reaches
+        lower-ranked circles several minutes after the top ones.
+        """
+        now_utc = datetime.now(timezone.utc)
+
+        try:
+            clubs = await Club.get_live_board_clubs()
+        except Exception as e:
+            logger.error(f"live_board_tick: failed to load clubs: {e}", exc_info=True)
+            return
+
+        if not clubs:
+            return
+
+        due = [c for c in clubs if self._live_slot_minute(c) == now_utc.minute]
+        for club in due:
+            try:
+                await update_live_board(self.bot, club, now_utc=now_utc)
+            except Exception as e:
+                # One club's board must never take down the others.
+                logger.error(
+                    f"live_board_tick: {club.club_name} failed: {e}", exc_info=True
+                )
+
+    @staticmethod
+    def _live_slot_minute(club: Club) -> int:
+        """Stable minute-of-hour for a club, so the load spreads deterministically."""
+        return zlib.crc32(str(club.club_id).encode()) % 60
+
+    @live_board_tick.before_loop
+    async def before_live_board_tick(self):
         await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=1)

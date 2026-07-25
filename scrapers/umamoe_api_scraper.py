@@ -68,6 +68,15 @@ class CircleMeta:
 
 
 @dataclass
+class MemberGain:
+    """One member's contribution to the in-progress day."""
+    trainer_id: str
+    name: str
+    gained_today: int
+    month_total: int
+
+
+@dataclass
 class LiveSnapshot:
     """In-progress standing for the live board. Never persisted as a finished day."""
     circle_id: str
@@ -77,14 +86,35 @@ class LiveSnapshot:
     live_rank: Optional[int]
     monthly_point: Optional[int]
     monthly_rank: Optional[int]
+    yesterday_points: Optional[int] = None
     members: Dict[str, Dict] = field(default_factory=dict)
+    gains: List[MemberGain] = field(default_factory=list)
 
     @property
     def gained_today(self) -> Optional[int]:
-        """Fans earned so far in the in-progress day, club-wide."""
+        """Fans earned so far in the in-progress day, club-wide.
+
+        ``live_points`` is the month's running total including today; the last
+        finalize (``monthly_point``) is the same total through yesterday. The
+        difference is what has been earned since the day opened.
+        """
         if self.live_points is None or self.monthly_point is None:
             return None
-        return self.live_points - self.monthly_point
+        return max(0, self.live_points - self.monthly_point)
+
+    @property
+    def rank_delta(self) -> Optional[int]:
+        """Places gained since the last finalize. Positive = climbing."""
+        if self.live_rank is None or self.monthly_rank is None:
+            return None
+        return self.monthly_rank - self.live_rank
+
+    def top_gainers(self, n: int = 10) -> List[MemberGain]:
+        return sorted(self.gains, key=lambda g: g.gained_today, reverse=True)[:n]
+
+    @property
+    def active_today(self) -> int:
+        return sum(1 for g in self.gains if g.gained_today > 0)
 
 
 class UmaMoeAPIScraper(BaseScraper):
@@ -206,7 +236,9 @@ class UmaMoeAPIScraper(BaseScraper):
                 live_rank=meta.live_rank,
                 monthly_point=meta.monthly_point,
                 monthly_rank=meta.monthly_rank,
+                yesterday_points=meta.yesterday_points,
                 members=parsed,
+                gains=self._member_gains(members, target.slot),
             )
         except Exception as e:
             logger.warning(f"Live fetch failed for circle {self.circle_id}: {e}")
@@ -293,6 +325,35 @@ class UmaMoeAPIScraper(BaseScraper):
             return None
         gain = m.monthly_point - m.yesterday_points
         return gain if gain > 0 else None
+
+    @staticmethod
+    def _member_gains(members: List[dict], live_slot: int) -> List["MemberGain"]:
+        """Per-member fans earned in the in-progress day.
+
+        The live slot holds each member's running total including today; the slot
+        before it is yesterday's close. The difference is today's contribution.
+        """
+        gains: List[MemberGain] = []
+        prev_slot = live_slot - 1
+        if prev_slot < 0:
+            return gains
+
+        for m in members:
+            fans = m.get("daily_fans") or []
+            if live_slot >= len(fans) or fans[live_slot] <= 0:
+                continue                      # left the club, or not racing yet
+            prev = fans[prev_slot] if prev_slot < len(fans) else 0
+            if prev <= 0:
+                prev = fans[live_slot]        # joined today: no prior day to diff
+
+            baseline = next((v for v in fans[:live_slot + 1] if v > 0), 0)
+            gains.append(MemberGain(
+                trainer_id=str(m.get("viewer_id")),
+                name=m.get("trainer_name") or "?",
+                gained_today=max(0, fans[live_slot] - prev),
+                month_total=max(0, fans[live_slot] - baseline),
+            ))
+        return gains
 
     @staticmethod
     def _checksum_total(members: List[dict], slot: int) -> int:

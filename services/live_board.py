@@ -1,0 +1,182 @@
+"""The live board: one self-editing message per competition day, per club.
+
+Aligned to uma.moe's own clock rather than the club's report time. A competition
+day opens at 15:00 UTC, the board is posted then, edited as live figures arrive,
+and gets one final edit with the finalized total once the day closes — so the
+message left behind is an exact record of that day. Then a new one is posted.
+
+**Display only.** Nothing here writes quota history, activates bombs or sends
+DMs. Those belong to the daily report, which runs on the club's own schedule off
+finalized data — counting an unfinished day would penalise people for a day that
+has not happened yet.
+
+Opt-in: a club is polled only once an admin sets a channel, so enabling this for
+one club costs 24 API calls a day and enabling it for none costs nothing.
+"""
+import logging
+from datetime import date, datetime, timezone
+from typing import Optional
+
+import discord
+
+from models import Club
+from scrapers.umamoe_api_scraper import LiveSnapshot, UmaMoeAPIScraper
+from utils.jst_calendar import resolve_live
+from config.settings import COLOR_INFO, COLOR_ON_TRACK
+
+logger = logging.getLogger(__name__)
+
+TOP_N = 10
+
+
+def _fmt(n: Optional[int]) -> str:
+    if n is None:
+        return "—"
+    if abs(n) >= 1_000_000:
+        return f"{n / 1_000_000:.2f}M"
+    if abs(n) >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return f"{n:,}"
+
+
+def build_embed(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> discord.Embed:
+    """Render the board for one club.
+
+    ``closed`` switches it to the final state shown after the day has finalized.
+    """
+    if closed:
+        title = f"📗 {club.club_name} — {snap.jst_day:%b %d} final"
+        colour = COLOR_ON_TRACK
+        blurb = "This competition day has closed. Numbers are final."
+    else:
+        title = f"📈 {club.club_name} — live"
+        colour = COLOR_INFO
+        blurb = "Updates through the day. Not final until the day closes."
+
+    embed = discord.Embed(title=title, description=blurb, colour=colour)
+
+    embed.add_field(name="Fans today", value=f"**{_fmt(snap.gained_today)}**", inline=True)
+
+    if snap.live_rank:
+        delta = snap.rank_delta
+        arrow = "" if not delta else (f" ({delta:+d})" if delta else "")
+        embed.add_field(name="Rank", value=f"#{snap.live_rank:,}{arrow}", inline=True)
+
+    if snap.live_points:
+        embed.add_field(name="Month total", value=_fmt(snap.live_points), inline=True)
+
+    gainers = snap.top_gainers(TOP_N)
+    if gainers and gainers[0].gained_today > 0:
+        lines = []
+        for i, g in enumerate(gainers, 1):
+            if g.gained_today <= 0:
+                break
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"`{i:>2}`")
+            lines.append(f"{medal} **{g.name}** — +{_fmt(g.gained_today)}")
+        embed.add_field(
+            name=f"Top contributors ({snap.active_today} racing today)",
+            value="\n".join(lines),
+            inline=False,
+        )
+    elif not closed:
+        embed.add_field(
+            name="Top contributors",
+            value="_nobody has raced yet today_",
+            inline=False,
+        )
+
+    stamp = snap.as_of.strftime("%H:%M UTC") if snap.as_of else "unknown"
+    embed.set_footer(text=f"JST day {snap.jst_day} · uma.moe data as of {stamp}")
+    embed.timestamp = datetime.now(timezone.utc)
+    return embed
+
+
+async def _resolve_channel(bot, club: Club) -> Optional[discord.abc.Messageable]:
+    channel = bot.get_channel(club.live_board_channel_id)
+    if channel is None:
+        logger.warning(
+            f"Live board channel {club.live_board_channel_id} not found for "
+            f"{club.club_name} — leaving it configured in case it is a cache miss"
+        )
+    return channel
+
+
+async def _post_new(bot, club: Club, snap: LiveSnapshot) -> bool:
+    channel = await _resolve_channel(bot, club)
+    if channel is None:
+        return False
+    try:
+        msg = await channel.send(embed=build_embed(club, snap))
+        await club.set_live_board_message(msg.id, snap.jst_day)
+        logger.info(f"📈 Live board opened for {club.club_name} (JST {snap.jst_day})")
+        return True
+    except discord.Forbidden:
+        logger.error(
+            f"No permission to post the live board for {club.club_name} in "
+            f"channel {club.live_board_channel_id}"
+        )
+    except discord.HTTPException as e:
+        logger.warning(f"Failed to post live board for {club.club_name}: {e}")
+    return False
+
+
+async def _edit_existing(bot, club: Club, snap: LiveSnapshot, *, closed: bool) -> bool:
+    """Edit the tracked message. Returns False if it is gone and must be reposted."""
+    channel = await _resolve_channel(bot, club)
+    if channel is None:
+        return True                      # cache miss: don't repost, just skip
+    try:
+        msg = await channel.fetch_message(club.live_board_message_id)
+        await msg.edit(embed=build_embed(club, snap, closed=closed))
+        return True
+    except discord.NotFound:
+        logger.info(f"Live board message for {club.club_name} was deleted — reposting")
+        return False
+    except discord.Forbidden:
+        logger.error(f"No permission to edit the live board for {club.club_name}")
+        return True
+    except discord.HTTPException as e:
+        logger.warning(f"Failed to edit live board for {club.club_name}: {e}")
+        return True
+
+
+async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) -> bool:
+    """Bring one club's board up to date. Returns True if anything was sent.
+
+    Handles the three cases: no board yet, same day (edit), and the day having
+    rolled over (final edit, then open a new one).
+
+    A single fetch covers the rollover: after 15:00 UTC the response carries both
+    the finalized total for the day that just closed and the opening figures for
+    the new one.
+    """
+    target = resolve_live(now_utc)
+    snap = await UmaMoeAPIScraper(club.circle_id, now_utc=now_utc).fetch_live()
+    if snap is None:
+        return False
+
+    # First run, or the tracked message vanished.
+    if not club.live_board_message_id or not club.live_board_day:
+        return await _post_new(bot, club, snap)
+
+    if club.live_board_day == target.jst_day:
+        ok = await _edit_existing(bot, club, snap, closed=False)
+        return ok if ok else await _post_new(bot, club, snap)
+
+    # The day rolled over. Close out the old message with the finalized figures,
+    # then open a new board for the day now in progress.
+    closing = LiveSnapshot(
+        circle_id=snap.circle_id,
+        jst_day=club.live_board_day,
+        as_of=snap.as_of,
+        # For the closed day, the finalized month total is the yardstick and the
+        # day's own gain is monthly_point - yesterday_points.
+        live_points=snap.monthly_point,
+        live_rank=snap.monthly_rank,
+        monthly_point=snap.yesterday_points,
+        monthly_rank=snap.monthly_rank,
+        gains=[],           # per-member deltas describe the *new* day, not this one
+    )
+    await _edit_existing(bot, club, closing, closed=True)
+    logger.info(f"📗 Live board closed for {club.club_name} (JST {club.live_board_day})")
+    return await _post_new(bot, club, snap)
