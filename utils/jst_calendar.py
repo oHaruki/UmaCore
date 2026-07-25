@@ -125,8 +125,24 @@ def resolve_finalized(now_utc: Optional[datetime] = None) -> SlotTarget:
     This is what quota accounting must read. Replaces the old
     "probe whether slot > 0 and fall back a day" heuristic, which broke once
     uma.moe started populating the in-progress slot live.
+
+    One exception, at the month boundary. Monthly fan totals are measured from a
+    member's first populated slot, so on JST day 1 of a month every member's
+    monthly total is zero by construction — there is no earlier slot to subtract
+    from. Reporting that would show a whole club dropping to 0, and because
+    ``data_date`` is ``jst_day - 1`` it would write those zeros under a
+    *previous-month* date, on top of real history.
+
+    So day 1 is deferred: keep reporting the previous month's final day until the
+    new month has a second closed day. That is what the old Day-1 branch achieved
+    by fetching the previous month, and it keeps reported dates gap-free. The cost
+    is that the previous month's last row is rewritten with identical values for a
+    day or two, which the ``(member_id, date)`` upsert absorbs.
     """
-    return _target(last_closed_jst_day(now_utc), is_live=False)
+    closed = last_closed_jst_day(now_utc)
+    if closed.day == 1:
+        closed -= timedelta(days=1)
+    return _target(closed, is_live=False)
 
 
 def resolve_live(now_utc: Optional[datetime] = None) -> SlotTarget:

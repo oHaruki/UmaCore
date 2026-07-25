@@ -176,7 +176,7 @@ class UmaMoeAPIScraper(BaseScraper):
         self._sanity_check_roster(members)
 
         parsed = self._parse_members(members, target.slot)
-        self._verify_checksum(parsed, self._meta.monthly_point, "monthly_point")
+        self._verify_checksum(members, target.slot, self._meta.monthly_point, "monthly_point")
         logger.info(f"Successfully parsed {len(parsed)} active members from API")
         return parsed
 
@@ -196,7 +196,7 @@ class UmaMoeAPIScraper(BaseScraper):
             meta = CircleMeta.from_response(payload)
             members = payload.get("members") or []
             parsed = self._parse_members(members, target.slot) if members else {}
-            self._verify_checksum(parsed, meta.live_points, "live_points")
+            self._verify_checksum(members, target.slot, meta.live_points, "live_points")
 
             return LiveSnapshot(
                 circle_id=str(self.circle_id),
@@ -294,20 +294,41 @@ class UmaMoeAPIScraper(BaseScraper):
         gain = m.monthly_point - m.yesterday_points
         return gain if gain > 0 else None
 
-    def _verify_checksum(self, parsed: Dict[str, Dict], expected_total: Optional[int],
-                         label: str) -> None:
-        """Cross-check our parsed sum against uma.moe's own club total.
+    @staticmethod
+    def _checksum_total(members: List[dict], slot: int) -> int:
+        """Club total computed the way uma.moe's ``monthly_point`` is.
+
+        Counts members who have since left: their gains up to their last active
+        day still belong to the club's month, even though the parsed output drops
+        them (their target slot reads 0). Without this, a productive member
+        leaving late in the month produces a discrepancy larger than a full day's
+        fans and looks exactly like a slot-index error.
+        """
+        total = 0
+        for m in members:
+            window = (m.get("daily_fans") or [])[:slot + 1]
+            positives = [v for v in window if v > 0]
+            if len(positives) < 2:
+                continue
+            total += positives[-1] - positives[0]
+        return total
+
+    def _verify_checksum(self, members: List[dict], slot: int,
+                         expected_total: Optional[int], label: str) -> None:
+        """Cross-check our own club total against uma.moe's.
 
         Reading the wrong slot puts us off by about one day's fans, so that is
-        what the discrepancy is measured against. The residual from member churn
-        (we and uma.moe attribute leavers/joiners slightly differently) is a few
-        million fans regardless of club size, which is a large *percentage* for a
-        small club — hence scaling by a day rather than by the monthly total.
+        what the discrepancy is measured against — not a percentage of the month.
+        The leftover residual is a few million fans in absolute terms regardless
+        of club size, which is a large *percentage* on a small club (measured
+        0.17% on a 1.66B club vs 2.62% on a 125M one, both ~2-17% of a day).
         """
-        if not expected_total or not parsed:
+        if not expected_total or not members:
             return
 
-        ours = sum(m["fans"][-1] for m in parsed.values() if m.get("fans"))
+        ours = self._checksum_total(members, slot)
+        if not ours:
+            return
         diff = abs(ours - expected_total)
 
         day_gain = self._reference_day_gain()
