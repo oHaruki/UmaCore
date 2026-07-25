@@ -81,63 +81,56 @@ class QuotaCalculator:
         """Calculate deficit or surplus (positive = surplus, negative = deficit)"""
         return actual_fans - expected_fans
     
-    async def _get_previous_cumulative_totals(self, club_id: UUID) -> Dict[str, int]:
+    async def _latest_history_date(self, club_id: UUID) -> Optional[date]:
+        """Date of the newest quota_history row for a club, or None if it has none."""
+        return await db.fetchval(
+            "SELECT MAX(date) FROM quota_history WHERE club_id = $1", club_id
+        )
+
+    async def handle_month_rollover(self, club_id: UUID, data_date: date) -> bool:
+        """Carry a club into a new competition month. Returns True if it rolled over.
+
+        Replaces the old "did anyone's fans drop by >50%?" detector, which drove an
+        irreversible ``DELETE`` of quota_history, bombs and quota_requirements off a
+        fuzzy threshold — one transferring member with a large lifetime total was
+        enough to wipe a club's month.
+
+        The month is not something to infer: the scraper fetches an explicit
+        ``(year, month)`` and ``data_date`` names the day. So compare it to the
+        newest row we already have and act only on a real boundary crossing.
+
+        Deliberately does NOT delete anything:
+
+        * ``quota_history`` is keyed by date, so a new month simply writes new rows
+          and the old ones stay as history for the dashboard.
+        * ``quota_requirements`` resolves via ``effective_date <= date``, so it is
+          already month-correct; the old delete silently wiped an admin's
+          configured quota schedule at every rollover.
+        * ``bombs`` are the one exception — see :meth:`Bomb.expire_before`.
         """
-        Get the latest cumulative fan counts from database for monthly reset detection
-        
-        Args:
-            club_id: Club UUID
-        
-        Returns:
-            Dict mapping trainer_id/name -> cumulative_fans
-        """
-        query = """
-            SELECT m.trainer_id, m.trainer_name, qh.cumulative_fans
-            FROM members m
-            JOIN quota_history qh ON m.member_id = qh.member_id
-            WHERE m.club_id = $1 AND qh.date = (
-                SELECT MAX(date) FROM quota_history WHERE club_id = $1
-            )
-        """
-        rows = await db.fetch(query, club_id)
-        
-        result = {}
-        for row in rows:
-            key = row['trainer_id'] if row['trainer_id'] else row['trainer_name']
-            result[key] = row['cumulative_fans']
-        
-        return result
-    
-    def _detect_monthly_reset_from_scraped(self, scraped_data: Dict[str, Dict], 
-                                           previous_totals: Dict[str, int]) -> bool:
-        """
-        Detect if a monthly reset has occurred by comparing scraped data to previous totals
-        """
-        if not previous_totals:
-            logger.info("No previous data found, skipping reset detection")
+        latest = await self._latest_history_date(club_id)
+        if latest is None:
             return False
-        
-        if not scraped_data:
-            logger.warning("No scraped data, cannot detect reset")
+        if (latest.year, latest.month) >= (data_date.year, data_date.month):
             return False
-        
-        # Check if any member has significantly lower fans than before
-        for key, member_data in scraped_data.items():
-            current_fans = member_data["fans"][-1] if member_data["fans"] else 0
-            
-            if key in previous_totals:
-                previous_fans = previous_totals[key]
-                
-                # If current count is less than 50% of previous, it's a reset
-                if current_fans > 0 and current_fans < previous_fans * 0.5:
-                    logger.warning(
-                        f"Monthly reset detected: {member_data['name']} went from "
-                        f"{previous_fans:,} to {current_fans:,} fans"
-                    )
-                    return True
-        
-        return False
-    
+
+        month_start = date(data_date.year, data_date.month, 1)
+        logger.info(
+            f"📅 Club {club_id} entering {data_date.year}-{data_date.month:02d} "
+            f"(previous data ends {latest}) — expiring last month's bombs"
+        )
+
+        await Bomb.expire_before(club_id, month_start)
+
+        # A new month is a clean slate for manual deactivations.
+        await db.execute(
+            "UPDATE members SET manually_deactivated = FALSE "
+            "WHERE club_id = $1 AND manually_deactivated = TRUE",
+            club_id,
+        )
+        return True
+
+
     async def _auto_deactivate_missing_members(self, club_id: UUID, scraped_trainer_ids: Set[str]):
         """Auto-deactivate members who are no longer in the scraped data"""
         active_members = await Member.get_all_active(club_id)
@@ -173,25 +166,9 @@ class QuotaCalculator:
         data_date = current_date
         logger.info(f"Processing scraped data for club {club_id}: data_date = {data_date}, current_day = {current_day}")
         
-        # Check for monthly reset
-        logger.info(f"Checking for monthly reset for club {club_id}...")
-        previous_totals = await self._get_previous_cumulative_totals(club_id)
-        
-        if self._detect_monthly_reset_from_scraped(scraped_data, previous_totals):
-            logger.warning(f"Monthly reset detected for club {club_id}! Clearing all history...")
-            
-            # Clear club-specific data
-            await db.execute("DELETE FROM quota_history WHERE club_id = $1", club_id)
-            await db.execute("DELETE FROM bombs WHERE club_id = $1", club_id)
-            await db.execute("DELETE FROM quota_requirements WHERE club_id = $1", club_id)
-            
-            # Clear manual deactivation flags for this club
-            await db.execute(
-                "UPDATE members SET manually_deactivated = FALSE WHERE club_id = $1 AND manually_deactivated = TRUE",
-                club_id
-            )
-            logger.info(f"Monthly reset complete for club {club_id}")
-        
+        # Competition month boundary — deterministic, no heuristics, no deletes.
+        await self.handle_month_rollover(club_id, data_date)
+
         # Auto-deactivate members who are no longer in the scraped data
         scraped_trainer_ids = set(scraped_data.keys())
         await self._auto_deactivate_missing_members(club_id, scraped_trainer_ids)

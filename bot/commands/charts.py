@@ -92,9 +92,8 @@ async def _fetch_via_scraper(circle_id: str) -> tuple[dict[str, dict], int, int,
     scraper = UmaMoeAPIScraper(circle_id)
     parsed_data = await scraper.scrape()
 
-    current_day = scraper.current_day_count
-    year = scraper._fetched_year
-    month = scraper._fetched_month
+    current_day = scraper.get_current_day()
+    year, month = scraper.get_fetched_period()
 
     member_data: dict[str, dict] = {}
     for data in parsed_data.values():

@@ -24,27 +24,29 @@ UMAMOE_API_KEY = os.getenv("UMAMOE_API_KEY")
 
 # Uma.moe rate limiting (shared across ALL outbound API calls).
 # Kept under the API's 120/min circle-data limit with margin; raise once the
-# API owner bumps the cap. Day 1 makes 2 calls/club, which also draws from this.
+# API owner bumps the cap.
 UMAMOE_RATE_PER_MIN = int(os.getenv("UMAMOE_RATE_PER_MIN", "100"))   # tokens per minute
 UMAMOE_RATE_BURST = int(os.getenv("UMAMOE_RATE_BURST", "10"))       # bucket capacity (max burst)
 
-# Rolling-update aware dispatch for the default-time clump.
-# uma.moe publishes circle data gradually after daily rollover (~20 circles/s),
-# so a club at rank R isn't fresh until ~R/rate seconds in. Only clubs whose
-# scrape time resolves to the shared default below get this rank-based delay;
-# clubs on custom times already self-stagger and fire immediately.
-SCRAPE_DEFAULT_UTC_TIME = os.getenv("SCRAPE_DEFAULT_UTC_TIME", "17:00")   # HH:MM UTC rollover starts (default clump)
-# Any club scheduled between rollover start and start+window is subject to the
-# rolling update and gets a rank-aware delay — not just the exact default minute.
-# Clubs outside the window (e.g. mornings) read settled data and fire on time.
-SCRAPE_ROLLOVER_WINDOW_MIN = int(os.getenv("SCRAPE_ROLLOVER_WINDOW_MIN", "15"))
-SCRAPE_ROLLOUT_PER_SEC = float(os.getenv("SCRAPE_ROLLOUT_PER_SEC", "20")) # circles/s uma.moe publishes
-SCRAPE_RANK_BUFFER_SEC = int(os.getenv("SCRAPE_RANK_BUFFER_SEC", "30"))   # safety margin on top of rank/rate
-SCRAPE_MAX_RANK_DELAY_SEC = int(os.getenv("SCRAPE_MAX_RANK_DELAY_SEC", "600"))     # cap for very low ranks
-SCRAPE_UNKNOWN_RANK_DELAY_SEC = int(os.getenv("SCRAPE_UNKNOWN_RANK_DELAY_SEC", "180"))  # clubs with no rank history yet
+# Guard against reading the wrong daily_fans slot. Our parsed club total is
+# compared against uma.moe's own monthly_point/live_points; a one-slot error
+# shows up as ~9% (a full day of fans) while normal member-churn noise measures
+# ~0.2-0.3%, so anything past this tolerance is logged as an error.
+UMAMOE_CHECKSUM_TOLERANCE = float(os.getenv("UMAMOE_CHECKSUM_TOLERANCE", "0.02"))
 
-# Freshness re-queue: if a default club's data is still stale on fetch, re-queue
-# instead of trusting it or spamming an error. Bounded to avoid re-fetch storms.
+# Grace period after the 15:00 UTC daily finalize before we trust a fetch.
+# A club scheduled in the minutes right after rollover can beat uma.moe's write
+# for its circle, so those are held this long. Anything scheduled later (or
+# before rollover, reading the previous JST day) fires on time.
+#
+# This replaced a rank-based delay model that assumed a ~20 circles/s rollout.
+# Measured 2026-07-25: the top 100 circles all finalized within ~3s, and the
+# scraper now detects staleness exactly via circle.last_updated, so predicting
+# readiness from rank is neither accurate nor necessary.
+SCRAPE_ROLLOVER_GRACE_SEC = int(os.getenv("SCRAPE_ROLLOVER_GRACE_SEC", "120"))
+
+# Freshness re-queue: if a club's target day still isn't finalized on fetch,
+# re-queue instead of trusting it or spamming an error. Bounded to avoid storms.
 SCRAPE_MAX_FRESHNESS_RETRIES = int(os.getenv("SCRAPE_MAX_FRESHNESS_RETRIES", "4"))
 SCRAPE_FRESHNESS_RETRY_DELAY_SEC = int(os.getenv("SCRAPE_FRESHNESS_RETRY_DELAY_SEC", "60"))
 SCRAPE_MAX_CONCURRENCY = int(os.getenv("SCRAPE_MAX_CONCURRENCY", "8"))    # clubs processed in parallel

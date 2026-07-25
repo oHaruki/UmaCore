@@ -17,10 +17,9 @@ from services import (
 )
 from services.tally_renderer import generate_tally_image
 from utils.timezone_helper import resolve_timezone
+from utils.jst_calendar import ROLLOVER_UTC_HOUR
 from config.settings import (
-    USE_UMAMOE_API, SCRAPE_DEFAULT_UTC_TIME, SCRAPE_ROLLOVER_WINDOW_MIN,
-    SCRAPE_ROLLOUT_PER_SEC, SCRAPE_RANK_BUFFER_SEC, SCRAPE_MAX_RANK_DELAY_SEC,
-    SCRAPE_UNKNOWN_RANK_DELAY_SEC, SCRAPE_MAX_FRESHNESS_RETRIES,
+    USE_UMAMOE_API, SCRAPE_ROLLOVER_GRACE_SEC, SCRAPE_MAX_FRESHNESS_RETRIES,
     SCRAPE_FRESHNESS_RETRY_DELAY_SEC, SCRAPE_MAX_CONCURRENCY,
 )
 
@@ -40,8 +39,9 @@ class BotTasks:
         # Track last run per club per day (club_id_YYYY-MM-DD -> True)
         self.last_runs = {}
 
-        # Rank-ordered dispatcher: the tick enqueues due clubs, the scheduler
-        # releases them in rank/time order and re-queues stale fetches.
+        # Time-ordered dispatcher: the tick enqueues due clubs, the scheduler
+        # releases them in dispatch order and re-queues fetches that came back
+        # stale (uma.moe hadn't finalized that circle yet).
         self.scheduler = ScrapeScheduler(
             worker=self._scheduled_worker,
             concurrency=SCRAPE_MAX_CONCURRENCY,
@@ -49,15 +49,7 @@ class BotTasks:
             retry_delay=SCRAPE_FRESHNESS_RETRY_DELAY_SEC,
         )
 
-        # Parse the shared default scrape time (UTC) once for default-club detection.
-        try:
-            dh, dm = map(int, SCRAPE_DEFAULT_UTC_TIME.split(":"))
-            self._default_utc = time(dh, dm)
-        except Exception:
-            logger.warning(f"Invalid SCRAPE_DEFAULT_UTC_TIME '{SCRAPE_DEFAULT_UTC_TIME}', defaulting to 17:00")
-            self._default_utc = time(17, 0)
-
-        logger.info("Multi-club tasks configured - rank-ordered scheduler, tick every minute")
+        logger.info("Multi-club tasks configured - time-ordered scheduler, tick every minute")
 
     def start_tasks(self):
         """Start all scheduled tasks"""
@@ -103,9 +95,8 @@ class BotTasks:
                     continue
                 self.last_runs[run_key] = True
 
-                dispatch_dt, rank, in_window = await self._compute_dispatch_utc(club, now_utc)
-                tag = (f"rollout window, rank={rank if rank is not None else 'unknown'}"
-                       if in_window else "off-peak → on time")
+                dispatch_dt, held = await self._compute_dispatch_utc(club, now_utc)
+                tag = "held for rollover grace" if held else "on time"
                 logger.info(
                     f"⏰ {club.club_name} due ({now_in_club_tz.strftime('%H:%M')} {club.timezone}) — "
                     f"dispatch {dispatch_dt.strftime('%H:%M:%S')} UTC [{tag}]"
@@ -116,16 +107,34 @@ class BotTasks:
                 logger.error(f"scrape_tick: error for {club.club_name}: {e}", exc_info=True)
                 continue
 
+        self._prune_last_runs(now_utc)
+
+    def _prune_last_runs(self, now_utc: datetime) -> None:
+        """Drop run keys older than two days.
+
+        The dict is keyed ``{club_id}_{date}`` and was never cleaned, so it grew
+        by one entry per club per day for the process's lifetime.
+        """
+        keep = {str((now_utc - timedelta(days=d)).date()) for d in range(3)}
+        stale = [k for k in self.last_runs if k.rsplit("_", 1)[-1] not in keep]
+        for k in stale:
+            del self.last_runs[k]
+
     async def _compute_dispatch_utc(self, club: Club, now_utc: datetime):
         """Decide when a due club should actually be fetched.
 
-        Returns (dispatch_dt_utc, monthly_rank, in_window).
+        Returns (dispatch_dt_utc, blocked_by_rollover).
 
-        uma.moe publishes today's data gradually starting at the rollover time
-        (SCRAPE_DEFAULT_UTC_TIME). Any club scheduled within the rollout window
-        — not just the exact default minute, so 17:00, 17:01, 17:05 all count —
-        gets a rank-aware delay so its data has rolled out before we fetch.
-        Clubs outside the window read already-settled data and fire on time.
+        A club's target JST day finalizes at 15:00 UTC, so a scrape scheduled in
+        the minutes right after that can beat uma.moe's write for this particular
+        circle. Hold those until a short grace period has passed.
+
+        This used to estimate readiness from the club's rank against an assumed
+        ~20 circles/s rollout. That guess is no longer needed: the scraper now
+        reads ``circle.last_updated`` and raises StaleDataError when the target day
+        genuinely hasn't finalized, so the scheduler re-queues on fact rather than
+        prediction. (Measured 2026-07-25: the top 100 circles all finalized within
+        ~3s of each other, so the rank model was also mis-calibrated.)
         """
         club_tz = resolve_timezone(club.timezone)
         target_local = club_tz.localize(
@@ -134,30 +143,19 @@ class BotTasks:
         )
         target_utc = target_local.astimezone(timezone.utc)
 
-        # Rollover window in UTC for today.
-        rollover_start = now_utc.replace(
-            hour=self._default_utc.hour, minute=self._default_utc.minute,
-            second=0, microsecond=0,
+        # The finalize for the day this scrape will read.
+        rollover = target_utc.replace(
+            hour=ROLLOVER_UTC_HOUR, minute=0, second=0, microsecond=0
         )
-        window_end = rollover_start + timedelta(minutes=SCRAPE_ROLLOVER_WINDOW_MIN)
-        in_window = rollover_start <= target_utc <= window_end
+        if target_utc < rollover:
+            # Scheduled before today's finalize — it reads the previous JST day,
+            # which settled 24h ago. Nothing to wait for.
+            return target_utc, False
 
-        if not in_window:
-            return target_utc, None, False
-
-        rank = await ClubRankHistory.get_latest_monthly_rank(club.club_id)
-        if rank and rank > 0:
-            delay = min(SCRAPE_MAX_RANK_DELAY_SEC,
-                        rank / SCRAPE_ROLLOUT_PER_SEC + SCRAPE_RANK_BUFFER_SEC)
-        else:
-            # No rank history yet (new club): wait a fixed safe interval.
-            delay = SCRAPE_UNKNOWN_RANK_DELAY_SEC
-
-        # Don't fetch before the data is fresh (rollover_start + rank delay), but
-        # never before the club's own scheduled time either.
-        fresh_at = rollover_start + timedelta(seconds=delay)
-        dispatch_dt = max(target_utc, fresh_at)
-        return dispatch_dt, rank, True
+        fresh_at = rollover + timedelta(seconds=SCRAPE_ROLLOVER_GRACE_SEC)
+        if target_utc >= fresh_at:
+            return target_utc, False
+        return fresh_at, True
 
     async def _scheduled_worker(self, club: Club, attempt: int, is_final: bool) -> str:
         """Adapter the scheduler calls. Returns 'ok' | 'stale' | 'failed'."""
@@ -281,8 +279,8 @@ class BotTasks:
                         f"Failed to scrape data after {max_retries} attempts.\n\n"
                         f"**Last error:** {str(last_error)}\n\n"
                         f"**Most likely cause:**\n"
-                        f"• Data for current day not yet available on Uma.moe\n"
-                        f"• Uma.moe typically updates around 15:10 UTC daily\n\n"
+                        f"• Data for the target day not yet finalized on Uma.moe\n"
+                        f"• Uma.moe finalizes each competition day at 15:00 UTC (00:00 JST)\n\n"
                         f"**Other possible causes:**\n"
                         f"• Uma.moe API is down or unreachable\n"
                         f"• Network timeout\n"

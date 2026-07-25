@@ -23,9 +23,10 @@ The primary data source. Fast and reliable.
 4. Set it with `/add_club circle_id:860280110` or `/edit_club circle_id:860280110`
 
 **Timing notes:**
-- Data updates around 15:10 UTC daily
-- On day 1 of the month, the bot fetches the previous month (current month hasn't populated yet)
-- If today's data isn't ready yet, the bot falls back to yesterday's data automatically
+- Uma.moe runs on JST. Each competition day finalizes at **15:00 UTC** (00:00 JST)
+- Between finalizes, the in-progress day's total updates roughly hourly (`live_points`)
+- The bot always reports the **last fully-closed** day — never the in-progress one
+- Month boundaries are handled automatically (the closing day may live in the previous month's data)
 
 ---
 
@@ -64,17 +65,33 @@ Per-club: if a club has no `circle_id` set, it always uses ChronoGenesis regardl
 
 ### Uma.moe API
 
-#### Data Not Available Yet
+#### Live vs Finalized Data
 
-Uma.moe updates around **15:10 UTC** each day. If the daily check runs before data is available, the bot automatically falls back to the previous day's data. It verifies the fallback isn't stale (by checking for fan growth) before using it — if it looks like yesterday's data hasn't changed, the check fails cleanly with an error rather than reporting incorrect numbers.
+Uma.moe's per-member `daily_fans` array is indexed by **JST competition day**, and the
+slot for the day currently being raced updates roughly every hour. Only the last
+fully-closed day is used for quota accounting — reading the in-progress slot would
+under-report every member by however much of the day is left.
 
-#### Day 1 of the Month
+Which slot that is comes from the clock (see `utils/jst_calendar.py`), and is confirmed
+against the circle's `last_updated` timestamp before use. If Uma.moe hasn't finalized a
+given circle yet, the scrape is re-queued rather than trusted.
 
-On the first day of a new month, the current month's data hasn't populated yet on Uma.moe. The bot automatically fetches the **previous month's** data as its primary source and uses the new month's day 0 endpoint to get accurate current totals. Reports on Day 1 are dated to the last day of the previous month.
+As a safety net, the bot cross-checks its parsed club total against Uma.moe's own
+`monthly_point`. A one-slot error would show up as roughly a full day of fans (~9% of the
+month), so any drift beyond 2% is logged as an error.
 
-#### End-of-Month JST Rollover
+#### Month Boundaries
 
-Uma.moe operates on JST. On the last day of the month, if the JST clock has rolled into the next month while UTC hasn't, rank data from the API may be empty or belong to the new period. The bot detects this and drops rank display from the report rather than showing incorrect values.
+Around the start of a month the last-closed day can belong to the previous month, so the
+bot fetches whichever month contains that day. Reports are dated accordingly — no special
+Day 1 handling is needed.
+
+#### End-of-Month Competition Rollover
+
+The API's rank fields always describe the *current* JST competition month. When the target
+day belongs to a period that has already ended, those ranks describe a different (nearly
+empty) period, so the bot drops rank display from the report rather than showing
+incorrect values.
 
 #### Invalid or Missing Circle ID
 

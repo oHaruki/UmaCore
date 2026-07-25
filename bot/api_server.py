@@ -210,8 +210,12 @@ async def handle_sync(request: web.Request) -> web.StreamResponse:
                 await bomb_manager.check_and_activate_bombs(club, current_date)
                 await bomb_manager.check_and_deactivate_bombs(club.club_id, current_date)
 
-                fetched_year = getattr(scraper, '_fetched_year', None) or current_date.year
-                fetched_month = getattr(scraper, '_fetched_month', None) or current_date.month
+                # ChronoGenesis has no notion of a fetched period — it always reads
+                # the current month — so fall back to the calendar date for it.
+                get_period = getattr(scraper, 'get_fetched_period', None)
+                fetched_year, fetched_month = get_period() if get_period else (None, None)
+                fetched_year = fetched_year or current_date.year
+                fetched_month = fetched_month or current_date.month
                 backfilled = await _backfill_month(club, scraped_data, fetched_year, fetched_month)
 
                 if backfilled:

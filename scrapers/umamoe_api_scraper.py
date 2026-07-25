@@ -1,409 +1,427 @@
 """
-Uma.moe API scraper for club data fetching
+Uma.moe API scraper for club data fetching.
+
+Slot selection lives in :mod:`utils.jst_calendar` — see that module for the
+verified mapping between ``daily_fans`` indices and JST competition days.
+
+The short version: uma.moe now updates the in-progress day's slot every ~45-60min
+(``live_points``), where it used to write each slot once at the daily finalize.
+Quota accounting therefore reads the *last closed* JST day, chosen from the clock
+and confirmed against ``circle.last_updated`` — never by probing whether a slot
+happens to be non-zero, which no longer distinguishes "finalized" from "still
+running".
 """
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
+from dataclasses import dataclass, field
 import logging
-import calendar
 import aiohttp
-from datetime import datetime, date, timezone, timedelta
+from datetime import datetime, date, timezone
 
 from scrapers.base_scraper import BaseScraper, StaleDataError
-from config.settings import UMAMOE_API_KEY
+from config.settings import UMAMOE_API_KEY, UMAMOE_CHECKSUM_TOLERANCE
 from utils.rate_limiter import umamoe_limiter
 from utils.api_metrics import track_api_call
+from utils.jst_calendar import (
+    SlotTarget, resolve_finalized, resolve_live, parse_api_timestamp,
+    in_progress_jst_day, ROLLOVER_UTC_HOUR,
+)
 
 logger = logging.getLogger(__name__)
 
-# Rollover/freshness fields uma.moe is known to return. We don't yet rely on
-# their exact semantics for the gate — they're logged once per scrape so the
-# real values can be confirmed on a live run and wired into is_data_fresh().
-FRESHNESS_FIELDS = (
-    "last_updated", "last_update", "updated_at",
-    "last_live_update", "yesterday_updated",
-    "live_points", "live_rank",
-)
+
+@dataclass
+class CircleMeta:
+    """Circle-level fields from one API response."""
+    name: Optional[str] = None
+    member_count: Optional[int] = None
+    monthly_rank: Optional[int] = None
+    last_month_rank: Optional[int] = None
+    yesterday_rank: Optional[int] = None
+    live_rank: Optional[int] = None
+    monthly_point: Optional[int] = None
+    yesterday_points: Optional[int] = None
+    live_points: Optional[int] = None
+    last_updated: Optional[datetime] = None
+    last_live_update: Optional[datetime] = None
+    yesterday_updated: Optional[datetime] = None
+
+    @classmethod
+    def from_response(cls, payload: dict) -> "CircleMeta":
+        c = (payload or {}).get("circle") or {}
+        return cls(
+            name=c.get("name"),
+            member_count=c.get("member_count"),
+            monthly_rank=c.get("monthly_rank"),
+            last_month_rank=c.get("last_month_rank"),
+            yesterday_rank=c.get("yesterday_rank"),
+            live_rank=c.get("live_rank"),
+            monthly_point=c.get("monthly_point"),
+            yesterday_points=c.get("yesterday_points"),
+            live_points=c.get("live_points"),
+            last_updated=parse_api_timestamp(c.get("last_updated")),
+            last_live_update=parse_api_timestamp(c.get("last_live_update")),
+            yesterday_updated=parse_api_timestamp(c.get("yesterday_updated")),
+        )
+
+
+@dataclass
+class LiveSnapshot:
+    """In-progress standing for the live board. Never persisted as a finished day."""
+    circle_id: str
+    jst_day: date
+    as_of: Optional[datetime]
+    live_points: Optional[int]
+    live_rank: Optional[int]
+    monthly_point: Optional[int]
+    monthly_rank: Optional[int]
+    members: Dict[str, Dict] = field(default_factory=dict)
+
+    @property
+    def gained_today(self) -> Optional[int]:
+        """Fans earned so far in the in-progress day, club-wide."""
+        if self.live_points is None or self.monthly_point is None:
+            return None
+        return self.live_points - self.monthly_point
 
 
 class UmaMoeAPIScraper(BaseScraper):
     """Scraper using Uma.moe API for fast data retrieval"""
-    
-    def __init__(self, circle_id: str):
+
+    def __init__(self, circle_id: str, now_utc: Optional[datetime] = None):
         self.circle_id = circle_id
         self.base_url = "https://uma.moe/api/v4/circles"
-        self.current_day_count = 1
-        # Track which year/month was actually fetched (differs from now() on Day 1)
-        self._fetched_year = None
-        self._fetched_month = None
-        # Set to a date object when the scraper fell back to the previous month;
-        # None when the fetched data matches the current calendar date.
+        # Injectable clock so the slot mapping is testable without freezing time.
+        self._now_utc = now_utc
+
+        self._target: Optional[SlotTarget] = None
+        self._meta = CircleMeta()
         self._data_date: Optional[date] = None
-        # Club/monthly rank fields from the API response (nested inside "circle" key)
-        self._monthly_rank: Optional[int] = None
-        self._last_month_rank: Optional[int] = None
-        self._yesterday_rank: Optional[int] = None
-        # Raw rollout/freshness fields from the response, captured for diagnostics.
-        self._freshness: Dict = {}
+        self.current_day_count = 1
         super().__init__(self.base_url)
-    
+
+    # ------------------------------------------------------------------ fetch
+
     async def _fetch_month(self, session: aiohttp.ClientSession, year: int, month: int) -> Optional[dict]:
         """Fetch API data for a specific year/month. Returns parsed JSON or None on failure."""
-        params = {
-            "circle_id": self.circle_id,
-            "year": year,
-            "month": month
-        }
+        params = {"circle_id": self.circle_id, "year": year, "month": month}
         # Gate every outbound request through the shared limiter so the bot stays
         # under the API's per-minute cap no matter how many clubs fire at once.
         await umamoe_limiter.acquire()
         async with track_api_call("uma.moe", "circles", context=str(self.circle_id)) as m:
-            async with session.get(self.base_url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
+            async with session.get(self.base_url, params=params,
+                                   timeout=aiohttp.ClientTimeout(total=30)) as response:
                 m["status_code"] = response.status
                 if response.status != 200:
                     error_text = await response.text()
                     if response.status == 429:
-                        logger.error(f"⛔ RATE LIMITED by Uma.moe API (429) for {year}-{month:02d} — slow down or check API key limits. Response: {error_text[:200]}")
+                        logger.error(
+                            f"⛔ RATE LIMITED by Uma.moe API (429) for {year}-{month:02d} — "
+                            f"slow down or check API key limits. Response: {error_text[:200]}"
+                        )
                     else:
-                        logger.error(f"Uma.moe API returned status {response.status} for {year}-{month:02d}: {error_text[:200]}")
+                        logger.error(
+                            f"Uma.moe API returned status {response.status} "
+                            f"for {year}-{month:02d}: {error_text[:200]}"
+                        )
                     return None
                 data = await response.json()
                 m["ok"] = True
                 return data
-    
+
+    def _session(self) -> aiohttp.ClientSession:
+        headers = {"Accept-Encoding": "gzip, deflate"}
+        if UMAMOE_API_KEY:
+            headers["X-API-Key"] = UMAMOE_API_KEY
+        return aiohttp.ClientSession(headers=headers)
+
+    # ----------------------------------------------------------------- public
+
     async def scrape(self) -> Dict[str, Dict]:
+        """Fetch the last fully-closed JST day's data for quota accounting.
+
+        Raises:
+            StaleDataError: the target day hasn't finalized for this circle yet.
+            ValueError: the request failed or the response was unusable.
         """
-        Scrape club data from Uma.moe API.
-        
-        On Day 1 the new month hasn't populated yet, so we fetch the previous
-        month as the primary data source. We also fetch the current month and
-        use its index 0 as the true endpoint per member.
-        
-        On Day 2+, we check if current day data exists (Uma.moe updates ~15:10 UTC).
-        If not, we fall back to previous day to avoid reading zeros.
-        
-        Returns:
-            Dict mapping viewer_id -> member data
+        target = resolve_finalized(self._now_utc)
+        self._target = target
+        self._data_date = target.data_date
+        self.current_day_count = target.slot + 1
+
+        logger.info(f"Fetching circle {self.circle_id}: {target.describe()}")
+
+        async with self._session() as session:
+            payload = await self._fetch_month(session, target.year, target.month)
+
+        if not payload:
+            raise ValueError(f"API request failed for {target.year}-{target.month:02d}")
+
+        self._meta = CircleMeta.from_response(payload)
+        self._log_freshness()
+        self._assert_finalized(target)
+        self._drop_ranks_if_period_mismatch(target)
+
+        members = payload.get("members")
+        if members is None:
+            logger.error("API response missing 'members' field")
+            raise ValueError("Invalid API response structure")
+        if not members:
+            logger.warning("No members found in API response")
+            return {}
+
+        logger.info(f"API returned {len(members)} members")
+        self._sanity_check_roster(members)
+
+        parsed = self._parse_members(members, target.slot)
+        self._verify_checksum(parsed, self._meta.monthly_point, "monthly_point")
+        logger.info(f"Successfully parsed {len(parsed)} active members from API")
+        return parsed
+
+    async def fetch_live(self) -> Optional[LiveSnapshot]:
+        """Fetch the in-progress JST day for display purposes only.
+
+        Returns ``None`` on any failure — the live board is best-effort and must
+        never break a caller. Nothing here may be written to ``quota_history``.
         """
+        target = resolve_live(self._now_utc)
         try:
-            now = datetime.now()
-            year = now.year
-            month = now.month
-            
-            # Determine which month to use as primary data source
-            if now.day == 1:
-                if month == 1:
-                    year -= 1
-                    month = 12
-                else:
-                    month -= 1
-                last_day = calendar.monthrange(year, month)[1]
-                self._data_date = date(year, month, last_day)
-                logger.info(f"Day 1 detected: fetching previous month ({year}-{month:02d}) as primary source, data date: {self._data_date}")
-            
-            self._fetched_year = year
-            self._fetched_month = month
-            
-            logger.info(f"Fetching data from Uma.moe API for circle {self.circle_id}...")
-            
-            session_headers = {"Accept-Encoding": "gzip, deflate"}
-            if UMAMOE_API_KEY:
-                session_headers["X-API-Key"] = UMAMOE_API_KEY
-            async with aiohttp.ClientSession(headers=session_headers) as session:
-                # Primary fetch: the month we're actually reporting on
-                primary_data = await self._fetch_month(session, year, month)
-                if not primary_data:
-                    raise ValueError(f"Primary API request failed for {year}-{month:02d}")
-                
-                # On Day 1, also fetch current month for endpoint correction
-                endpoint_members = None
-                if now.day == 1:
-                    endpoint_data = await self._fetch_month(session, now.year, now.month)
-                    if endpoint_data and "members" in endpoint_data:
-                        endpoint_members = endpoint_data.get("members", [])
-                        logger.info(f"Fetched {len(endpoint_members)} members from {now.year}-{now.month:02d} for endpoint correction")
-                    else:
-                        logger.warning("Could not fetch current month for endpoint correction — using previous month's last snapshot")
-            
-            # Extract club ranks from the "circle" sub-object.
-            # On Day 1 prefer the current-month endpoint (more timely), fall back to primary.
-            # Note: the top-level "club_rank" field is a tier bracket (not a position rank);
-            # the actual position ranks live inside response["circle"].
-            rank_source = (endpoint_data if (now.day == 1 and endpoint_data) else primary_data) or {}
-            circle_data = rank_source.get("circle") or {}
-            self._monthly_rank = circle_data.get("monthly_rank")
-            self._last_month_rank = circle_data.get("last_month_rank")
-            self._yesterday_rank = circle_data.get("yesterday_rank")
-            logger.info(
-                f"Club ranks: monthly_rank={self._monthly_rank}, "
-                f"last_month_rank={self._last_month_rank}, "
-                f"yesterday_rank={self._yesterday_rank}"
+            async with self._session() as session:
+                payload = await self._fetch_month(session, target.year, target.month)
+            if not payload:
+                return None
+
+            meta = CircleMeta.from_response(payload)
+            members = payload.get("members") or []
+            parsed = self._parse_members(members, target.slot) if members else {}
+            self._verify_checksum(parsed, meta.live_points, "live_points")
+
+            return LiveSnapshot(
+                circle_id=str(self.circle_id),
+                jst_day=target.jst_day,
+                as_of=meta.last_live_update,
+                live_points=meta.live_points,
+                live_rank=meta.live_rank,
+                monthly_point=meta.monthly_point,
+                monthly_rank=meta.monthly_rank,
+                members=parsed,
+            )
+        except Exception as e:
+            logger.warning(f"Live fetch failed for circle {self.circle_id}: {e}")
+            return None
+
+    # ------------------------------------------------------------- freshness
+
+    def _log_freshness(self) -> None:
+        m = self._meta
+        final = m.last_updated.isoformat() if m.last_updated else "?"
+        live = m.last_live_update.isoformat() if m.last_live_update else "?"
+        points = f"{m.monthly_point:,}" if m.monthly_point is not None else "?"
+        logger.info(
+            f"🕒 circle {self.circle_id} freshness: last_updated={final}, "
+            f"last_live_update={live}, monthly_point={points}"
+        )
+
+    def _assert_finalized(self, target: SlotTarget) -> None:
+        """Confirm uma.moe has finalized the target JST day for this circle.
+
+        JST day N closes at ``N 15:00 UTC``; the per-circle finalize writes
+        ``last_updated`` at that moment. If that timestamp predates the close,
+        the slot we're about to read is still the running total.
+
+        This replaces the old "did any member's fan count grow?" heuristic, which
+        could not tell a not-yet-published day from a genuinely quiet one.
+        """
+        closed_at = datetime(
+            target.jst_day.year, target.jst_day.month, target.jst_day.day,
+            ROLLOVER_UTC_HOUR, 0, tzinfo=timezone.utc,
+        )
+        last_updated = self._meta.last_updated
+        if last_updated is None:
+            # Older responses (or a schema change) — don't block on a missing field.
+            logger.warning(
+                f"circle {self.circle_id}: no last_updated in response, "
+                f"proceeding without a freshness guarantee"
+            )
+            return
+        if last_updated < closed_at:
+            raise StaleDataError(
+                f"JST day {target.jst_day} closed at {closed_at.isoformat()} but uma.moe "
+                f"last finalized circle {self.circle_id} at {last_updated.isoformat()} — "
+                f"the rollout hasn't reached this circle yet."
             )
 
-            # Capture rollout/freshness fields for diagnostics. Logged once so the
-            # exact field names/semantics can be confirmed on a live run before
-            # they're wired into a precise freshness gate (see is_data_fresh).
-            self._freshness = {}
-            for key in FRESHNESS_FIELDS:
-                if isinstance(rank_source, dict) and key in rank_source:
-                    self._freshness[key] = rank_source.get(key)
-                elif key in circle_data:
-                    self._freshness[f"circle.{key}"] = circle_data.get(key)
-            logger.info(f"🕒 Freshness fields for circle {self.circle_id}: {self._freshness or '(none returned)'}")
+    def _drop_ranks_if_period_mismatch(self, target: SlotTarget) -> None:
+        """Rank fields always describe the *current* JST competition month.
 
-            # Detect end-of-month JST rollover: uma.moe always returns the CURRENT
-            # competition period's rank fields regardless of the year/month query param.
-            # After ~15:00 UTC on the last day of the month, uma.moe has already switched
-            # to next month's competition internally, so ALL rank fields reflect the new
-            # (nearly empty) period. Drop them entirely so the rank section is omitted.
-            now_utc = datetime.now(timezone.utc)
-            now_jst = now_utc + timedelta(hours=9)
-            last_day_of_month = calendar.monthrange(now_utc.year, now_utc.month)[1]
-            if now_utc.day == last_day_of_month and now_jst.month != now_utc.month:
-                logger.warning(
-                    "End-of-month JST rollover detected: uma.moe rank fields already reflect "
-                    "the new competition period. Dropping all rank data to avoid false display."
-                )
-                self._monthly_rank = None
-                self._last_month_rank = None
-                self._yesterday_rank = None
+        Around a month boundary the target day can belong to the period that just
+        ended, in which case the ranks in this response describe a different
+        (nearly empty) period. Drop them rather than display something false.
+        """
+        current_period = in_progress_jst_day(self._now_utc)
+        if (current_period.year, current_period.month) == (target.jst_day.year, target.jst_day.month):
+            return
+        logger.warning(
+            f"Competition period rollover: target JST day {target.jst_day} belongs to "
+            f"{target.jst_day.year}-{target.jst_day.month:02d} but uma.moe is now reporting "
+            f"{current_period.year}-{current_period.month:02d}. Dropping rank data."
+        )
+        self._meta.monthly_rank = None
+        self._meta.last_month_rank = None
+        self._meta.yesterday_rank = None
 
-            if not primary_data or "members" not in primary_data:
-                logger.error("API response missing 'members' field")
-                raise ValueError("Invalid API response structure")
-            
-            members = primary_data.get("members", [])
-            logger.info(f"API returned {len(members)} members")
-            
-            if not members:
-                logger.warning("No members found in API response")
-                return {}
-            
-            # Pass calendar_day to _parse_api_data so it can check if data exists
-            parsed_data = self._parse_api_data(members, endpoint_members=endpoint_members, calendar_day=now.day)
-            logger.info(f"Successfully parsed {len(parsed_data)} active members from API")
-            
-            return parsed_data
-            
-        except aiohttp.ClientError as e:
-            logger.error(f"Network error while fetching from Uma.moe API: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Error during Uma.moe API scraping: {e}")
-            raise
-    
-    def _parse_api_data(self, members: list, endpoint_members: Optional[List] = None, calendar_day: int = None) -> Dict[str, Dict]:
+    def _sanity_check_roster(self, members: List[dict]) -> None:
+        """The members array retains people who left mid-month, so it should never
+        be *shorter* than the live roster. Shorter means a truncated response."""
+        expected = self._meta.member_count
+        if expected and len(members) < expected:
+            logger.warning(
+                f"circle {self.circle_id}: response has {len(members)} member rows but "
+                f"member_count is {expected} — response may be incomplete."
+            )
+
+    def _verify_checksum(self, parsed: Dict[str, Dict], expected_total: Optional[int],
+                         label: str) -> None:
+        """Cross-check our parsed sum against uma.moe's own club total.
+
+        A one-slot indexing error shows up as roughly a full day of fans (~9% of
+        the month's total mid-month), while normal member-churn noise measured
+        ~0.2-0.3%. Anything past the tolerance means we're reading the wrong slot.
         """
-        Parse API member data into scraper format.
-        
-        Uma.moe returns LIFETIME cumulative fans. Converts to monthly by
-        subtracting each member's starting lifetime fans (fans at join).
-        
-        Uma.moe updates around 15:10 UTC with yesterday's data, so we check
-        if current day data exists before using it.
-        
-        Args:
-            members: List of member dicts from the primary (previous) month
-            endpoint_members: Member list from current month (Day 1 only)
-            calendar_day: Current calendar day for data availability checking
-        
-        Returns:
-            Dict mapping viewer_id -> member data
-        """
-        parsed_data = {}
-        
-        now = datetime.now()
-        
-        if now.day == 1:
-            # Day 1: Fetched previous month, use last day of that month
-            current_day = calendar.monthrange(self._fetched_year, self._fetched_month)[1]
-            logger.info(f"Day 1 fallback: using day {current_day} (last day of {self._fetched_year}-{self._fetched_month:02d})")
+        if not expected_total or not parsed:
+            return
+        ours = sum(m["fans"][-1] for m in parsed.values() if m.get("fans"))
+        drift = abs(ours - expected_total) / expected_total
+        if drift > UMAMOE_CHECKSUM_TOLERANCE:
+            logger.error(
+                f"⚠️ circle {self.circle_id}: parsed total {ours:,} deviates "
+                f"{drift:.1%} from {label} {expected_total:,} — likely a slot-index "
+                f"error. Check utils/jst_calendar.py against the API."
+            )
         else:
-            # Day 2+: Check if current day data exists
-            current_day = calendar_day if calendar_day else now.day
-            current_day_index = current_day - 1
-            
-            # Check if current day data exists by sampling active members
-            data_exists = False
-            if members:
-                # Find a member with recent activity to check data availability
-                for member in members:
-                    sample_fans = member.get("daily_fans", [])
-                    if sample_fans and len(sample_fans) > current_day_index and sample_fans[current_day_index] > 0:
-                        data_exists = True
-                        logger.debug(f"Found current day data in member {member.get('trainer_name')}")
-                        break
-            
-            if not data_exists:
-                fallback_day = now.day - 1
-                fallback_idx = fallback_day - 1   # 0-based index for fallback day
-                prev_idx = fallback_day - 2       # 0-based index for the day before that
+            logger.debug(f"Checksum OK vs {label}: {ours:,} vs {expected_total:,} ({drift:.2%})")
 
-                # When falling back past day 1, verify the fallback data is genuinely fresh.
-                # Uma.moe sometimes copies the previous day's values as a placeholder before
-                # publishing the real update (~15:10 UTC). Detect this: if no member shows
-                # fan growth between day fallback_day-1 and fallback_day, it's stale.
-                if fallback_day >= 2 and prev_idx >= 0:
-                    relevant = [
-                        m for m in members
-                        if len(m.get("daily_fans", [])) > fallback_idx
-                        and len(m.get("daily_fans", [])) > prev_idx
-                        and m["daily_fans"][fallback_idx] > 0
-                    ]
-                    any_growth = any(
-                        m["daily_fans"][fallback_idx] > m["daily_fans"][prev_idx]
-                        for m in relevant
-                    )
-                    if relevant and not any_growth:
-                        raise StaleDataError(
-                            f"Day {fallback_day} data appears stale — fan counts are unchanged from "
-                            f"day {fallback_day - 1} for all sampled members. "
-                            f"Uma.moe likely hasn't finished rolling out today's update for this circle yet."
-                        )
+    # --------------------------------------------------------------- parsing
 
-                current_day = fallback_day
-                logger.warning(
-                    f"Current day {now.day} data not available yet (Uma.moe updates ~15:10 UTC). "
-                    f"Using day {current_day} data."
-                )
-                # Slot 'current_day' (index current_day-1) holds competition results from
-                # day current_day-1 (published the following day at ~15:10 UTC).
-                # Use that competition date so expected quota is calculated correctly.
-                self._data_date = date(now.year, now.month, max(1, current_day - 1))
-            else:
-                # Current day data exists (Day 5 on Feb 5 = Feb 4 competition)
-                # current_day = day number to read from array
-                # _data_date = actual competition date it represents
-                current_day = now.day
-                self._data_date = date(now.year, now.month, now.day - 1)
-                logger.info(f"Day {current_day} data is available (represents day {now.day - 1} competition results)")
-        
-        self.current_day_count = current_day
-        
-        # Build endpoint lookup for Day 1 correction
-        endpoint_totals = {}
-        if endpoint_members:
-            for m in endpoint_members:
-                vid = m.get("viewer_id")
-                fans = m.get("daily_fans", [])
-                if vid and fans and len(fans) > 0 and fans[0] > 0:
-                    endpoint_totals[str(vid)] = fans[0]
-            logger.info(f"Endpoint correction available for {len(endpoint_totals)} members")
-        
+    def _parse_members(self, members: List[dict], slot: int) -> Dict[str, Dict]:
+        """Convert lifetime cumulative fans into monthly cumulative fans up to ``slot``.
+
+        Uma.moe returns LIFETIME totals. Monthly is derived by subtracting each
+        member's first non-zero entry (their total when they joined / the month
+        began). That convention is preserved from the original implementation —
+        it reproduces uma.moe's own ``monthly_point`` to within ~0.3%.
+        """
+        parsed: Dict[str, Dict] = {}
+
         for member in members:
             viewer_id = member.get("viewer_id")
             trainer_name = member.get("trainer_name")
-            lifetime_fans = member.get("daily_fans", [])
-            
+            lifetime_fans = member.get("daily_fans") or []
+
             if not viewer_id or not trainer_name:
-                logger.warning(f"Skipping member with missing data: viewer_id={viewer_id}, name={trainer_name}")
+                logger.warning(
+                    f"Skipping member with missing data: viewer_id={viewer_id}, name={trainer_name}"
+                )
                 continue
-            
-            # Skip members who left the club (0 fans on current day)
-            current_day_index = current_day - 1
-            if current_day_index >= len(lifetime_fans):
-                logger.warning(f"Current day {current_day} exceeds array length for {trainer_name}")
+
+            if slot >= len(lifetime_fans):
+                logger.warning(
+                    f"Slot {slot} exceeds array length {len(lifetime_fans)} for {trainer_name}"
+                )
                 continue
-            
-            current_day_lifetime_fans = lifetime_fans[current_day_index]
-            if current_day_lifetime_fans == 0:
+
+            if lifetime_fans[slot] == 0:
                 logger.debug(f"Skipping inactive member (left club): {trainer_name} (ID: {viewer_id})")
                 continue
-            
-            viewer_id_str = str(viewer_id)
-            
-            # Detect join day and starting baseline.
-            # Transferred members carry their pre-existing career fan total into the array,
-            # so it may be flat and positive from day 1 (e.g. [50M,50M,50M,50M,50M]) rather
-            # than starting at 0 — the first positive day is just their old total, not when
-            # they actually joined this club. If that value never changes across the whole
-            # window we have, there's no evidence of any progress since then (a genuinely
-            # active member would show growth), so fall back to "joined today" rather than
-            # back-charging quota for days we can't confirm they were even in this club.
-            join_day = 1
-            starting_lifetime_fans = 0
 
-            baseline_idx = None
-            for idx, fans in enumerate(lifetime_fans[:current_day], start=1):
-                if fans > 0:
-                    baseline_idx = idx
-                    starting_lifetime_fans = fans
-                    break
+            join_day, baseline = self._detect_baseline(lifetime_fans, slot)
 
-            if baseline_idx is not None:
-                fully_flat = all(
-                    lifetime_fans[idx] == starting_lifetime_fans
-                    for idx in range(baseline_idx, current_day)
-                )
-                join_day = current_day if fully_flat else baseline_idx
-            else:
-                join_day = current_day
-
-            # Convert lifetime cumulative fans to monthly cumulative fans.
             # Negative values are transfer markers — treat them as 0.
-            monthly_fans = []
-            for day_idx in range(current_day):
-                lifetime_total = lifetime_fans[day_idx]
-                if lifetime_total <= 0:
-                    fans_this_month = 0
-                else:
-                    fans_this_month = lifetime_total - starting_lifetime_fans
-                monthly_fans.append(fans_this_month)
-            
-            # Day 1 endpoint correction
-            if endpoint_totals and viewer_id_str in endpoint_totals:
-                endpoint_lifetime = endpoint_totals[viewer_id_str]
-                if endpoint_lifetime >= starting_lifetime_fans:
-                    corrected_monthly = endpoint_lifetime - starting_lifetime_fans
-                    if corrected_monthly > monthly_fans[-1]:
-                        logger.debug(
-                            f"Endpoint correction for {trainer_name}: "
-                            f"{monthly_fans[-1]:,} → {corrected_monthly:,} "
-                            f"(+{corrected_monthly - monthly_fans[-1]:,} recovered)"
-                        )
-                        monthly_fans[-1] = corrected_monthly
-                else:
-                    logger.warning(
-                        f"Endpoint correction skipped for {trainer_name}: "
-                        f"endpoint lifetime ({endpoint_lifetime:,}) < starting ({starting_lifetime_fans:,})"
-                    )
-            
-            parsed_data[viewer_id_str] = {
+            monthly_fans = [
+                0 if lifetime_fans[i] <= 0 else lifetime_fans[i] - baseline
+                for i in range(slot + 1)
+            ]
+
+            parsed[str(viewer_id)] = {
                 "name": trainer_name,
-                "trainer_id": viewer_id_str,
+                "trainer_id": str(viewer_id),
                 "fans": monthly_fans,
-                "join_day": join_day
+                "join_day": join_day,
             }
-            
+
             logger.debug(
                 f"Parsed {trainer_name}: joined day {join_day}, "
-                f"lifetime: {starting_lifetime_fans:,} → {current_day_lifetime_fans:,}, "
+                f"lifetime: {baseline:,} → {lifetime_fans[slot]:,}, "
                 f"monthly: {monthly_fans[-1]:,}"
             )
-        
-        return parsed_data
-    
+
+        return parsed
+
+    @staticmethod
+    def _detect_baseline(lifetime_fans: List[int], slot: int) -> Tuple[int, int]:
+        """Return ``(join_day, starting_lifetime_fans)`` for a member.
+
+        Transferred members carry their pre-existing career total into the array,
+        so it can be flat and positive from day 1 rather than starting at 0 — the
+        first positive day is just their old total, not when they joined. If that
+        value never changes across the whole window, there's no evidence of
+        progress since then (an active member would show growth), so treat them as
+        having joined today rather than back-charging quota for unconfirmed days.
+        """
+        window = lifetime_fans[:slot + 1]
+        baseline_idx = next((i for i, f in enumerate(window) if f > 0), None)
+
+        if baseline_idx is None:
+            return slot + 1, 0
+
+        baseline = window[baseline_idx]
+        fully_flat = all(f == baseline for f in window[baseline_idx:])
+        join_day = (slot + 1) if fully_flat else (baseline_idx + 1)
+        return join_day, baseline
+
+    # --------------------------------------------------------------- getters
+
     def get_current_day(self) -> int:
-        """Get the current day number"""
+        """1-based day number of the slot that was read."""
         return self.current_day_count
-    
+
     def get_data_date(self) -> Optional[date]:
-        """
-        Returns the date the scraped data belongs to when fallback was used,
-        or None when the data matches today.
-        """
+        """Calendar date the scraped data is attributed to."""
         return self._data_date
 
+    def get_slot_target(self) -> Optional[SlotTarget]:
+        """The resolved slot for the last scrape (diagnostics)."""
+        return self._target
+
+    def get_fetched_period(self) -> Tuple[Optional[int], Optional[int]]:
+        """``(year, month)`` of the data array actually fetched.
+
+        Differs from the calendar month around a boundary, where the last closed
+        JST day still belongs to the previous month.
+        """
+        if self._target is None:
+            return None, None
+        return self._target.year, self._target.month
+
     def get_monthly_rank(self) -> Optional[int]:
-        """Return the club's current monthly position rank (from circle.monthly_rank)."""
-        return self._monthly_rank
+        return self._meta.monthly_rank
 
     def get_last_month_rank(self) -> Optional[int]:
-        """Return the club's previous month position rank (from circle.last_month_rank)."""
-        return self._last_month_rank
+        return self._meta.last_month_rank
 
     def get_yesterday_rank(self) -> Optional[int]:
-        """Return the club's rank as of yesterday (from circle.yesterday_rank)."""
-        return self._yesterday_rank
+        return self._meta.yesterday_rank
+
+    def get_meta(self) -> CircleMeta:
+        """Full circle-level metadata from the last response."""
+        return self._meta
 
     def get_freshness(self) -> Dict:
-        """Return the raw rollout/freshness fields captured from the last response."""
-        return self._freshness
+        """Freshness timestamps from the last response, for diagnostics."""
+        m = self._meta
+        return {
+            "last_updated": m.last_updated.isoformat() if m.last_updated else None,
+            "last_live_update": m.last_live_update.isoformat() if m.last_live_update else None,
+            "yesterday_updated": m.yesterday_updated.isoformat() if m.yesterday_updated else None,
+            "monthly_point": m.monthly_point,
+            "live_points": m.live_points,
+        }
