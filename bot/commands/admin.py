@@ -14,11 +14,12 @@ from typing import Optional
 from scrapers import ChronoGenesisScraper, UmaMoeAPIScraper
 from services import QuotaCalculator, BombManager, ReportGenerator, MonthlyInfoService
 from services.tally_renderer import generate_tally_image
+from services.recalculator import recalculate_club
 from models import Member, QuotaRequirement, BotSettings, Club, ClubRankHistory
 from models.quota_requirement import QuotaSchedule
 from config.settings import (
     USE_UMAMOE_API, UMAMOE_RATE_PER_MIN, UMAMOE_RATE_BURST,
-    COLOR_INFO, COLOR_BOMB, COLOR_ON_TRACK,
+    COLOR_INFO, COLOR_BOMB, COLOR_ON_TRACK, COLOR_BEHIND,
 )
 from utils.rate_limiter import umamoe_limiter, PRIORITY_INTERACTIVE
 from utils.timezone_helper import resolve_timezone
@@ -777,9 +778,18 @@ class AdminCommands(commands.Cog):
             logger.error(f"Error in bomb_status: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
 
-    @app_commands.command(name="recalculate", description="Recalculate quota, days-behind, and bomb statuses without clearing data")
+    @app_commands.command(
+        name="recalculate",
+        description="Re-fetch from Uma.moe and repair this month's quota history and bombs",
+    )
     async def recalculate(self, interaction: discord.Interaction, club: str):
-        """Fully recalculate quota history (expected_fans/deficit_surplus/days_behind) and bombs"""
+        """Repair a club's month from the authoritative source.
+
+        Use this whenever the numbers look wrong. It re-fetches the month from
+        Uma.moe and rewrites the stored fan counts, join dates, deficits,
+        days-behind counts and bombs to match — rather than recomputing from
+        stored values that may themselves be wrong.
+        """
         await interaction.response.defer()
 
         try:
@@ -795,139 +805,77 @@ class AdminCommands(commands.Cog):
             if not await ensure_can_manage(interaction, club_obj):
                 return
 
-            from config.database import db as _db
-
             club_tz = resolve_timezone(club_obj.timezone)
             current_date = datetime.now(club_tz).date()
 
-            await interaction.followup.send(f"🔄 Recalculating for {club}...")
-
-            # Step 1: Recompute expected_fans/deficit_surplus for all members in the current
-            # month from scratch (using current quota rules and each member's join_date), then
-            # recalculate days_behind by walking the corrected history in date order.
-            members = await Member.get_all_active(club_obj.club_id)
-            updated_entries = 0
-            corrected_join_dates = 0
-
-            # Re-derive each member's join date from uma.moe's full-month fan history
-            # (the authoritative source). This repairs join dates that got stamped to a
-            # wrong day, which would otherwise zero out expected quota and show everyone
-            # as on-track. Best-effort: if the scrape fails we skip correction and just
-            # recompute deficits from the stored join dates.
-            from datetime import date as _date
-            import calendar as _calendar
-
-            detected_join = {}
-            if club_obj.circle_id and club_obj.is_circle_id_valid():
-                try:
-                    _scraper = UmaMoeAPIScraper(club_obj.circle_id, priority=PRIORITY_INTERACTIVE)
-                    _scraped = await _scraper.scrape()
-                    _ref = _scraper.get_data_date() or current_date
-                    _last_day = _calendar.monthrange(_ref.year, _ref.month)[1]
-                    for _tid, _md in _scraped.items():
-                        _jday = _md.get("join_day")
-                        if not _jday:
-                            continue
-                        if 1 <= _jday <= _last_day:
-                            detected_join[str(_tid)] = _date(_ref.year, _ref.month, _jday)
-                        elif _ref.month == 1:
-                            detected_join[str(_tid)] = _date(_ref.year - 1, 12, _jday)
-                        else:
-                            detected_join[str(_tid)] = _date(_ref.year, _ref.month - 1, _jday)
-                    logger.info(f"recalculate: re-derived join days for {len(detected_join)} members of {club_obj.club_name}")
-                except Exception as e:
-                    logger.warning(f"recalculate: join-date re-derivation skipped for {club_obj.club_name}: {e}")
-
-            # Load the quota timeline once. The expected-fans call below sits in a
-            # loop nested inside this one, so resolving it per lookup made this
-            # command issue members x rows x days queries.
-            schedule = await QuotaSchedule.load(club_obj.club_id)
-
-            for member in members:
-                rows = await _db.fetch(
-                    """
-                    SELECT id, date, cumulative_fans
-                    FROM quota_history
-                    WHERE member_id = $1
-                      AND date_part('year', date) = $2
-                      AND date_part('month', date) = $3
-                    ORDER BY date ASC
-                    """,
-                    member.member_id, current_date.year, current_date.month
-                )
-
-                # Correct a wrong join_date from the authoritative fan-history detection.
-                # (The scraper already resolves transfers/flat-backfill correctly, so this
-                # both fixes backdated dates and stale "joined today" stamps.)
-                detected = detected_join.get(str(member.trainer_id)) if member.trainer_id else None
-                if detected and detected != member.join_date:
-                    logger.info(
-                        f"recalculate: correcting {member.trainer_name} join_date "
-                        f"{member.join_date} -> {detected}"
-                    )
-                    await member.update_join_date(detected)
-                    corrected_join_dates += 1
-
-                consecutive = 0
-                for row in rows:
-                    expected_fans = await QuotaCalculator.calculate_expected_fans(
-                        club_obj.club_id, member.join_date, row['date'],
-                        club_obj.quota_period, schedule=schedule
-                    )
-                    deficit_surplus = QuotaCalculator.calculate_deficit_surplus(
-                        row['cumulative_fans'], expected_fans
-                    )
-
-                    if deficit_surplus < 0:
-                        consecutive += 1
-                    else:
-                        consecutive = 0
-
-                    await _db.execute(
-                        """
-                        UPDATE quota_history
-                        SET expected_fans = $1, deficit_surplus = $2, days_behind = $3
-                        WHERE id = $4
-                        """,
-                        expected_fans, deficit_surplus, consecutive, row['id']
-                    )
-                    updated_entries += 1
-
-            # Step 2: Deactivate all current bombs and re-evaluate from scratch.
-            await _db.execute(
-                "UPDATE bombs SET is_active = FALSE, deactivation_date = $1 WHERE club_id = $2 AND is_active = TRUE",
-                current_date, club_obj.club_id
+            await interaction.followup.send(
+                f"🔄 Re-fetching **{club}** from Uma.moe and repairing this month…"
             )
-            newly_activated = await self.bomb_manager.check_and_activate_bombs(club_obj, current_date)
 
+            result = await recalculate_club(club_obj, current_date)
+
+            colour = COLOR_BEHIND if result.warnings else COLOR_ON_TRACK
             embed = discord.Embed(
-                title=f"✅ Recalculation Complete - {club}",
-                description=(
-                    f"**History entries updated:** {updated_entries}\n"
-                    f"**Join dates corrected:** {corrected_join_dates}\n"
-                    f"**Bombs cleared and re-evaluated**\n"
-                    f"**Bombs re-activated:** {len(newly_activated)}\n\n"
-                    "Expected fans, deficits, days-behind counts, and bomb statuses now reflect current rules.\n"
-                    "Run `/force_check` to generate a fresh report."
-                ),
-                color=discord.Color.green(),
-                timestamp=discord.utils.utcnow()
+                title=f"✅ Recalculation complete — {club}",
+                colour=colour,
+                timestamp=discord.utils.utcnow(),
             )
-            if newly_activated:
-                reactivated_names = []
-                for bomb in newly_activated:
-                    member = await Member.get_by_id(bomb.member_id)
-                    if member:
-                        reactivated_names.append(member.trainer_name)
-                embed.add_field(
-                    name="💣 Re-activated Bombs",
-                    value="\n".join(reactivated_names) or "None",
-                    inline=False
+
+            if result.month:
+                embed.description = (
+                    f"Rebuilt **{result.month[0]}-{result.month[1]:02d}** from Uma.moe."
                 )
-            embed.set_footer(text=f"Recalculated by {interaction.user}")
+
+            if result.repaired_anything:
+                fixed = []
+                if result.fans_corrected:
+                    fixed.append(f"**{result.fans_corrected}** wrong fan totals rewritten")
+                if result.rows_added:
+                    fixed.append(f"**{result.rows_added}** missing days filled in")
+                if result.join_dates_fixed:
+                    fixed.append(f"**{result.join_dates_fixed}** join dates corrected")
+                embed.add_field(name="🔧 Repaired", value="\n".join(fixed), inline=False)
+            else:
+                embed.add_field(
+                    name="🔧 Repaired",
+                    value="_nothing was wrong — stored data already matched Uma.moe_",
+                    inline=False,
+                )
+
+            embed.add_field(name="Rows rewritten", value=f"{result.rows_written:,}", inline=True)
+            embed.add_field(
+                name="Bombs",
+                value=f"{result.bombs_cleared} cleared → {result.bombs_activated} re-armed",
+                inline=True,
+            )
+            if result.members_not_in_api:
+                embed.add_field(
+                    name="Not in Uma.moe",
+                    value=f"{result.members_not_in_api} member(s) left untouched",
+                    inline=True,
+                )
+
+            if result.activated_names:
+                shown = result.activated_names[:15]
+                more = len(result.activated_names) - len(shown)
+                embed.add_field(
+                    name="💣 Bombs re-armed",
+                    value="\n".join(shown) + (f"\n_…and {more} more_" if more else ""),
+                    inline=False,
+                )
+
+            for warning in result.warnings:
+                embed.add_field(name="⚠️ Partial", value=warning, inline=False)
+
+            embed.set_footer(text=f"Run /force_check for a fresh report · by {interaction.user}")
             await interaction.followup.send(embed=embed)
-            logger.info(f"Recalculation performed for {club} by {interaction.user}: "
-                        f"{updated_entries} entries updated, {len(newly_activated)} bombs re-activated")
+
+            logger.info(
+                f"recalculate {club} by {interaction.user}: "
+                f"{result.rows_written} rows, {result.fans_corrected} fans corrected, "
+                f"{result.rows_added} added, {result.join_dates_fixed} join dates, "
+                f"bombs {result.bombs_cleared}->{result.bombs_activated}"
+            )
 
         except Exception as e:
             logger.error(f"Error in recalculate: {e}", exc_info=True)

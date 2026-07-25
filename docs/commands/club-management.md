@@ -70,3 +70,34 @@ Modify settings for an existing club.
 | `bombs_enabled` | No | Enable or disable bomb system (`true`/`false`) |
 
 Only include the parameters you want to change.
+
+
+---
+
+## /recalculate
+
+Re-fetch the current month from Uma.moe and repair everything that derives from it.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `club` | Yes | Target club |
+
+Use this whenever the numbers look wrong. Unlike a normal scrape, it treats Uma.moe
+as the source of truth and **overwrites** what's stored:
+
+- Rewrites each member's daily fan totals for the whole month
+- Fills in any days that are missing
+- Re-derives join dates from the fan history
+- Recomputes expected fans, deficits and days-behind
+- Clears every bomb and re-arms only the ones the corrected history justifies
+
+The report tells you what was actually wrong — how many fan totals were rewritten,
+days filled in, and join dates corrected. If nothing was wrong it says so.
+
+Members that Uma.moe no longer returns (they left) are left untouched.
+
+If Uma.moe can't be reached, it still recomputes deficits and bombs from stored
+values and flags the result as partial rather than failing outright.
+
+!!! note
+    Run `/force_check` afterwards to post a fresh report with the corrected numbers.

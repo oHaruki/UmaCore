@@ -464,6 +464,181 @@ class TestJoinDayIsFree:
             "returning member's join_date was not reset, so they inherit old quota debt"
 
 
+class TestRecalculateRepairs:
+    """/recalculate must repair wrong stored fan counts, not recompute from them.
+
+    Every row written before the JST slot fix holds an in-progress day's total
+    rather than a finished one. Recomputing deficits from those values would
+    faithfully reproduce the wrong answer, so the repair has to overwrite
+    cumulative_fans from uma.moe's month array.
+    """
+
+    def _patched(self, monkeypatch, backend, now):
+        """Point the recalculator's scraper at the fake API."""
+        from tests.test_month_simulation import make_scraper
+        from services import recalculator
+
+        class Stub:
+            def __init__(self, circle_id, **kw):
+                self._s = make_scraper(backend, now)
+            async def scrape(self):
+                return await self._s.scrape()
+            def get_fetched_period(self):
+                return self._s.get_fetched_period()
+            def get_data_date(self):
+                return self._s.get_data_date()
+
+        monkeypatch.setattr(recalculator, "UmaMoeAPIScraper", Stub)
+
+    def test_overwrites_wrong_fan_counts(self, prepared_db, monkeypatch):
+        async def go(db):
+            from datetime import datetime, timezone as tz
+            from services.quota_calculator import QuotaCalculator
+            from services.recalculator import recalculate_club
+            from tests.fake_umamoe import FakeUmaMoe, default_roster
+            from tests.test_month_simulation import make_scraper
+
+            backend = FakeUmaMoe(members=default_roster())
+            now = datetime(2026, 7, 20, 17, tzinfo=tz.utc)
+            self._patched(monkeypatch, backend, now)
+
+            club = await _make_club(daily_quota=2_000_000)
+            qc = QuotaCalculator()
+            scraper = make_scraper(backend, now)
+            parsed = await scraper.scrape()
+            await qc.process_scraped_data(
+                club.club_id, parsed, scraper.get_data_date(), scraper.get_current_day())
+
+            # Corrupt every stored fan count, as the old buggy code effectively did.
+            await db.execute(
+                "UPDATE quota_history SET cumulative_fans = cumulative_fans + 99999999 "
+                "WHERE club_id = $1", club.club_id)
+            # Compare the maximum rather than the sum: the repair also backfills
+            # the rest of the month, so the row count (and total) legitimately grows.
+            corrupted = await db.fetchval(
+                "SELECT max(cumulative_fans) FROM quota_history WHERE club_id=$1",
+                club.club_id)
+
+            result = await recalculate_club(club, date(2026, 7, 20))
+            repaired = await db.fetchval(
+                "SELECT max(cumulative_fans) FROM quota_history WHERE club_id=$1",
+                club.club_id)
+            return result, corrupted, repaired
+
+        result, corrupted, repaired = run_db(prepared_db, go)
+        assert result.fans_corrected > 0, "recalculate did not detect the wrong values"
+        assert repaired == corrupted - 99_999_999, (
+            f"wrong fan counts were not overwritten: {corrupted:,} -> {repaired:,}"
+        )
+
+    def test_reports_nothing_to_fix_when_data_is_already_right(self, prepared_db, monkeypatch):
+        async def go(db):
+            from datetime import datetime, timezone as tz
+            from services.quota_calculator import QuotaCalculator
+            from services.recalculator import recalculate_club
+            from tests.fake_umamoe import FakeUmaMoe, default_roster
+            from tests.test_month_simulation import make_scraper
+
+            backend = FakeUmaMoe(members=default_roster())
+            now = datetime(2026, 7, 20, 17, tzinfo=tz.utc)
+            self._patched(monkeypatch, backend, now)
+
+            club = await _make_club(daily_quota=2_000_000)
+            scraper = make_scraper(backend, now)
+            parsed = await scraper.scrape()
+            await QuotaCalculator().process_scraped_data(
+                club.club_id, parsed, scraper.get_data_date(), scraper.get_current_day())
+
+            await recalculate_club(club, date(2026, 7, 20))   # first pass fills gaps
+            second = await recalculate_club(club, date(2026, 7, 20))
+            return second
+
+        result = run_db(prepared_db, go)
+        assert result.fans_corrected == 0, "reported corrections on already-correct data"
+        assert result.rows_added == 0
+        assert not result.repaired_anything
+
+    def test_fills_in_missing_days(self, prepared_db, monkeypatch):
+        async def go(db):
+            from datetime import datetime, timezone as tz
+            from services.quota_calculator import QuotaCalculator
+            from services.recalculator import recalculate_club
+            from tests.fake_umamoe import FakeUmaMoe, default_roster
+            from tests.test_month_simulation import make_scraper
+
+            backend = FakeUmaMoe(members=default_roster())
+            now = datetime(2026, 7, 20, 17, tzinfo=tz.utc)
+            self._patched(monkeypatch, backend, now)
+
+            club = await _make_club(daily_quota=2_000_000)
+            scraper = make_scraper(backend, now)
+            parsed = await scraper.scrape()
+            await QuotaCalculator().process_scraped_data(
+                club.club_id, parsed, scraper.get_data_date(), scraper.get_current_day())
+
+            before = await db.fetchval(
+                "SELECT count(*) FROM quota_history WHERE club_id=$1", club.club_id)
+            result = await recalculate_club(club, date(2026, 7, 20))
+            after = await db.fetchval(
+                "SELECT count(*) FROM quota_history WHERE club_id=$1", club.club_id)
+            return result, before, after
+
+        result, before, after = run_db(prepared_db, go)
+        assert result.rows_added > 0, "a normal scrape stores one day; recalculate " \
+                                      "should backfill the rest of the month"
+        assert after > before
+
+    def test_corrects_a_wrong_join_date(self, prepared_db, monkeypatch):
+        async def go(db):
+            from datetime import datetime, timezone as tz
+            from services.quota_calculator import QuotaCalculator
+            from services.recalculator import recalculate_club
+            from tests.fake_umamoe import FakeUmaMoe, default_roster
+            from tests.test_month_simulation import make_scraper
+
+            backend = FakeUmaMoe(members=default_roster())
+            now = datetime(2026, 7, 20, 17, tzinfo=tz.utc)
+            self._patched(monkeypatch, backend, now)
+
+            club = await _make_club(daily_quota=2_000_000)
+            scraper = make_scraper(backend, now)
+            parsed = await scraper.scrape()
+            await QuotaCalculator().process_scraped_data(
+                club.club_id, parsed, scraper.get_data_date(), scraper.get_current_day())
+
+            await db.execute(
+                "UPDATE members SET join_date = $2 WHERE club_id = $1",
+                club.club_id, date(2026, 7, 1))
+            result = await recalculate_club(club, date(2026, 7, 20))
+            return result
+
+        assert run_db(prepared_db, go).join_dates_fixed > 0
+
+    def test_survives_uma_moe_being_unreachable(self, prepared_db, monkeypatch):
+        """Must still recompute deficits and bombs, and say it was partial."""
+        async def go(db):
+            from services import recalculator
+            from services.quota_calculator import QuotaCalculator
+            from services.recalculator import recalculate_club
+
+            class Dead:
+                def __init__(self, *a, **kw): pass
+                async def scrape(self): raise ConnectionError("uma.moe down")
+            monkeypatch.setattr(recalculator, "UmaMoeAPIScraper", Dead)
+
+            club = await _make_club(daily_quota=1_000_000)
+            await QuotaCalculator().process_scraped_data(
+                club.club_id,
+                {"1": {"name": "A", "trainer_id": "1",
+                       "fans": [0] * 9 + [3_000_000], "join_day": 1}},
+                date(2026, 7, 10), 10)
+            return await recalculate_club(club, date(2026, 7, 10))
+
+        result = run_db(prepared_db, go)
+        assert result.warnings, "a failed fetch must be reported, not silently ignored"
+        assert result.rows_written > 0, "derived values should still be recomputed"
+
+
 class TestScrapeTimestamp:
     """The web club page reads MAX(created_at) as "when did the scrape last run".
 
