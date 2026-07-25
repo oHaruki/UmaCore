@@ -15,7 +15,10 @@ from services import QuotaCalculator, BombManager, ReportGenerator, MonthlyInfoS
 from services.tally_renderer import generate_tally_image
 from models import Member, QuotaRequirement, BotSettings, Club, ClubRankHistory
 from models.quota_requirement import QuotaSchedule
-from config.settings import USE_UMAMOE_API, UMAMOE_RATE_PER_MIN, UMAMOE_RATE_BURST
+from config.settings import (
+    USE_UMAMOE_API, UMAMOE_RATE_PER_MIN, UMAMOE_RATE_BURST,
+    COLOR_INFO, COLOR_BOMB, COLOR_ON_TRACK,
+)
 from utils.rate_limiter import umamoe_limiter
 from utils.timezone_helper import resolve_timezone
 from utils.permissions import ensure_can_manage
@@ -1097,6 +1100,109 @@ class AdminCommands(commands.Cog):
         await interaction.followup.send(embed=embed)
         logger.info(f"limiter_test: mode={mode_val} count={count} peak60={peak} "
                     f"rate={rate:.0f}/min elapsed={elapsed:.1f}s errors={len(errors)}")
+
+    @app_commands.command(
+        name="backup",
+        description="Run a database backup now, or show the retained backups",
+    )
+    @app_commands.choices(action=[
+        app_commands.Choice(name="status (list retained backups)", value="status"),
+        app_commands.Choice(name="now (run a backup immediately)", value="now"),
+    ])
+    async def backup(self, interaction: discord.Interaction,
+                     action: app_commands.Choice[str] = None):
+        """Inspect or trigger the daily database backup.
+
+        Owner-only: it reveals host paths and dumps the whole database, which is
+        not something a guild admin of an invited server should be able to do.
+        """
+        if not await self.bot.is_owner(interaction.user):
+            await interaction.response.send_message(
+                "❌ `/backup` is a developer tool restricted to the bot owner.",
+                ephemeral=True,
+            )
+            return
+
+        from pathlib import Path
+        from config.settings import (
+            DATABASE_URL, DB_BACKUP_DIR, DB_BACKUP_KEEP, DB_BACKUP_ENABLED,
+            DB_BACKUP_UTC_TIME, DB_BACKUP_TIMEOUT_SEC,
+        )
+        from services.backup_service import (
+            create_backup, list_backups, find_pg_dump,
+        )
+
+        action_val = action.value if action else "status"
+        backup_dir = Path(DB_BACKUP_DIR)
+
+        if action_val == "status":
+            existing = list_backups(backup_dir)
+            pg_dump = find_pg_dump()
+
+            embed = discord.Embed(
+                title="💾 Database Backups",
+                colour=COLOR_INFO if pg_dump else COLOR_BOMB,
+            )
+            embed.add_field(
+                name="Schedule",
+                value=(f"{'Enabled' if DB_BACKUP_ENABLED else '**Disabled**'} — "
+                       f"daily at {DB_BACKUP_UTC_TIME} UTC, keeping {DB_BACKUP_KEEP}"),
+                inline=False,
+            )
+            embed.add_field(
+                name="pg_dump",
+                value=f"`{pg_dump}`" if pg_dump else
+                      "❌ **not found** — install `postgresql-client` or set `PG_DUMP_PATH`",
+                inline=False,
+            )
+            embed.add_field(name="Directory", value=f"`{backup_dir.resolve()}`", inline=False)
+
+            if existing:
+                total = sum(p.stat().st_size for p in existing)
+                lines = [
+                    f"`{p.name}` — {p.stat().st_size / 1024:.0f} KB"
+                    for p in existing[:10]
+                ]
+                embed.add_field(
+                    name=f"Retained ({len(existing)}, {total / 1024 / 1024:.1f} MB total)",
+                    value="\n".join(lines),
+                    inline=False,
+                )
+            else:
+                embed.add_field(
+                    name="Retained",
+                    value="_none yet_" + ("" if DB_BACKUP_ENABLED else " (backups are disabled)"),
+                    inline=False,
+                )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # action == "now"
+        await interaction.response.defer(ephemeral=True)
+        result = await create_backup(
+            database_url=DATABASE_URL, backup_dir=backup_dir,
+            keep=DB_BACKUP_KEEP, timeout_sec=DB_BACKUP_TIMEOUT_SEC,
+        )
+
+        if result.ok:
+            embed = discord.Embed(
+                title="✅ Backup complete",
+                description=f"`{result.path.name}`",
+                colour=COLOR_ON_TRACK,
+            )
+            embed.add_field(name="Size", value=result.size_human)
+            embed.add_field(name="Took", value=f"{result.duration_sec:.1f}s")
+            embed.add_field(name="Retained", value=str(len(list_backups(backup_dir))))
+            if result.pruned:
+                embed.set_footer(text=f"Pruned {result.pruned} old backup(s)")
+        else:
+            embed = discord.Embed(
+                title="❌ Backup failed",
+                description=result.error,
+                colour=COLOR_BOMB,
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        logger.info(f"/backup now → ok={result.ok} error={result.error}")
 
     # Register autocomplete for all club arguments
     set_quota.autocomplete('club')(club_autocomplete)

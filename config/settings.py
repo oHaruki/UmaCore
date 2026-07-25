@@ -62,6 +62,16 @@ SCRAPE_MAX_FRESHNESS_RETRIES = int(os.getenv("SCRAPE_MAX_FRESHNESS_RETRIES", "4"
 SCRAPE_FRESHNESS_RETRY_DELAY_SEC = int(os.getenv("SCRAPE_FRESHNESS_RETRY_DELAY_SEC", "60"))
 SCRAPE_MAX_CONCURRENCY = int(os.getenv("SCRAPE_MAX_CONCURRENCY", "8"))    # clubs processed in parallel
 
+# Database backups (run by the bot itself — no cron entry needed).
+# Requires the postgresql client on the host for pg_dump; set PG_DUMP_PATH if it
+# isn't on PATH. Dumps land in DB_BACKUP_DIR and only the newest
+# DB_BACKUP_KEEP are retained.
+DB_BACKUP_ENABLED = os.getenv("DB_BACKUP_ENABLED", "true").lower() == "true"
+DB_BACKUP_DIR = os.getenv("DB_BACKUP_DIR", "backups")
+DB_BACKUP_KEEP = int(os.getenv("DB_BACKUP_KEEP", "7"))          # how many dumps to keep
+DB_BACKUP_UTC_TIME = os.getenv("DB_BACKUP_UTC_TIME", "03:30")   # HH:MM UTC, quiet hour
+DB_BACKUP_TIMEOUT_SEC = int(os.getenv("DB_BACKUP_TIMEOUT_SEC", "600"))
+
 # Timezone Configuration
 TIMEZONE = "Europe/Amsterdam"  # CEST
 DAILY_REPORT_TIME = "16:00"

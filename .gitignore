@@ -252,6 +252,12 @@ test_*.py
 scratch_*.py
 playground/
 
+# Database dumps written by the in-bot daily backup. These contain the full
+# member table — never commit them.
+backups/
+*.sql.gz
+*.sql.gz.partial
+
 # Downloaded data
 data/
 scraped_data/

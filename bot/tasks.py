@@ -8,6 +8,7 @@ import logging
 import asyncio
 
 import os
+from pathlib import Path
 
 from models import Club, Member, ClubRankHistory, QuotaRequirement
 from scrapers import ChronoGenesisScraper, UmaMoeAPIScraper, StaleDataError
@@ -18,9 +19,12 @@ from services import (
 from services.tally_renderer import generate_tally_image
 from utils.timezone_helper import resolve_timezone
 from utils.jst_calendar import ROLLOVER_UTC_HOUR
+from services.backup_service import create_backup
 from config.settings import (
     USE_UMAMOE_API, SCRAPE_ROLLOVER_GRACE_SEC, SCRAPE_MAX_FRESHNESS_RETRIES,
     SCRAPE_FRESHNESS_RETRY_DELAY_SEC, SCRAPE_MAX_CONCURRENCY,
+    DATABASE_URL, DB_BACKUP_ENABLED, DB_BACKUP_DIR, DB_BACKUP_KEEP,
+    DB_BACKUP_UTC_TIME, DB_BACKUP_TIMEOUT_SEC,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +43,16 @@ class BotTasks:
         # Track last run per club per day (club_id_YYYY-MM-DD -> True)
         self.last_runs = {}
 
+        # Parse the backup time once; fall back to a quiet default if malformed.
+        try:
+            bh, bm = map(int, DB_BACKUP_UTC_TIME.split(":"))
+            self._backup_time = time(bh, bm)
+        except Exception:
+            logger.warning(
+                f"Invalid DB_BACKUP_UTC_TIME '{DB_BACKUP_UTC_TIME}', defaulting to 03:30 UTC"
+            )
+            self._backup_time = time(3, 30)
+
         # Time-ordered dispatcher: the tick enqueues due clubs, the scheduler
         # releases them in dispatch order and re-queues fetches that came back
         # stale (uma.moe hadn't finalized that circle yet).
@@ -55,13 +69,45 @@ class BotTasks:
         """Start all scheduled tasks"""
         self.scheduler.start()
         self.scrape_tick.start()
+        if DB_BACKUP_ENABLED:
+            self.daily_backup.change_interval(time=self._backup_time)
+            self.daily_backup.start()
+            logger.info(
+                f"Daily DB backup enabled at {self._backup_time.strftime('%H:%M')} UTC "
+                f"→ {DB_BACKUP_DIR} (keeping {DB_BACKUP_KEEP})"
+            )
+        else:
+            logger.info("Daily DB backup disabled (DB_BACKUP_ENABLED=false)")
         logger.info("Scheduled tasks started (per-minute tick + rank-ordered scheduler)")
 
     def stop_tasks(self):
         """Stop all scheduled tasks"""
         self.scrape_tick.cancel()
+        if self.daily_backup.is_running():
+            self.daily_backup.cancel()
         self.scheduler.stop()
         logger.info("Scheduled tasks stopped")
+
+    @tasks.loop(time=time(3, 30))
+    async def daily_backup(self):
+        """Dump the database once a day and prune to the retention limit.
+
+        Runs in-process so backups need no cron entry or VPS-side setup. Failures
+        are logged and never interrupt scraping — a missing backup is a problem to
+        fix, not a reason to stop reporting.
+        """
+        result = await create_backup(
+            database_url=DATABASE_URL,
+            backup_dir=Path(DB_BACKUP_DIR),
+            keep=DB_BACKUP_KEEP,
+            timeout_sec=DB_BACKUP_TIMEOUT_SEC,
+        )
+        if not result.ok:
+            logger.error(f"❌ Daily DB backup failed: {result.error}")
+
+    @daily_backup.before_loop
+    async def before_daily_backup(self):
+        await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=1)
     async def scrape_tick(self):
