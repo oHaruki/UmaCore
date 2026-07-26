@@ -71,12 +71,14 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
     the report's on-track/behind split. A circle holds ~30 members, so the whole
     roster fits comfortably inside one message's 6000-character budget.
     """
+    # Emoji use deliberately mirrors create_daily_report: one conventional marker
+    # per section header and none in the body. The live/closed distinction is
+    # carried by the colour and the wording, not by a different icon.
+    title = f"📊 Live Board - {club.club_name}"
     if closed:
-        title = f"📗 Live Board — {club.club_name}"
         colour = COLOR_ON_TRACK
         blurb = "This competition day has **closed**. Numbers are final."
     else:
-        title = f"📈 Live Board — {club.club_name}"
         colour = COLOR_INFO
         blurb = "Updating through the day — **not final** until the day closes."
 
@@ -106,8 +108,8 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
     summary.add_field(
         name="📈 Summary",
         value=(f"**Total Members:** {len(snap.gains)}\n"
-               f"🏇 Raced today: {len(raced)}\n"
-               f"💤 Not yet: {len(idle)}"),
+               f"Raced today: {len(raced)}\n"
+               f"Not yet: {len(idle)}"),
         inline=False,
     )
     summary.set_footer(text=f"Umamusume Quota Tracker - {club.club_name} · uma.moe as of {stamp}")
@@ -121,7 +123,7 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
         ]
         for idx, section in enumerate(_split(lines)):
             embeds.append(discord.Embed(
-                title="🏇 Raced Today" if idx == 0 else f"🏇 Raced Today (continued {idx + 1})",
+                title="✅ Raced Today" if idx == 0 else f"✅ Raced Today (continued {idx + 1})",
                 description=section,
                 colour=COLOR_ON_TRACK,
             ))
@@ -131,15 +133,15 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
         lines = [f"**{g.name}**: {_fmt(g.month_total)} this month" for g in idle]
         for idx, section in enumerate(_split(lines)):
             embeds.append(discord.Embed(
-                title="💤 No Fans Yet Today" if idx == 0
-                      else f"💤 No Fans Yet Today (continued {idx + 1})",
+                title="⚠️ No Fans Yet Today" if idx == 0
+                      else f"⚠️ No Fans Yet Today (continued {idx + 1})",
                 description=section,
                 colour=COLOR_BEHIND,
             ))
 
     if not snap.gains:
         embeds.append(discord.Embed(
-            title="🏇 Raced Today",
+            title="✅ Raced Today",
             description="_nobody has raced yet today_",
             colour=COLOR_BEHIND,
         ))
@@ -169,7 +171,7 @@ async def _post_new(bot, club: Club, snap: LiveSnapshot) -> bool:
     try:
         msg = await channel.send(embeds=build_embeds(club, snap))
         await club.set_live_board_message(msg.id, snap.jst_day)
-        logger.info(f"📈 Live board opened for {club.club_name} (JST {snap.jst_day})")
+        logger.info(f"Live board opened for {club.club_name} (JST {snap.jst_day})")
         return True
     except discord.Forbidden:
         logger.error(
@@ -239,5 +241,5 @@ async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) ->
         gains=[],           # per-member deltas describe the *new* day, not this one
     )
     await _edit_existing(bot, club, closing, closed=True)
-    logger.info(f"📗 Live board closed for {club.club_name} (JST {club.live_board_day})")
+    logger.info(f"Live board closed for {club.club_name} (JST {club.live_board_day})")
     return await _post_new(bot, club, snap)
