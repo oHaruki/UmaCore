@@ -127,37 +127,63 @@ class TestPollSpreading:
 # --------------------------------------------------------------------------- #
 
 class TestEmbed:
-    def test_live_embed_is_marked_not_final(self):
-        e = live_board.build_embed(club(), snap())
-        assert "live" in e.title.lower()
+    def _all(self, **kw):
+        return live_board.build_embeds(club(), snap(**kw))
+
+    def test_live_board_is_marked_not_final(self):
+        e = self._all()[0]
+        assert "live board" in e.title.lower()
         assert "not final" in e.description.lower()
 
-    def test_closed_embed_says_final(self):
-        e = live_board.build_embed(club(), snap(), closed=True)
-        assert "final" in e.title.lower()
+    def test_closed_board_says_final(self):
+        e = live_board.build_embeds(club(), snap(), closed=True)[0]
         assert "final" in e.description.lower()
 
-    def test_shows_todays_gain_and_rank(self):
-        e = live_board.build_embed(club(), snap())
-        names = [f.name for f in e.fields]
+    def test_summary_shows_todays_gain_and_rank(self):
+        names = [f.name for f in self._all()[0].fields]
         assert "Fans today" in names
         assert "Rank" in names
 
-    def test_lists_only_members_who_raced(self):
-        e = live_board.build_embed(club(), snap())
-        contributors = next(f for f in e.fields if "contributors" in f.name.lower())
-        assert "Alpha" in contributors.value
-        assert "Idle" not in contributors.value
+    def test_summary_counts_raced_and_idle(self):
+        summary = next(f for f in self._all()[0].fields if "Summary" in f.name)
+        assert "Raced today: 2" in summary.value
+        assert "Not yet: 1" in summary.value
+
+    def test_every_member_appears_somewhere(self):
+        """The whole roster is listed, not just a top-N."""
+        body = " ".join((e.description or "") for e in self._all())
+        for name in ("Alpha", "Beta", "Idle"):
+            assert name in body, f"{name} missing from the board"
+
+    def test_racers_and_idlers_are_separated(self):
+        embeds = self._all()
+        raced = next(e for e in embeds if "Raced" in e.title)
+        idle = next(e for e in embeds if "No Fans Yet" in e.title)
+        assert "Alpha" in raced.description and "Idle" not in raced.description
+        assert "Idle" in idle.description
+
+    def test_racers_are_ranked_by_todays_gain(self):
+        raced = next(e for e in self._all() if "Raced" in e.title)
+        assert raced.description.index("Alpha") < raced.description.index("Beta")
 
     def test_empty_day_says_so_rather_than_showing_nothing(self):
-        e = live_board.build_embed(club(), snap(gains=[]))
-        contributors = next(f for f in e.fields if "contributors" in f.name.lower())
-        assert "nobody" in contributors.value.lower()
+        body = " ".join((e.description or "") for e in self._all(gains=[]))
+        assert "nobody has raced yet" in body.lower()
 
     def test_footer_carries_the_data_timestamp(self):
-        e = live_board.build_embed(club(), snap())
-        assert "12:00 UTC" in e.footer.text
-        assert "2026-07-25" in e.footer.text
+        assert "12:00 UTC" in self._all()[0].footer.text
+
+    def test_fits_discord_limits_for_a_full_roster(self):
+        """30 members must fit one message: <=10 embeds and <6000 characters."""
+        gains = [MemberGain(str(i), f"LongTrainerName{i:02d}", 5_000_000 - i * 1000,
+                            40_000_000 + i) for i in range(30)]
+        embeds = live_board.build_embeds(club(), snap(gains=gains))
+        total = sum(len((e.description or "") + (e.title or "")
+                        + "".join(f.name + f.value for f in e.fields)) for e in embeds)
+        assert len(embeds) <= 10, f"{len(embeds)} embeds exceeds Discord's limit"
+        assert total < 6000, f"{total} chars exceeds the per-message budget"
+        body = " ".join((e.description or "") for e in embeds)
+        assert body.count("LongTrainerName") == 30, "not every member was listed"
 
 
 # --------------------------------------------------------------------------- #
@@ -165,17 +191,18 @@ class TestEmbed:
 # --------------------------------------------------------------------------- #
 
 class FakeMessage:
+    """Records each edit as the list of embeds the board sent."""
     def __init__(self, mid): self.id, self.edits = mid, []
-    async def edit(self, **kw): self.edits.append(kw["embed"])
+    async def edit(self, **kw): self.edits.append(kw.get("embeds") or [kw["embed"]])
 
 
 class FakeChannel:
     def __init__(self): self.posted, self._messages, self._next = [], {}, 1000
-    async def send(self, embed=None):
+    async def send(self, embed=None, embeds=None):
         self._next += 1
         msg = FakeMessage(self._next)
         self._messages[msg.id] = msg
-        self.posted.append(embed)
+        self.posted.append(embeds or [embed])
         return msg
     async def fetch_message(self, mid):
         if mid not in self._messages:
@@ -246,8 +273,8 @@ class TestLifecycle:
         assert c.live_board_message_id != first_id
         assert c.live_board_day == date(2026, 7, 26)
 
-        closing = wired.channel._messages[first_id].edits[-1]
-        assert "final" in closing.title.lower(), "old board was not closed out"
+        closing = wired.channel._messages[first_id].edits[-1][0]
+        assert "final" in closing.description.lower(), "old board was not closed out"
 
     def test_closing_edit_uses_the_finalized_figures(self, wired):
         c = attach_persistence(club(), wired.state)
@@ -261,7 +288,7 @@ class TestLifecycle:
         )
         self._run(live_board.update_club(wired.bot, c, now_utc=datetime(2026, 7, 25, 16, tzinfo=UTC)))
 
-        closing = wired.channel._messages[first_id].edits[-1]
+        closing = wired.channel._messages[first_id].edits[-1][0]
         fans = next(f for f in closing.fields if f.name == "Fans today")
         assert "150" in fans.value, f"expected the finalized day gain, got {fans.value}"
 

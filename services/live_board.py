@@ -15,14 +15,14 @@ one club costs 24 API calls a day and enabling it for none costs nothing.
 """
 import logging
 from datetime import date, datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 import discord
 
 from models import Club
 from scrapers.umamoe_api_scraper import LiveSnapshot, UmaMoeAPIScraper
 from utils.jst_calendar import resolve_live
-from config.settings import COLOR_INFO, COLOR_ON_TRACK
+from config.settings import COLOR_INFO, COLOR_ON_TRACK, COLOR_BEHIND
 
 logger = logging.getLogger(__name__)
 
@@ -39,56 +39,117 @@ def _fmt(n: Optional[int]) -> str:
     return f"{n:,}"
 
 
-def build_embed(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> discord.Embed:
-    """Render the board for one club.
+def _split(lines: List[str], max_length: int = 1900) -> List[str]:
+    """Chunk lines into blocks that fit an embed description.
 
-    ``closed`` switches it to the final state shown after the day has finalized.
+    Chunks larger than the daily report's 1000 because these embeds share one
+    message rather than being sent separately: a ~30-member roster then lands in
+    a single block instead of being split across two, and the whole board still
+    sits far inside the 6000-character per-message budget.
+    """
+    sections, current, length = [], [], 0
+    for line in lines:
+        if length + len(line) + 1 > max_length and current:
+            sections.append("\n".join(current))
+            current, length = [line], len(line) + 1
+        else:
+            current.append(line)
+            length += len(line) + 1
+    if current:
+        sections.append("\n".join(current))
+    return sections
+
+
+def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> List[discord.Embed]:
+    """Render the board, mirroring the daily report's layout.
+
+    Returns a list because a Discord message can carry up to 10 embeds — the same
+    shape the daily report uses, except those are separate messages and these all
+    live in the one message that gets edited.
+
+    Every member is listed, split into "raced today" and "not yet", which parallels
+    the report's on-track/behind split. A circle holds ~30 members, so the whole
+    roster fits comfortably inside one message's 6000-character budget.
     """
     if closed:
-        title = f"📗 {club.club_name} — {snap.jst_day:%b %d} final"
+        title = f"📗 Live Board — {club.club_name}"
         colour = COLOR_ON_TRACK
-        blurb = "This competition day has closed. Numbers are final."
+        blurb = "This competition day has **closed**. Numbers are final."
     else:
-        title = f"📈 {club.club_name} — live"
+        title = f"📈 Live Board — {club.club_name}"
         colour = COLOR_INFO
-        blurb = "Updates through the day. Not final until the day closes."
+        blurb = "Updating through the day — **not final** until the day closes."
 
-    embed = discord.Embed(title=title, description=blurb, colour=colour)
+    stamp = snap.as_of.strftime("%H:%M UTC") if snap.as_of else "unknown"
+    raced = [g for g in snap.gains if g.gained_today > 0]
+    idle = [g for g in snap.gains if g.gained_today <= 0]
+    raced.sort(key=lambda g: g.gained_today, reverse=True)
+    idle.sort(key=lambda g: g.month_total, reverse=True)
 
-    embed.add_field(name="Fans today", value=f"**{_fmt(snap.gained_today)}**", inline=True)
+    # ---- summary -------------------------------------------------------------
+    summary = discord.Embed(
+        title=title,
+        description=f"**Day:** {snap.jst_day:%B %d} (JST)\n{blurb}",
+        colour=colour,
+        timestamp=datetime.now(timezone.utc),
+    )
+    summary.add_field(name="Fans today", value=f"**{_fmt(snap.gained_today)}**", inline=True)
 
     if snap.live_rank:
         delta = snap.rank_delta
-        arrow = "" if not delta else (f" ({delta:+d})" if delta else "")
-        embed.add_field(name="Rank", value=f"#{snap.live_rank:,}{arrow}", inline=True)
+        move = f" ({delta:+d})" if delta else ""
+        summary.add_field(name="Rank", value=f"#{snap.live_rank:,}{move}", inline=True)
 
     if snap.live_points:
-        embed.add_field(name="Month total", value=_fmt(snap.live_points), inline=True)
+        summary.add_field(name="Month total", value=_fmt(snap.live_points), inline=True)
 
-    gainers = snap.top_gainers(TOP_N)
-    if gainers and gainers[0].gained_today > 0:
-        lines = []
-        for i, g in enumerate(gainers, 1):
-            if g.gained_today <= 0:
-                break
-            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"`{i:>2}`")
-            lines.append(f"{medal} **{g.name}** — +{_fmt(g.gained_today)}")
-        embed.add_field(
-            name=f"Top contributors ({snap.active_today} racing today)",
-            value="\n".join(lines),
-            inline=False,
-        )
-    elif not closed:
-        embed.add_field(
-            name="Top contributors",
-            value="_nobody has raced yet today_",
-            inline=False,
-        )
+    summary.add_field(
+        name="📈 Summary",
+        value=(f"**Total Members:** {len(snap.gains)}\n"
+               f"🏇 Raced today: {len(raced)}\n"
+               f"💤 Not yet: {len(idle)}"),
+        inline=False,
+    )
+    summary.set_footer(text=f"Umamusume Quota Tracker - {club.club_name} · uma.moe as of {stamp}")
+    embeds = [summary]
 
-    stamp = snap.as_of.strftime("%H:%M UTC") if snap.as_of else "unknown"
-    embed.set_footer(text=f"JST day {snap.jst_day} · uma.moe data as of {stamp}")
-    embed.timestamp = datetime.now(timezone.utc)
-    return embed
+    # ---- everyone who raced --------------------------------------------------
+    if raced:
+        lines = [
+            f"`{i:>2}` **{g.name}**: +{_fmt(g.gained_today)} ({_fmt(g.month_total)} total)"
+            for i, g in enumerate(raced, 1)
+        ]
+        for idx, section in enumerate(_split(lines)):
+            embeds.append(discord.Embed(
+                title="🏇 Raced Today" if idx == 0 else f"🏇 Raced Today (continued {idx + 1})",
+                description=section,
+                colour=COLOR_ON_TRACK,
+            ))
+
+    # ---- everyone who hasn't -------------------------------------------------
+    if idle:
+        lines = [f"**{g.name}**: {_fmt(g.month_total)} this month" for g in idle]
+        for idx, section in enumerate(_split(lines)):
+            embeds.append(discord.Embed(
+                title="💤 No Fans Yet Today" if idx == 0
+                      else f"💤 No Fans Yet Today (continued {idx + 1})",
+                description=section,
+                colour=COLOR_BEHIND,
+            ))
+
+    if not snap.gains:
+        embeds.append(discord.Embed(
+            title="🏇 Raced Today",
+            description="_nobody has raced yet today_",
+            colour=COLOR_BEHIND,
+        ))
+
+    return embeds[:10]          # Discord allows at most 10 embeds per message
+
+
+def build_embed(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> discord.Embed:
+    """The summary embed alone. Kept for callers that want a single embed."""
+    return build_embeds(club, snap, closed=closed)[0]
 
 
 async def _resolve_channel(bot, club: Club) -> Optional[discord.abc.Messageable]:
@@ -106,7 +167,7 @@ async def _post_new(bot, club: Club, snap: LiveSnapshot) -> bool:
     if channel is None:
         return False
     try:
-        msg = await channel.send(embed=build_embed(club, snap))
+        msg = await channel.send(embeds=build_embeds(club, snap))
         await club.set_live_board_message(msg.id, snap.jst_day)
         logger.info(f"📈 Live board opened for {club.club_name} (JST {snap.jst_day})")
         return True
@@ -127,7 +188,7 @@ async def _edit_existing(bot, club: Club, snap: LiveSnapshot, *, closed: bool) -
         return True                      # cache miss: don't repost, just skip
     try:
         msg = await channel.fetch_message(club.live_board_message_id)
-        await msg.edit(embed=build_embed(club, snap, closed=closed))
+        await msg.edit(embeds=build_embeds(club, snap, closed=closed))
         return True
     except discord.NotFound:
         logger.info(f"Live board message for {club.club_name} was deleted — reposting")
