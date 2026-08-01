@@ -45,12 +45,22 @@ def club(**kw):
 # --------------------------------------------------------------------------- #
 
 class TestSnapshotDerivations:
-    def test_gained_today_is_live_minus_last_finalize(self):
-        assert snap().gained_today == 100_000_000
+    def test_gained_today_sums_the_member_rows(self):
+        """Must match the roster shown beneath it: 5M + 3M + 0."""
+        assert snap().gained_today == 8_000_000
+
+    def test_gained_today_ignores_a_stale_monthly_point(self):
+        """A freshly opened month serves the PREVIOUS month's monthly_point, which
+        made the circle-level subtraction clamp to zero while members had fans."""
+        s = snap(live_points=7_020_000, monthly_point=1_837_269_789)
+        assert s.gained_today == 8_000_000
+
+    def test_gained_today_falls_back_to_circle_totals_without_rows(self):
+        assert snap(gains=[]).gained_today == 100_000_000
 
     def test_gained_today_never_negative(self):
         """Guards a mid-update read where live briefly trails the finalize."""
-        assert snap(live_points=999, monthly_point=1_000).gained_today == 0
+        assert snap(gains=[], live_points=999, monthly_point=1_000).gained_today == 0
 
     def test_rank_delta_positive_means_climbing(self):
         assert snap(live_rank=300, monthly_rank=310).rank_delta == 10
@@ -64,7 +74,7 @@ class TestSnapshotDerivations:
         assert snap().active_today == 2
 
     def test_missing_points_degrade_to_none(self):
-        assert snap(live_points=None).gained_today is None
+        assert snap(gains=[], live_points=None).gained_today is None
         assert snap(live_rank=None).rank_delta is None
 
 
@@ -225,11 +235,21 @@ class FakeBot:
 def wired(monkeypatch):
     """live_board with a fake Discord and a stubbed scraper."""
     channel = FakeChannel()
-    state = {"snapshot": snap(), "saved": []}
+    state = {"snapshot": snap(), "saved": [], "by_day": {}}
 
     class FakeScraper:
-        def __init__(self, *a, **kw): pass
-        async def fetch_live(self): return state["snapshot"]
+        """Serves a per-JST-day snapshot when one is registered, so closing a day
+        fetches that day's numbers rather than whatever is current."""
+        def __init__(self, circle_id, now_utc=None, **kw):
+            self.now_utc = now_utc
+
+        async def fetch_live(self):
+            if self.now_utc is not None:
+                from utils.jst_calendar import resolve_live
+                day = resolve_live(self.now_utc).jst_day
+                if day in state["by_day"]:
+                    return state["by_day"][day]
+            return state["snapshot"]
 
     monkeypatch.setattr(live_board, "UmaMoeAPIScraper", FakeScraper)
     return SimpleNamespace(bot=FakeBot(channel), channel=channel, state=state)
@@ -281,21 +301,30 @@ class TestLifecycle:
         closing = wired.channel._messages[first_id].edits[-1][0]
         assert "final" in closing.description.lower(), "old board was not closed out"
 
-    def test_closing_edit_uses_the_finalized_figures(self, wired):
+    def test_closing_edit_uses_the_closed_days_own_numbers(self, wired):
+        """The archive must show what happened on ITS day, not the new one."""
         c = attach_persistence(club(), wired.state)
         self._run(live_board.update_club(wired.bot, c, now_utc=datetime(2026, 7, 25, 12, tzinfo=UTC)))
         first_id = c.live_board_message_id
 
+        # Day 25 finished with two members on 7M and 4M.
+        wired.state["by_day"][date(2026, 7, 25)] = snap(
+            jst_day=date(2026, 7, 25),
+            gains=[MemberGain("1", "Alpha", 7_000_000, 70_000_000),
+                   MemberGain("2", "Beta", 4_000_000, 44_000_000)],
+        )
+        # Day 26 has barely started.
         wired.state["snapshot"] = snap(
             jst_day=date(2026, 7, 26),
-            monthly_point=1_150_000_000,     # day 25's finalized total
-            yesterday_points=1_000_000_000,  # day 24's
+            gains=[MemberGain("1", "Alpha", 1_000, 1_000)],
         )
         self._run(live_board.update_club(wired.bot, c, now_utc=datetime(2026, 7, 25, 16, tzinfo=UTC)))
 
-        closing = wired.channel._messages[first_id].edits[-1][0]
-        fans = next(f for f in closing.fields if f.name == "Fans today")
-        assert "150" in fans.value, f"expected the finalized day gain, got {fans.value}"
+        closing = wired.channel._messages[first_id].edits[-1]
+        fans = next(f for f in closing[0].fields if f.name == "Fans today")
+        assert "11.00M" in fans.value, f"expected day 25's own total, got {fans.value}"
+        body = " ".join((e.description or "") for e in closing)
+        assert "Alpha" in body and "Beta" in body, "archive lost day 25's roster"
 
     def test_deleted_message_is_reposted(self, wired):
         c = attach_persistence(club(), wired.state)

@@ -94,10 +94,16 @@ class LiveSnapshot:
     def gained_today(self) -> Optional[int]:
         """Fans earned so far in the in-progress day, club-wide.
 
-        ``live_points`` is the month's running total including today; the last
-        finalize (``monthly_point``) is the same total through yesterday. The
-        difference is what has been earned since the day opened.
+        Summed from the member rows rather than derived from the circle totals, so
+        the headline figure always agrees with the roster displayed beneath it.
+
+        The circle-level route (``live_points - monthly_point``) is only a fallback
+        now: a freshly opened competition month keeps serving the *previous*
+        month's ``monthly_point`` for a while, which made that subtraction wildly
+        negative and clamp to zero while members visibly had fans.
         """
+        if self.gains:
+            return sum(g.gained_today for g in self.gains)
         if self.live_points is None or self.monthly_point is None:
             return None
         return max(0, self.live_points - self.monthly_point)
@@ -258,7 +264,7 @@ class UmaMoeAPIScraper(BaseScraper):
             return LiveSnapshot(
                 circle_id=str(self.circle_id),
                 jst_day=target.jst_day,
-                as_of=meta.last_live_update,
+                as_of=meta.last_live_update or meta.last_updated,
                 live_points=live_points,
                 live_rank=meta.live_rank,
                 monthly_point=meta.monthly_point,
