@@ -330,3 +330,53 @@ class TestMonthBoundaryGains:
         assert all(g.gained_today == 500_000 for g in gains)
         # Month total still measured from slot 0, July's baseline.
         assert all(g.month_total == 4_500_000 for g in gains)
+
+
+class TestUnpublishedMonth:
+    """A newly opened competition month exists before uma.moe publishes rows for it.
+
+    Observed 2026-08-01 17:23 UTC: August returned HTTP 200 with an empty member
+    list, null live fields, and July's monthly_point still attached. Rendering that
+    replaced a good board with 'Total Members: 0'.
+    """
+
+    def test_no_snapshot_when_there_are_no_member_rows(self, monkeypatch):
+        import asyncio
+        from scrapers import umamoe_api_scraper as mod
+
+        async def empty_month(_self, _session, year, month):
+            return {"circle": {"monthly_point": 1_837_269_789, "live_points": None,
+                               "live_rank": None, "last_live_update": None},
+                    "members": []}
+        monkeypatch.setattr(mod.UmaMoeAPIScraper, "_fetch_month", empty_month)
+
+        class NullSession:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+        monkeypatch.setattr(mod.UmaMoeAPIScraper, "_session", lambda self: NullSession())
+
+        s = mod.UmaMoeAPIScraper("1", now_utc=datetime(2026, 8, 1, 17, 23, tzinfo=UTC))
+        assert asyncio.run(s.fetch_live()) is None
+
+    def test_existing_board_is_left_alone(self, wired, monkeypatch):
+        """The previous day's board must survive an unpublished new month."""
+        import asyncio
+        c = attach_persistence(club(), wired.state)
+        asyncio.run(live_board.update_club(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 12, tzinfo=UTC)))
+        assert len(wired.channel.posted) == 1
+        original = c.live_board_message_id
+        edits_before = len(wired.channel._messages[original].edits)
+
+        class Empty:
+            def __init__(self, *a, **kw): pass
+            async def fetch_live(self): return None
+        monkeypatch.setattr(live_board, "UmaMoeAPIScraper", Empty)
+
+        ok = asyncio.run(live_board.update_club(
+            wired.bot, c, now_utc=datetime(2026, 8, 1, 17, tzinfo=UTC)))
+        assert ok is False
+        assert len(wired.channel.posted) == 1, "posted an empty board for the new month"
+        assert c.live_board_message_id == original, "rolled over with no data"
+        assert len(wired.channel._messages[original].edits) == edits_before, \
+            "blanked the existing board"

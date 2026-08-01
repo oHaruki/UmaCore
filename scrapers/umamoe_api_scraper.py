@@ -232,6 +232,20 @@ class UmaMoeAPIScraper(BaseScraper):
             parsed = self._parse_members(members, target.slot) if members else {}
             gains = self._member_gains(members, target.slot)
 
+            # A newly opened competition month exists before uma.moe publishes any
+            # member rows for it — observed 2026-08-01 17:23 UTC, where August
+            # returned HTTP 200 with an empty member list, null live fields and
+            # July's monthly_point still attached. There is nothing to show yet, so
+            # report no snapshot rather than an empty one; the caller then leaves
+            # the previous board alone instead of blanking it.
+            if not gains:
+                logger.info(
+                    f"circle {self.circle_id}: no live rows yet for "
+                    f"{target.year}-{target.month:02d} slot {target.slot} "
+                    f"(competition day {target.data_date}) — skipping this refresh"
+                )
+                return None
+
             # circle.live_points is null once a competition period has closed, so
             # fall back to what the member rows add up to.
             live_points = meta.live_points
