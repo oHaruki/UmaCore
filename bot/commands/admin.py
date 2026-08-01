@@ -1136,6 +1136,73 @@ class AdminCommands(commands.Cog):
         logger.info(f"Live board enabled for {club} in channel {channel.id}")
 
     @app_commands.command(
+        name="live_refresh",
+        description="Force the live board to update now instead of waiting for its slot",
+    )
+    @app_commands.describe(club="Which club's board to refresh")
+    async def live_refresh(self, interaction: discord.Interaction, club: str):
+        """Update a club's live board immediately.
+
+        The board normally refreshes on a fixed minute of the hour so that many
+        clubs spread their API calls out. This bypasses that for one club, which
+        is what you want when checking a change rather than waiting up to an hour.
+        """
+        await interaction.response.defer(ephemeral=True)
+
+        club_obj = await Club.get_by_name(club)
+        if not club_obj:
+            await interaction.followup.send(f"❌ Club '{club}' not found")
+            return
+        if not club_obj.belongs_to_guild(interaction.guild_id):
+            await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+            return
+        if not await ensure_can_manage(interaction, club_obj):
+            return
+        if not club_obj.live_board_enabled:
+            await interaction.followup.send(
+                f"❌ The live board is off for **{club}**.\n"
+                f"Enable it with `/live_board club:{club} channel:#some-channel`."
+            )
+            return
+
+        from services.live_board import update_club as refresh_board
+        from utils.jst_calendar import resolve_live
+
+        before = club_obj.live_board_message_id
+        target = resolve_live()
+        ok = await refresh_board(self.bot, club_obj)
+
+        if not ok:
+            await interaction.followup.send(
+                f"❌ Refresh failed for **{club}** — check the logs "
+                f"(`journalctl -u umacore-test-bot -n 30`). Most likely Uma.moe was "
+                f"unreachable or the bot lacks permission in that channel."
+            )
+            return
+
+        action = "edited" if before == club_obj.live_board_message_id else "posted a new board"
+        embed = discord.Embed(
+            title=f"✅ Live board refreshed - {club}",
+            description=f"Board {action}.",
+            colour=COLOR_ON_TRACK,
+        )
+        embed.add_field(
+            name="Reading",
+            value=(f"`{target.year}-{target.month:02d}` slot `{target.slot}`\n"
+                   f"JST day {target.jst_day} → competition day **{target.data_date}**"),
+            inline=False,
+        )
+        if club_obj.live_board_message_id:
+            embed.add_field(
+                name="Message",
+                value=(f"https://discord.com/channels/{interaction.guild_id}/"
+                       f"{club_obj.live_board_channel_id}/{club_obj.live_board_message_id}"),
+                inline=False,
+            )
+        await interaction.followup.send(embed=embed)
+        logger.info(f"/live_refresh {club} by {interaction.user}: {action}")
+
+    @app_commands.command(
         name="backup",
         description="Run a database backup now, or show the retained backups",
     )
@@ -1252,6 +1319,7 @@ class AdminCommands(commands.Cog):
     reset_month.autocomplete('club')(club_autocomplete)
     limiter_test.autocomplete('club')(club_autocomplete)
     live_board.autocomplete('club')(club_autocomplete)
+    live_refresh.autocomplete('club')(club_autocomplete)
 
 
 async def setup(bot):
