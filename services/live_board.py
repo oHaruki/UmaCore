@@ -203,8 +203,8 @@ async def _edit_existing(bot, club: Club, snap: LiveSnapshot, *, closed: bool) -
         return True
 
 
-async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) -> bool:
-    """Bring one club's board up to date. Returns True if anything was sent.
+async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) -> str:
+    """Bring one club's board up to date.
 
     Handles the three cases: no board yet, same day (edit), and the day having
     rolled over (final edit, then open a new one).
@@ -212,19 +212,26 @@ async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) ->
     A single fetch covers the rollover: after 15:00 UTC the response carries both
     the finalized total for the day that just closed and the opening figures for
     the new one.
+
+    Returns one of:
+        ``"posted"``   a new board was opened
+        ``"edited"``   the existing board was updated in place
+        ``"no_data"``  uma.moe has nothing for this day yet; board left untouched
+        ``"failed"``   the message could not be sent or edited
     """
     target = resolve_live(now_utc)
     snap = await UmaMoeAPIScraper(club.circle_id, now_utc=now_utc).fetch_live()
     if snap is None:
-        return False
+        return "no_data"
 
     # First run, or the tracked message vanished.
     if not club.live_board_message_id or not club.live_board_day:
-        return await _post_new(bot, club, snap)
+        return "posted" if await _post_new(bot, club, snap) else "failed"
 
     if club.live_board_day == target.jst_day:
-        ok = await _edit_existing(bot, club, snap, closed=False)
-        return ok if ok else await _post_new(bot, club, snap)
+        if await _edit_existing(bot, club, snap, closed=False):
+            return "edited"
+        return "posted" if await _post_new(bot, club, snap) else "failed"
 
     # The day rolled over. Close out the old message with the finalized figures,
     # then open a new board for the day now in progress.
@@ -242,4 +249,4 @@ async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) ->
     )
     await _edit_existing(bot, club, closing, closed=True)
     logger.info(f"Live board closed for {club.club_name} (JST {club.live_board_day})")
-    return await _post_new(bot, club, snap)
+    return "posted" if await _post_new(bot, club, snap) else "failed"

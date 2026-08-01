@@ -307,8 +307,8 @@ class TestLifecycle:
         monkeypatch.setattr(live_board, "UmaMoeAPIScraper", DeadScraper)
 
         c = attach_persistence(club(), wired.state)
-        ok = self._run(live_board.update_club(wired.bot, c, now_utc=datetime(2026, 7, 25, 12, tzinfo=UTC)))
-        assert ok is False
+        status = self._run(live_board.update_club(wired.bot, c, now_utc=datetime(2026, 7, 25, 12, tzinfo=UTC)))
+        assert status == "no_data"
         assert wired.channel.posted == []
         assert c.live_board_message_id is None
 
@@ -373,10 +373,37 @@ class TestUnpublishedMonth:
             async def fetch_live(self): return None
         monkeypatch.setattr(live_board, "UmaMoeAPIScraper", Empty)
 
-        ok = asyncio.run(live_board.update_club(
+        status = asyncio.run(live_board.update_club(
             wired.bot, c, now_utc=datetime(2026, 8, 1, 17, tzinfo=UTC)))
-        assert ok is False
+        assert status == "no_data"
         assert len(wired.channel.posted) == 1, "posted an empty board for the new month"
         assert c.live_board_message_id == original, "rolled over with no data"
         assert len(wired.channel._messages[original].edits) == edits_before, \
             "blanked the existing board"
+
+
+class TestUpdateStatus:
+    """update_club distinguishes outcomes so callers can explain themselves."""
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_first_run_reports_posted(self, wired):
+        c = attach_persistence(club(), wired.state)
+        assert self._run(live_board.update_club(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 12, tzinfo=UTC))) == "posted"
+
+    def test_second_run_reports_edited(self, wired):
+        c = attach_persistence(club(), wired.state)
+        now = datetime(2026, 7, 25, 12, tzinfo=UTC)
+        self._run(live_board.update_club(wired.bot, c, now_utc=now))
+        assert self._run(live_board.update_club(wired.bot, c, now_utc=now)) == "edited"
+
+    def test_rollover_reports_posted(self, wired):
+        c = attach_persistence(club(), wired.state)
+        self._run(live_board.update_club(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 12, tzinfo=UTC)))
+        wired.state["snapshot"] = snap(jst_day=date(2026, 7, 26))
+        assert self._run(live_board.update_club(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 16, tzinfo=UTC))) == "posted"

@@ -1168,22 +1168,38 @@ class AdminCommands(commands.Cog):
         from services.live_board import update_club as refresh_board
         from utils.jst_calendar import resolve_live
 
-        before = club_obj.live_board_message_id
         target = resolve_live()
-        ok = await refresh_board(self.bot, club_obj)
+        status = await refresh_board(self.bot, club_obj)
 
-        if not ok:
+        if status == "no_data":
+            embed = discord.Embed(
+                title=f"⏳ Nothing to show yet - {club}",
+                description=(
+                    f"Uma.moe has no rows for **{target.year}-{target.month:02d}** "
+                    f"slot `{target.slot}` (competition day **{target.data_date}**) yet.\n\n"
+                    "A competition month becomes queryable before its member data is "
+                    "published, and each day is empty until the first live update. "
+                    "The existing board was left untouched rather than blanked — "
+                    "try again later."
+                ),
+                colour=COLOR_BEHIND,
+            )
+            await interaction.followup.send(embed=embed)
+            return
+
+        if status == "failed":
             await interaction.followup.send(
-                f"❌ Refresh failed for **{club}** — check the logs "
-                f"(`journalctl -u umacore-test-bot -n 30`). Most likely Uma.moe was "
-                f"unreachable or the bot lacks permission in that channel."
+                f"❌ Couldn't post or edit the board for **{club}**. Uma.moe returned "
+                f"data, so this is a Discord-side problem — most likely the bot lacks "
+                f"permission in <#{club_obj.live_board_channel_id}>. Check the logs "
+                f"for the exact error."
             )
             return
 
-        action = "edited" if before == club_obj.live_board_message_id else "posted a new board"
+        action = "Board edited in place." if status == "edited" else "Posted a new board."
         embed = discord.Embed(
             title=f"✅ Live board refreshed - {club}",
-            description=f"Board {action}.",
+            description=action,
             colour=COLOR_ON_TRACK,
         )
         embed.add_field(
@@ -1200,7 +1216,7 @@ class AdminCommands(commands.Cog):
                 inline=False,
             )
         await interaction.followup.send(embed=embed)
-        logger.info(f"/live_refresh {club} by {interaction.user}: {action}")
+        logger.info(f"/live_refresh {club} by {interaction.user}: {status}")
 
     @app_commands.command(
         name="backup",
