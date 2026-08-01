@@ -77,7 +77,9 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
     title = f"📊 Live Board - {club.club_name}"
     if closed:
         colour = COLOR_ON_TRACK
-        blurb = "This competition day has **closed**. Numbers are final."
+        blurb = ("This competition day has **closed**. Numbers are final.\n"
+                 "The next day's board appears once Uma.moe publishes it — "
+                 "usually within an hour or so.")
     else:
         colour = COLOR_INFO
         blurb = "Updating through the day — **not final** until the day closes."
@@ -220,33 +222,78 @@ async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) ->
         ``"failed"``   the message could not be sent or edited
     """
     target = resolve_live(now_utc)
+
+    # The tracked board's day has ended. Close it out FIRST and independently of
+    # whether the new day has any data yet, so the archived message is a complete
+    # record and never sits there claiming to still be updating.
+    if (club.live_board_message_id and club.live_board_day
+            and club.live_board_day != target.jst_day):
+        if not await _close_out(bot, club):
+            # Couldn't reach that day's final numbers. Leave the board exactly as
+            # it is and retry next cycle rather than abandoning it half-finished.
+            return "no_data"
+
     snap = await UmaMoeAPIScraper(club.circle_id, now_utc=now_utc).fetch_live()
     if snap is None:
         return "no_data"
 
-    # First run, or the tracked message vanished.
     if not club.live_board_message_id or not club.live_board_day:
         return "posted" if await _post_new(bot, club, snap) else "failed"
 
-    if club.live_board_day == target.jst_day:
-        if await _edit_existing(bot, club, snap, closed=False):
-            return "edited"
-        return "posted" if await _post_new(bot, club, snap) else "failed"
+    if await _edit_existing(bot, club, snap, closed=False):
+        return "edited"
+    return "posted" if await _post_new(bot, club, snap) else "failed"
 
-    # The day rolled over. Close out the old message with the finalized figures,
-    # then open a new board for the day now in progress.
+
+def _midday_utc(jst_day: date) -> datetime:
+    """A UTC moment that falls inside the given JST day.
+
+    JST day D runs (D-1) 15:00 UTC -> D 15:00 UTC, so 03:00 UTC on D is always
+    within it. Used to resolve a past day's slot without duplicating the mapping.
+    """
+    return datetime(jst_day.year, jst_day.month, jst_day.day, 3, 0, tzinfo=timezone.utc)
+
+
+async def _close_out(bot, club: Club) -> bool:
+    """Finalise the tracked board and release it, so the next run opens a new one.
+
+    Fetches the closing day's *own* slot rather than reusing the current one: the
+    live fetch describes the day now in progress, and reusing it left the archived
+    message with an empty roster — 'Total Members: 0' on a day that had 29 people
+    racing. The archived board is meant to be that day's record, so it has to carry
+    that day's numbers.
+    """
+    closing_day = club.live_board_day
+    finished = await UmaMoeAPIScraper(
+        club.circle_id, now_utc=_midday_utc(closing_day)
+    ).fetch_live()
+
+    if finished is None:
+        logger.warning(
+            f"Could not fetch final figures for {club.club_name} JST {closing_day}; "
+            f"leaving the board untouched and retrying next cycle"
+        )
+        return False
+
     closing = LiveSnapshot(
-        circle_id=snap.circle_id,
-        jst_day=club.live_board_day,
-        as_of=snap.as_of,
-        # For the closed day, the finalized month total is the yardstick and the
-        # day's own gain is monthly_point - yesterday_points.
-        live_points=snap.monthly_point,
-        live_rank=snap.monthly_rank,
-        monthly_point=snap.yesterday_points,
-        monthly_rank=snap.monthly_rank,
-        gains=[],           # per-member deltas describe the *new* day, not this one
+        circle_id=finished.circle_id,
+        jst_day=closing_day,
+        as_of=finished.as_of,
+        # The day has closed, so its slot now holds the finalized totals and its
+        # gains are final. monthly_point/yesterday_points bracket the day.
+        live_points=finished.monthly_point,
+        live_rank=finished.monthly_rank,
+        monthly_point=finished.yesterday_points,
+        monthly_rank=finished.monthly_rank,
+        gains=finished.gains,
     )
     await _edit_existing(bot, club, closing, closed=True)
-    logger.info(f"Live board closed for {club.club_name} (JST {club.live_board_day})")
-    return "posted" if await _post_new(bot, club, snap) else "failed"
+    logger.info(
+        f"Live board closed for {club.club_name} "
+        f"(JST {closing_day}, {len(finished.gains)} members recorded)"
+    )
+
+    # Release it: the message belongs to a finished day, so the next successful
+    # fetch opens a fresh board rather than overwriting the archive.
+    await club.set_live_board_message(None, None)
+    return True

@@ -287,8 +287,13 @@ class Club:
             f"for {self.club_name}"
         )
 
-    async def set_live_board_message(self, message_id: int, jst_day: date) -> None:
-        """Record which message is the board and which JST day it covers."""
+    async def set_live_board_message(self, message_id: Optional[int],
+                                     jst_day: Optional[date]) -> None:
+        """Record which message is the board and which JST day it covers.
+
+        Both ``None`` releases the board — used after a day is closed out, so the
+        next refresh opens a fresh message instead of overwriting the archive.
+        """
         await db.execute(
             "UPDATE clubs SET live_board_message_id = $2, live_board_day = $3 WHERE club_id = $1",
             self.club_id, message_id, jst_day,

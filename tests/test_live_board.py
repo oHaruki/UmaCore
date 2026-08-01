@@ -110,8 +110,13 @@ class TestPollSpreading:
             assert 0 <= self.slot(uuid4()) < 60
 
     def test_two_hundred_clubs_spread_without_a_burst(self):
-        """The whole point: no minute may carry a large share of the load."""
-        slots = [self.slot(uuid4()) for _ in range(200)]
+        """The whole point: no minute may carry a large share of the load.
+
+        Deterministic ids so this cannot flake — 200 items across 60 buckets has a
+        long enough tail that random ones occasionally exceed any tight bound.
+        """
+        from uuid import UUID
+        slots = [self.slot(UUID(int=i * 2654435761)) for i in range(200)]
         counts = [slots.count(m) for m in range(60)]
         assert max(counts) <= 12, f"worst minute holds {max(counts)} clubs"
         assert sum(counts) == 200
@@ -407,3 +412,60 @@ class TestUpdateStatus:
         wired.state["snapshot"] = snap(jst_day=date(2026, 7, 26))
         assert self._run(live_board.update_club(
             wired.bot, c, now_utc=datetime(2026, 7, 25, 16, tzinfo=UTC))) == "posted"
+
+
+class TestClosedBoardKeepsItsRoster:
+    """The archived board is that day's permanent record, so it must keep the
+    members who raced. It previously closed with an empty roster because the
+    closing edit reused the fetch describing the NEW day."""
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_closed_board_lists_the_members_who_raced(self, wired):
+        c = attach_persistence(club(), wired.state)
+        self._run(live_board.update_club(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 12, tzinfo=UTC)))
+        original = c.live_board_message_id
+
+        wired.state["snapshot"] = snap(jst_day=date(2026, 7, 26))
+        self._run(live_board.update_club(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 16, tzinfo=UTC)))
+
+        closing = wired.channel._messages[original].edits[-1]
+        body = " ".join((e.description or "") for e in closing)
+        summary = next(f for e in closing for f in e.fields if "Summary" in f.name)
+
+        assert "Total Members: 0" not in summary.value, "archived board lost its roster"
+        assert "Alpha" in body and "Beta" in body
+        assert "final" in closing[0].description.lower()
+
+    def test_closed_board_is_released_so_the_next_day_gets_its_own(self, wired):
+        c = attach_persistence(club(), wired.state)
+        self._run(live_board.update_club(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 12, tzinfo=UTC)))
+        original = c.live_board_message_id
+
+        wired.state["snapshot"] = snap(jst_day=date(2026, 7, 26))
+        self._run(live_board.update_club(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 16, tzinfo=UTC)))
+
+        assert c.live_board_message_id != original, "kept writing to the archive"
+        assert len(wired.channel.posted) == 2
+
+    def test_a_closed_board_is_never_reopened(self, wired):
+        """Later refreshes must not resurrect an archived day's message."""
+        c = attach_persistence(club(), wired.state)
+        self._run(live_board.update_club(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 12, tzinfo=UTC)))
+        original = c.live_board_message_id
+
+        wired.state["snapshot"] = snap(jst_day=date(2026, 7, 26))
+        for _ in range(3):
+            self._run(live_board.update_club(
+                wired.bot, c, now_utc=datetime(2026, 7, 25, 16, tzinfo=UTC)))
+
+        assert len(wired.channel.posted) == 2, "reposted more than once for one day"
+        last = wired.channel._messages[original].edits[-1]
+        assert "final" in last[0].description.lower(), "archive stopped saying final"
