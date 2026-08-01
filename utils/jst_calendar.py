@@ -36,9 +36,10 @@ are keyed on that convention and ``calculate_expected_fans`` counts days from
 and silently change everyone's quota math. The bug this module fixes is *which
 slot gets read*, not what the resulting day is called.
 """
+import calendar
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Tuple
 
 # uma.moe's competition clock. Fixed offset — JST has no DST.
 JST = timezone(timedelta(hours=9))
@@ -71,10 +72,12 @@ class SlotTarget:
     def is_cross_month(self) -> bool:
         """True when the slot lives in a different month than ``data_date``.
 
-        Happens at month boundaries — e.g. reading JST Aug 1 (August's slot 0)
-        while labelling it Jul 31. Callers that aggregate by month need to know.
+        True when the slot is the previous month's rollover entry — i.e. this JST
+        day is the 1st and its data lives in the prior month's array. Callers that
+        derive a monthly total need to know, because the usual "first populated
+        slot" baseline belongs to the wrong month.
         """
-        return (self.year, self.month) != (self.data_date.year, self.data_date.month)
+        return (self.year, self.month) != (self.jst_day.year, self.jst_day.month)
 
     def describe(self) -> str:
         kind = "live/in-progress" if self.is_live else "finalized"
@@ -107,11 +110,41 @@ def slot_for_jst_day(jst_day: date) -> int:
     return jst_day.day - 1
 
 
+def days_in_month(year: int, month: int) -> int:
+    return calendar.monthrange(year, month)[1]
+
+
+def slot_location(jst_day: date) -> Tuple[int, int, int]:
+    """Which ``(year, month, slot)`` actually holds this JST day's data.
+
+    Mostly ``(its own month, day - 1)``, with one exception that matters.
+
+    Every ``daily_fans`` array is 32 slots regardless of month length, and the
+    slot past the month's last day holds **day 1 of the following month**.
+    Verified 2026-08-01 on circle 860280110: June (30 days) populates slots 1..30
+    with slot[30] = July 1, and July (31 days) populates 0..31 with slot[31] =
+    August 1. Cross-checked — June slot[30] equals July slot[0] for members
+    present in both.
+
+    This matters because uma.moe rejects a request for a month it considers
+    unstarted (``HTTP 400 "circle month cannot be in the future"``), so on day 1
+    the new month is not fetchable at all — its data is only reachable through the
+    previous month's rollover slot. Reading day 1 from the previous month also
+    keeps the previous day in the *same* array, so day-over-day differences stay
+    computable across the boundary.
+    """
+    if jst_day.day != 1:
+        return jst_day.year, jst_day.month, jst_day.day - 1
+    prev = jst_day - timedelta(days=1)          # last day of the previous month
+    return prev.year, prev.month, days_in_month(prev.year, prev.month)
+
+
 def _target(jst_day: date, is_live: bool) -> SlotTarget:
+    year, month, slot = slot_location(jst_day)
     return SlotTarget(
-        year=jst_day.year,
-        month=jst_day.month,
-        slot=slot_for_jst_day(jst_day),
+        year=year,
+        month=month,
+        slot=slot,
         jst_day=jst_day,
         # Legacy labelling — see module docstring.
         data_date=jst_day - timedelta(days=1),

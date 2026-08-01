@@ -230,19 +230,33 @@ class UmaMoeAPIScraper(BaseScraper):
             meta = CircleMeta.from_response(payload)
             members = payload.get("members") or []
             parsed = self._parse_members(members, target.slot) if members else {}
-            self._verify_checksum(members, target.slot, meta.live_points, "live_points")
+            gains = self._member_gains(members, target.slot,
+                                       rollover=target.is_cross_month)
+
+            live_points = meta.live_points
+            monthly_point = meta.monthly_point
+            if target.is_cross_month:
+                # Day 1 of a new month. The response describes the *previous*
+                # month, so its circle totals are that month's, not this one's —
+                # and live_points comes back null once the period has moved on.
+                # Derive the new month's figures from the member rows instead.
+                live_points = sum(g.month_total for g in gains)
+                monthly_point = 0            # nothing closed in the new month yet
+            else:
+                self._verify_checksum(members, target.slot, meta.live_points,
+                                      "live_points")
 
             return LiveSnapshot(
                 circle_id=str(self.circle_id),
                 jst_day=target.jst_day,
                 as_of=meta.last_live_update,
-                live_points=meta.live_points,
+                live_points=live_points,
                 live_rank=meta.live_rank,
-                monthly_point=meta.monthly_point,
+                monthly_point=monthly_point,
                 monthly_rank=meta.monthly_rank,
                 yesterday_points=meta.yesterday_points,
                 members=parsed,
-                gains=self._member_gains(members, target.slot),
+                gains=gains,
             )
         except Exception as e:
             logger.warning(f"Live fetch failed for circle {self.circle_id}: {e}")
@@ -331,11 +345,19 @@ class UmaMoeAPIScraper(BaseScraper):
         return gain if gain > 0 else None
 
     @staticmethod
-    def _member_gains(members: List[dict], live_slot: int) -> List["MemberGain"]:
+    def _member_gains(members: List[dict], live_slot: int,
+                      rollover: bool = False) -> List["MemberGain"]:
         """Per-member fans earned in the in-progress day.
 
         The live slot holds each member's running total including today; the slot
         before it is yesterday's close. The difference is today's contribution.
+
+        ``rollover`` marks the case where the slot is the previous month's extra
+        entry, i.e. this is day 1 of a new month (see
+        ``utils.jst_calendar.slot_location``). Two things change there: the array
+        belongs to the *previous* month, so "first populated slot" would give that
+        month's baseline rather than the new one; and the new month is exactly one
+        day old, so a member's month total simply *is* what they earned today.
         """
         gains: List[MemberGain] = []
         prev_slot = live_slot - 1
@@ -350,12 +372,18 @@ class UmaMoeAPIScraper(BaseScraper):
             if prev <= 0:
                 prev = fans[live_slot]        # joined today: no prior day to diff
 
-            baseline = next((v for v in fans[:live_slot + 1] if v > 0), 0)
+            gained = max(0, fans[live_slot] - prev)
+            if rollover:
+                month_total = gained          # the month is one day old
+            else:
+                baseline = next((v for v in fans[:live_slot + 1] if v > 0), 0)
+                month_total = max(0, fans[live_slot] - baseline)
+
             gains.append(MemberGain(
                 trainer_id=str(m.get("viewer_id")),
                 name=m.get("trainer_name") or "?",
-                gained_today=max(0, fans[live_slot] - prev),
-                month_total=max(0, fans[live_slot] - baseline),
+                gained_today=gained,
+                month_total=month_total,
             ))
         return gains
 

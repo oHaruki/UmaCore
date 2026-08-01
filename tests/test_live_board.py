@@ -311,3 +311,38 @@ class TestLifecycle:
         assert ok is False
         assert wired.channel.posted == []
         assert c.live_board_message_id is None
+
+
+class TestMonthRolloverGains:
+    """Day 1 of a month: the array is the previous month's, so a member's month
+    total is simply what they earned today."""
+
+    ARRAY = [100, 200, 300]      # slot 2 is the rollover entry
+
+    def test_rollover_month_total_equals_todays_gain(self):
+        members = [{"viewer_id": 1, "trainer_name": "A", "daily_fans": self.ARRAY}]
+        g = UmaMoeAPIScraper._member_gains(members, live_slot=2, rollover=True)[0]
+        assert g.gained_today == 100
+        assert g.month_total == 100, "month total leaked the previous month's figure"
+
+    def test_without_rollover_month_total_uses_the_baseline(self):
+        members = [{"viewer_id": 1, "trainer_name": "A", "daily_fans": self.ARRAY}]
+        g = UmaMoeAPIScraper._member_gains(members, live_slot=2)[0]
+        assert g.gained_today == 100
+        assert g.month_total == 200          # 300 - baseline 100
+
+    def test_day_one_no_longer_returns_an_empty_roster(self):
+        """The reported bug: 'Total Members: 0' on August 1.
+
+        The old code derived the slot as day-1 = 0, found no previous slot to diff
+        against, and dropped every member.
+        """
+        from utils.jst_calendar import resolve_live
+        target = resolve_live(datetime(2026, 8, 1, 12, 49, tzinfo=UTC))
+        members = [{"viewer_id": i, "trainer_name": f"M{i}",
+                    "daily_fans": [0] * 30 + [1_000_000, 1_500_000]}
+                   for i in range(5)]
+        gains = UmaMoeAPIScraper._member_gains(members, target.slot,
+                                               rollover=target.is_cross_month)
+        assert len(gains) == 5, "members were dropped on the first day of the month"
+        assert all(g.gained_today == 500_000 for g in gains)

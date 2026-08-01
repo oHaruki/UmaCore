@@ -149,3 +149,53 @@ class TestTimestampParsing:
     @pytest.mark.parametrize("bad", [None, "", "not-a-date", 12345])
     def test_bad_input_returns_none(self, bad):
         assert parse_api_timestamp(bad) is None
+
+
+class TestRolloverSlot:
+    """Day 1 of a month lives in the PREVIOUS month's array.
+
+    Every daily_fans array is 32 slots regardless of month length, and the slot
+    past the month's last day holds day 1 of the following month. Verified
+    2026-08-01 on circle 860280110: July (31 days) populated slots 0..31 with
+    slot[31] = August 1, and June slot[30] == July slot[0].
+
+    This is not cosmetic — uma.moe rejects a request for a month it considers
+    unstarted (HTTP 400 "circle month cannot be in the future"), so on day 1 the
+    new month cannot be fetched at all.
+    """
+
+    def test_day_one_reads_the_previous_months_rollover_slot(self):
+        from utils.jst_calendar import slot_location
+        assert slot_location(date(2026, 8, 1)) == (2026, 7, 31)   # July has 31 days
+
+    def test_day_one_after_a_30_day_month(self):
+        from utils.jst_calendar import slot_location
+        assert slot_location(date(2026, 7, 1)) == (2026, 6, 30)   # June has 30 days
+
+    def test_day_one_of_january_reads_december(self):
+        from utils.jst_calendar import slot_location
+        assert slot_location(date(2027, 1, 1)) == (2026, 12, 31)
+
+    def test_day_one_after_february(self):
+        from utils.jst_calendar import slot_location
+        assert slot_location(date(2026, 3, 1)) == (2026, 2, 28)
+
+    def test_other_days_use_their_own_month(self):
+        from utils.jst_calendar import slot_location
+        assert slot_location(date(2026, 8, 2)) == (2026, 8, 1)
+        assert slot_location(date(2026, 7, 25)) == (2026, 7, 24)
+
+    def test_live_target_on_day_one_never_requests_the_new_month(self):
+        """The regression: requesting August on Aug 1 returns HTTP 400."""
+        t = resolve_live(utc(2026, 8, 1, 12, 49))
+        assert (t.year, t.month) == (2026, 7), "would request an unstarted month"
+        assert t.slot == 31
+        assert t.jst_day == date(2026, 8, 1)
+        assert t.is_cross_month is True
+
+    def test_slot_index_always_within_the_array(self):
+        """32 slots, so the rollover index must never exceed 31."""
+        from utils.jst_calendar import slot_location
+        for month in range(1, 13):
+            _, _, slot = slot_location(date(2026, month, 1))
+            assert 0 <= slot <= 31, f"month {month} rollover slot {slot} out of range"
