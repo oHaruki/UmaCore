@@ -83,28 +83,28 @@ class TestMonthBoundary:
         assert t.jst_day == date(2026, 7, 31)
         assert t.is_cross_month is False
 
-    def test_new_months_day_one_is_deferred(self):
-        """17:00 UTC Aug 1: JST Aug 1 has closed, but a month's day 1 has no
-        earlier slot to measure monthly fans from, so reporting it would show a
-        club-wide zero under a July date. July's final day is kept instead."""
+    def test_julys_final_day_is_jst_august_1(self):
+        """A competition month ends at 15:00 UTC on the 1st of the next month, so
+        JST Aug 1 is July's last competition day and lives in July slot 31."""
         t = resolve_finalized(utc(2026, 8, 1, 17, 0))
-        assert (t.year, t.month, t.slot) == (2026, 7, 30)
-        assert t.jst_day == date(2026, 7, 31)
-        assert t.data_date == date(2026, 7, 30)
+        assert (t.year, t.month, t.slot) == (2026, 7, 31)
+        assert t.jst_day == date(2026, 8, 1)
+        assert t.data_date == date(2026, 7, 31)
 
-    def test_new_month_opens_on_day_two(self):
+    def test_august_opens_on_jst_august_2(self):
         t = resolve_finalized(utc(2026, 8, 2, 17, 0))
         assert (t.year, t.month, t.slot) == (2026, 8, 1)
         assert t.data_date == date(2026, 8, 1)
 
-    def test_finalized_target_never_crosses_months(self):
-        """Because day 1 is deferred, a persisted slot and its date always share a
-        month — so month-scoped aggregation can never straddle a boundary."""
+    def test_slot_month_always_matches_the_reported_date(self):
+        """The slot index IS the competition day, so a persisted row and the array
+        it came from can never disagree about which month they belong to."""
         for month in range(1, 13):
             for day in (1, 2, 15, 28):
                 for hour in (0, 8, 14, 15, 17, 23):
                     t = resolve_finalized(utc(2026, month, day, hour, 0))
-                    assert t.is_cross_month is False, t.describe()
+                    assert (t.year, t.month) == (t.data_date.year, t.data_date.month), t.describe()
+                    assert t.slot == t.data_date.day, t.describe()
 
     def test_month_with_30_days(self):
         t = resolve_finalized(utc(2026, 7, 1, 8, 0))
@@ -113,14 +113,13 @@ class TestMonthBoundary:
 
 
 class TestYearBoundary:
-    def test_new_year_defers_to_december(self):
-        """Jan 1 is a month's day 1, so December's final day is reported."""
+    def test_decembers_final_day_is_jst_january_1(self):
         t = resolve_finalized(utc(2027, 1, 1, 17, 0))
-        assert (t.year, t.month, t.slot) == (2026, 12, 30)
-        assert t.jst_day == date(2026, 12, 31)
-        assert t.data_date == date(2026, 12, 30)
+        assert (t.year, t.month, t.slot) == (2026, 12, 31)
+        assert t.jst_day == date(2027, 1, 1)
+        assert t.data_date == date(2026, 12, 31)
 
-    def test_new_year_opens_on_jan_2(self):
+    def test_january_opens_on_jst_january_2(self):
         t = resolve_finalized(utc(2027, 1, 2, 17, 0))
         assert (t.year, t.month, t.slot) == (2027, 1, 1)
         assert t.data_date == date(2027, 1, 1)
@@ -164,9 +163,9 @@ class TestRolloverSlot:
     new month cannot be fetched at all.
     """
 
-    def test_day_one_reads_the_previous_months_rollover_slot(self):
+    def test_day_one_reads_the_previous_months_final_slot(self):
         from utils.jst_calendar import slot_location
-        assert slot_location(date(2026, 8, 1)) == (2026, 7, 31)   # July has 31 days
+        assert slot_location(date(2026, 8, 1)) == (2026, 7, 31)   # July's day 31
 
     def test_day_one_after_a_30_day_month(self):
         from utils.jst_calendar import slot_location
@@ -186,12 +185,13 @@ class TestRolloverSlot:
         assert slot_location(date(2026, 7, 25)) == (2026, 7, 24)
 
     def test_live_target_on_day_one_never_requests_the_new_month(self):
-        """The regression: requesting August on Aug 1 returns HTTP 400."""
+        """The regression: requesting August on Aug 1 returns HTTP 400, and that
+        day belongs to July anyway."""
         t = resolve_live(utc(2026, 8, 1, 12, 49))
         assert (t.year, t.month) == (2026, 7), "would request an unstarted month"
         assert t.slot == 31
         assert t.jst_day == date(2026, 8, 1)
-        assert t.is_cross_month is True
+        assert t.data_date == date(2026, 7, 31), "must count towards July"
 
     def test_slot_index_always_within_the_array(self):
         """32 slots, so the rollover index must never exceed 31."""

@@ -230,18 +230,13 @@ class UmaMoeAPIScraper(BaseScraper):
             meta = CircleMeta.from_response(payload)
             members = payload.get("members") or []
             parsed = self._parse_members(members, target.slot) if members else {}
-            gains = self._member_gains(members, target.slot,
-                                       rollover=target.is_cross_month)
+            gains = self._member_gains(members, target.slot)
 
+            # circle.live_points is null once a competition period has closed, so
+            # fall back to what the member rows add up to.
             live_points = meta.live_points
-            monthly_point = meta.monthly_point
-            if target.is_cross_month:
-                # Day 1 of a new month. The response describes the *previous*
-                # month, so its circle totals are that month's, not this one's —
-                # and live_points comes back null once the period has moved on.
-                # Derive the new month's figures from the member rows instead.
-                live_points = sum(g.month_total for g in gains)
-                monthly_point = 0            # nothing closed in the new month yet
+            if live_points is None:
+                live_points = self._checksum_total(members, target.slot) or None
             else:
                 self._verify_checksum(members, target.slot, meta.live_points,
                                       "live_points")
@@ -252,7 +247,7 @@ class UmaMoeAPIScraper(BaseScraper):
                 as_of=meta.last_live_update,
                 live_points=live_points,
                 live_rank=meta.live_rank,
-                monthly_point=monthly_point,
+                monthly_point=meta.monthly_point,
                 monthly_rank=meta.monthly_rank,
                 yesterday_points=meta.yesterday_points,
                 members=parsed,
@@ -345,19 +340,15 @@ class UmaMoeAPIScraper(BaseScraper):
         return gain if gain > 0 else None
 
     @staticmethod
-    def _member_gains(members: List[dict], live_slot: int,
-                      rollover: bool = False) -> List["MemberGain"]:
+    def _member_gains(members: List[dict], live_slot: int) -> List["MemberGain"]:
         """Per-member fans earned in the in-progress day.
 
         The live slot holds each member's running total including today; the slot
         before it is yesterday's close. The difference is today's contribution.
 
-        ``rollover`` marks the case where the slot is the previous month's extra
-        entry, i.e. this is day 1 of a new month (see
-        ``utils.jst_calendar.slot_location``). Two things change there: the array
-        belongs to the *previous* month, so "first populated slot" would give that
-        month's baseline rather than the new one; and the new month is exactly one
-        day old, so a member's month total simply *is* what they earned today.
+        Needs no month-boundary case: the slot is the competition day, so the
+        preceding day is always slot-1 in the same array, and slot 0 is the
+        month's baseline.
         """
         gains: List[MemberGain] = []
         prev_slot = live_slot - 1
@@ -373,11 +364,8 @@ class UmaMoeAPIScraper(BaseScraper):
                 prev = fans[live_slot]        # joined today: no prior day to diff
 
             gained = max(0, fans[live_slot] - prev)
-            if rollover:
-                month_total = gained          # the month is one day old
-            else:
-                baseline = next((v for v in fans[:live_slot + 1] if v > 0), 0)
-                month_total = max(0, fans[live_slot] - baseline)
+            baseline = next((v for v in fans[:live_slot + 1] if v > 0), 0)
+            month_total = max(0, fans[live_slot] - baseline)
 
             gains.append(MemberGain(
                 trainer_id=str(m.get("viewer_id")),
@@ -528,11 +516,14 @@ class UmaMoeAPIScraper(BaseScraper):
         baseline_idx = next((i for i, f in enumerate(window) if f > 0), None)
 
         if baseline_idx is None:
-            return slot + 1, 0
+            return max(1, slot), 0
 
         baseline = window[baseline_idx]
         fully_flat = all(f == baseline for f in window[baseline_idx:])
-        join_day = (slot + 1) if fully_flat else (baseline_idx + 1)
+        # The slot index IS the competition day, so a member first seen at slot D
+        # joined on day D. Slot 0 is the month's baseline rather than a raceable
+        # day, so anyone present there counts as joining on day 1.
+        join_day = slot if fully_flat else max(1, baseline_idx)
         return join_day, baseline
 
     # --------------------------------------------------------------- getters

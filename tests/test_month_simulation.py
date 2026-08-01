@@ -86,24 +86,13 @@ def test_full_month_sweep_reads_only_finalized_days(backend, hour, label, caplog
     errs = [r.message for r in caplog.records if r.levelno >= logging.ERROR]
     assert not errs, f"{label}: checksum errors during sweep:\n" + "\n".join(errs[:5])
 
-    # data_date must never go backwards and never skip a day. Repeats are allowed
-    # only at the month boundary, where a new month's day 1 is deferred.
+    # data_date advances exactly one day per calendar day, month boundaries
+    # included: the slot IS the competition day, so nothing is skipped or repeated.
     dates = [d for _, _, d in seen]
     for prev, nxt in zip(dates, dates[1:]):
         step = (nxt - prev).days
-        if prev.month == nxt.month:
-            assert step in (0, 1), f"{label}: {prev} -> {nxt} jumped {step} days mid-month"
-        else:
-            # Crossing months: the legacy `data_date = jst_day - 1` convention
-            # means a month's final day is reported under the previous day's
-            # date, so the last day of each month is never itself a data_date.
-            assert 0 <= step <= 2, f"{label}: {prev} -> {nxt} jumped {step} days"
-
-    repeats = [b for a, b in zip(dates, dates[1:]) if a == b]
-    for r in repeats:
-        assert r.day >= 28, (
-            f"{label}: data_date {r} repeated away from a month boundary"
-        )
+        assert step == 1, f"{label}: {prev} -> {nxt} advanced {step} days"
+    assert len(dates) == len(set(dates)), f"{label}: a date was reported twice"
 
     # Every member total must be non-zero somewhere in the sweep: a club-wide
     # zero would mean we reported a month's day 1 (the boundary regression).
@@ -172,19 +161,19 @@ class TestMonthBoundary:
         assert t.jst_day == date(2026, 7, 31)
         assert t.slot == 30
 
-    def test_new_months_day_one_is_deferred(self, backend):
-        """Aug 1 17:00 UTC: JST Aug 1 has closed, but reporting it would show a
-        club-wide zero (nothing to subtract from), so July's final day is kept."""
+    def test_julys_final_day_is_jst_august_1(self, backend):
+        """Aug 1 17:00 UTC: JST Aug 1 closed, and it is July's LAST competition
+        day — July slot 31, reported as July 31."""
         import asyncio
         s = make_scraper(backend, at(2026, 8, 1, 17))
         parsed = asyncio.run(s.scrape())
         t = s.get_slot_target()
-        assert (t.year, t.month, t.slot) == (2026, 7, 30)
-        assert t.jst_day == date(2026, 7, 31)
+        assert (t.year, t.month, t.slot) == (2026, 7, 31)
+        assert t.jst_day == date(2026, 8, 1)
+        assert t.data_date == date(2026, 7, 31)
         assert sum(m["fans"][-1] for m in parsed.values()) > 0
 
-    def test_switches_to_new_month_on_day_two(self, backend):
-        """Aug 2 17:00 UTC: JST Aug 2 has closed, so August becomes reportable."""
+    def test_august_opens_on_jst_august_2(self, backend):
         import asyncio
         s = make_scraper(backend, at(2026, 8, 2, 17))
         asyncio.run(s.scrape())
@@ -204,8 +193,8 @@ class TestMonthBoundary:
     def test_no_data_date_gap_across_the_boundary(self, backend):
         """The Jul->Aug transition must not skip a reported date.
 
-        A 14:00 UTC club reads before each day's finalize, so it lags one day and
-        holds July's final row for two runs before August opens.
+        A 14:00 UTC club reads before each day's finalize, so it lags a day — but
+        the sequence is still strictly contiguous across the boundary.
         """
         import asyncio
         dates = []
@@ -215,7 +204,7 @@ class TestMonthBoundary:
             dates.append(s.get_data_date())
 
         assert dates == [date(2026, 7, 28), date(2026, 7, 29), date(2026, 7, 30),
-                         date(2026, 7, 30), date(2026, 8, 1), date(2026, 8, 2)]
+                         date(2026, 7, 31), date(2026, 8, 1), date(2026, 8, 2)]
         assert dates == sorted(dates), "reported dates went backwards"
 
 
@@ -253,8 +242,13 @@ class TestRosterEdgeCases:
             assert all(f >= 0 for f in m["fans"]), f"negative fans for {vid}: {m['fans']}"
 
     def test_join_day_detected_for_late_joiner(self, backend):
+        """'LateJoin' first races on JST July 9, which is competition day 8.
+
+        join_day is a competition day, matching data_date and the slot index — the
+        old value of 9 came from treating the slot as a JST day.
+        """
         parsed, _ = self._run(backend, at(2026, 7, 20, 17))
-        assert parsed["1004"]["join_day"] == 9
+        assert parsed["1004"]["join_day"] == 8
 
     def test_boundary_joiner_appears_in_august(self, backend):
         """'BoundaryJoin' starts Aug 1 — absent in July, present once August is read."""

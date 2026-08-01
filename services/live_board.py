@@ -21,7 +21,7 @@ import discord
 
 from models import Club
 from scrapers.umamoe_api_scraper import LiveSnapshot, UmaMoeAPIScraper
-from utils.jst_calendar import resolve_live
+from utils.jst_calendar import competition_day, resolve_live
 from config.settings import COLOR_INFO, COLOR_ON_TRACK, COLOR_BEHIND
 
 logger = logging.getLogger(__name__)
@@ -91,7 +91,7 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
     # ---- summary -------------------------------------------------------------
     summary = discord.Embed(
         title=title,
-        description=f"**Day:** {snap.jst_day:%B %d} (JST)\n{blurb}",
+        description=f"**Competition day:** {competition_day(snap.jst_day):%B %d}\n{blurb}",
         colour=colour,
         timestamp=datetime.now(timezone.utc),
     )

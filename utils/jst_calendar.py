@@ -114,29 +114,42 @@ def days_in_month(year: int, month: int) -> int:
     return calendar.monthrange(year, month)[1]
 
 
-def slot_location(jst_day: date) -> Tuple[int, int, int]:
-    """Which ``(year, month, slot)`` actually holds this JST day's data.
+def competition_day(jst_day: date) -> date:
+    """The competition day a JST day's racing counts towards.
 
-    Mostly ``(its own month, day - 1)``, with one exception that matters.
-
-    Every ``daily_fans`` array is 32 slots regardless of month length, and the
-    slot past the month's last day holds **day 1 of the following month**.
-    Verified 2026-08-01 on circle 860280110: June (30 days) populates slots 1..30
-    with slot[30] = July 1, and July (31 days) populates 0..31 with slot[31] =
-    August 1. Cross-checked — June slot[30] equals July slot[0] for members
-    present in both.
-
-    This matters because uma.moe rejects a request for a month it considers
-    unstarted (``HTTP 400 "circle month cannot be in the future"``), so on day 1
-    the new month is not fetchable at all — its data is only reachable through the
-    previous month's rollover slot. Reading day 1 from the previous month also
-    keeps the previous day in the *same* array, so day-over-day differences stay
-    computable across the boundary.
+    A competition month ends at 15:00 UTC on the 1st of the following calendar
+    month, so the racing done during JST day N counts towards day N-1. JST
+    August 1 (which runs 31 Jul 15:00 UTC -> 1 Aug 15:00 UTC) is therefore
+    **July's final competition day**, not August's first.
     """
-    if jst_day.day != 1:
-        return jst_day.year, jst_day.month, jst_day.day - 1
-    prev = jst_day - timedelta(days=1)          # last day of the previous month
-    return prev.year, prev.month, days_in_month(prev.year, prev.month)
+    return jst_day - timedelta(days=1)
+
+
+def slot_location(jst_day: date) -> Tuple[int, int, int]:
+    """Which ``(year, month, slot)`` holds this JST day's data.
+
+    The array layout follows directly from the competition calendar:
+
+        slot 0        the baseline - the total at the end of the previous month
+        slots 1..N    the N competition days of the month
+        slot D        competition day D  ==  JST day D+1
+
+    Which is why every array is 32 slots and why the populated range tracks month
+    length exactly. Measured 2026-08-01 on circle 860280110: July (31 days)
+    populates 0..31, June (30 days) populates 1..30 with slot 31 empty, and
+    ``sum(slot[30] - slot[0])`` reproduces July's ``monthly_point`` to 0.71%.
+
+    Two consequences worth stating, because both caused bugs:
+
+    * A month's data is only ever reached through its own array. uma.moe rejects
+      an unstarted month (``HTTP 400 "circle month cannot be in the future"``),
+      and on JST day 1 of a calendar month there is nothing to ask it for yet -
+      that day belongs to the previous month anyway.
+    * The slot index equals the competition day of the month, so it is simply
+      ``data_date.day``. There is no separate rollover case to handle.
+    """
+    comp = competition_day(jst_day)
+    return comp.year, comp.month, comp.day
 
 
 def _target(jst_day: date, is_live: bool) -> SlotTarget:
@@ -159,23 +172,14 @@ def resolve_finalized(now_utc: Optional[datetime] = None) -> SlotTarget:
     "probe whether slot > 0 and fall back a day" heuristic, which broke once
     uma.moe started populating the in-progress slot live.
 
-    One exception, at the month boundary. Monthly fan totals are measured from a
-    member's first populated slot, so on JST day 1 of a month every member's
-    monthly total is zero by construction — there is no earlier slot to subtract
-    from. Reporting that would show a whole club dropping to 0, and because
-    ``data_date`` is ``jst_day - 1`` it would write those zeros under a
-    *previous-month* date, on top of real history.
-
-    So day 1 is deferred: keep reporting the previous month's final day until the
-    new month has a second closed day. That is what the old Day-1 branch achieved
-    by fetching the previous month, and it keeps reported dates gap-free. The cost
-    is that the previous month's last row is rewritten with identical values for a
-    day or two, which the ``(member_id, date)`` upsert absorbs.
+    Month boundaries need no special handling: the slot is the competition day,
+    so JST August 1 resolves to July slot 31 — July's final day — and August
+    opens at JST August 2 with slot 1, measured against August's own slot-0
+    baseline. An earlier version deferred day 1 to avoid a zero monthly total,
+    which was a symptom of mapping the slot to the wrong month rather than a real
+    constraint.
     """
-    closed = last_closed_jst_day(now_utc)
-    if closed.day == 1:
-        closed -= timedelta(days=1)
-    return _target(closed, is_live=False)
+    return _target(last_closed_jst_day(now_utc), is_live=False)
 
 
 def resolve_live(now_utc: Optional[datetime] = None) -> SlotTarget:

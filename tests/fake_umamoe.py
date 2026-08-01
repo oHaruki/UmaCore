@@ -6,8 +6,11 @@ month boundary, which is otherwise only reachable by waiting for one.
 Semantics reproduced from the live API (circles 452414222 / 883951941):
 
 * ``daily_fans`` is always **32 slots**, whatever the month's length
-* ``daily_fans[i]`` is the member's lifetime total at the END of JST day ``i+1``
-* JST day N spans ``(N-1) 15:00 UTC -> N 15:00 UTC``
+* slot 0 is the baseline (the total at the end of the previous month) and slots
+  1..N are the N competition days, so slot ``i`` of month M is JST day
+  ``date(M, 1) + i days`` — the last slot falls on the 1st of the NEXT month
+* JST day N spans ``(N-1) 15:00 UTC -> N 15:00 UTC``, and its racing counts
+  towards competition day N-1
 * the in-progress day's slot is populated and **grows through the day**
 * days not yet raced, and slots past the month's length, are ``0``
 * a member who left reads ``0`` from their leave day on (observed: "Sven")
@@ -83,9 +86,11 @@ class FakeUmaMoe:
     def _slot_value(self, m: FakeMember, year: int, month: int, slot: int,
                     now_utc: datetime) -> int:
         """What `daily_fans[slot]` holds for this member right now."""
-        if slot >= days_in_month(year, month):
-            return 0                                  # past the month's length
-        day = date(year, month, slot + 1)
+        if slot > days_in_month(year, month):
+            return 0                                  # past the month's last slot
+        # slot i is JST day (first of month + i): slot 0 is the baseline day and
+        # the final slot lands on the 1st of the following month.
+        day = date(year, month, 1) + timedelta(days=slot)
 
         if not m.is_member_on(day):
             # Left the club, or hadn't joined. A transferred member emits a
@@ -112,7 +117,7 @@ class FakeUmaMoe:
         the baseline the fake uses too. (Using the true end-of-previous-month
         value instead would put the fake a full day out of step with the API.)
         """
-        for i in range(days_in_month(year, month)):
+        for i in range(days_in_month(year, month) + 1):
             v = self._slot_value(m, year, month, i, now_utc)
             if v > 0:
                 return v
@@ -121,7 +126,7 @@ class FakeUmaMoe:
     def _month_total_at(self, year: int, month: int, slot: int,
                         now_utc: datetime) -> int:
         """uma.moe's own club total: everyone's gains this month, leavers included."""
-        if slot < 0 or slot >= days_in_month(year, month):
+        if slot < 0 or slot > days_in_month(year, month):
             return 0
         total = 0
         month_start = date(year, month, 1)
@@ -130,7 +135,7 @@ class FakeUmaMoe:
             baseline = self._member_baseline(m, year, month, now_utc)
             if v > 0:
                 total += v - baseline
-            elif m.left is not None and month_start <= m.left <= date(year, month, slot + 1):
+            elif m.left is not None and month_start <= m.left <= month_start + timedelta(days=slot):
                 # Left mid-month: their earned fans still count for the club, but
                 # their slot reads 0 so the scraper cannot see them. This is the
                 # mechanism behind the residual observed on real clubs.
@@ -158,9 +163,15 @@ class FakeUmaMoe:
         self.calls.append((year, month, now_utc))
 
         in_progress = jst_day_of(now_utc)
-        live_slot = in_progress.day - 1 if (in_progress.year, in_progress.month) == (year, month) else None
         closed = in_progress - timedelta(days=1)
-        final_slot = closed.day - 1 if (closed.year, closed.month) == (year, month) else None
+
+        def slot_of(jst: date):
+            """Slot in THIS month's array for a JST day, or None if out of range."""
+            offset = (jst - date(year, month, 1)).days
+            return offset if 0 <= offset <= days_in_month(year, month) else None
+
+        live_slot = slot_of(in_progress)
+        final_slot = slot_of(closed)
 
         members = []
         for m in self.members:
@@ -173,8 +184,7 @@ class FakeUmaMoe:
                 "last_updated": self._live_stamp(now_utc).isoformat().replace("+00:00", "Z"),
             })
 
-        prev = closed - timedelta(days=1)
-        prev_slot = prev.day - 1 if (prev.year, prev.month) == (year, month) else None
+        prev_slot = slot_of(closed - timedelta(days=1))
 
         circle = {
             "circle_id": self.circle_id, "name": self.name,

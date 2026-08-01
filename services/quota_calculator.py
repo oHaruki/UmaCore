@@ -218,11 +218,19 @@ class QuotaCalculator:
                     # Join day is within the current month being processed
                     join_date = date(data_date.year, data_date.month, detected_join_day)
                 else:
-                    # Join day exceeds current month, must be from previous month
-                    if data_date.month == 1:
-                        join_date = date(data_date.year - 1, 12, detected_join_day)
-                    else:
-                        join_date = date(data_date.year, data_date.month - 1, detected_join_day)
+                    # Out of range for this month — fall back to the previous one,
+                    # clamped to a day that exists there. (A bad value used to
+                    # raise ValueError and abort the whole club's processing.)
+                    prev_year = data_date.year - 1 if data_date.month == 1 else data_date.year
+                    prev_month = 12 if data_date.month == 1 else data_date.month - 1
+                    prev_last = calendar.monthrange(prev_year, prev_month)[1]
+                    safe_day = min(max(1, detected_join_day), prev_last)
+                    if safe_day != detected_join_day:
+                        logger.warning(
+                            f"{trainer_name}: join day {detected_join_day} is not a valid "
+                            f"date in {prev_year}-{prev_month:02d}, clamped to {safe_day}"
+                        )
+                    join_date = date(prev_year, prev_month, safe_day)
                 
                 member = await Member.create(club_id, trainer_name, join_date, trainer_id)
                 new_members += 1
