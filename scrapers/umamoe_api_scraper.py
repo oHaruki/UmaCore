@@ -292,29 +292,38 @@ class UmaMoeAPIScraper(BaseScraper):
     def _assert_finalized(self, target: SlotTarget) -> None:
         """Confirm uma.moe has finalized the target JST day for this circle.
 
-        JST day N closes at ``N 15:00 UTC``; the per-circle finalize writes
-        ``last_updated`` at that moment. If that timestamp predates the close,
-        the slot we're about to read is still the running total.
+        JST day N closes at ``N 15:00 UTC``, so a write at or after that moment
+        means the slot holds a settled value rather than a running total.
 
-        This replaces the old "did any member's fan count grow?" heuristic, which
+        Uses the newest of ``yesterday_updated`` and ``last_updated``. The former
+        is the finalize marker proper — measured 2026-08-02, every circle reported
+        exactly ``15:01:00Z``. ``last_updated`` alone is not safe to gate on: it is
+        touched at unrelated times, and around the 2026-08 rollover it read
+        ``10:00:28Z`` on a day that had already finalized at 15:01, which failed
+        this check, exhausted the scheduler's retries and lost a day of history.
+
+        Replaces the older "did any member's fan count grow?" heuristic, which
         could not tell a not-yet-published day from a genuinely quiet one.
         """
         closed_at = datetime(
             target.jst_day.year, target.jst_day.month, target.jst_day.day,
             ROLLOVER_UTC_HOUR, 0, tzinfo=timezone.utc,
         )
-        last_updated = self._meta.last_updated
-        if last_updated is None:
-            # Older responses (or a schema change) — don't block on a missing field.
+        stamps = [t for t in (self._meta.yesterday_updated, self._meta.last_updated)
+                  if t is not None]
+        if not stamps:
+            # Nothing to check against — don't block on a missing field.
             logger.warning(
-                f"circle {self.circle_id}: no last_updated in response, "
+                f"circle {self.circle_id}: no finalize timestamp in response, "
                 f"proceeding without a freshness guarantee"
             )
             return
-        if last_updated < closed_at:
+
+        newest = max(stamps)
+        if newest < closed_at:
             raise StaleDataError(
                 f"JST day {target.jst_day} closed at {closed_at.isoformat()} but uma.moe "
-                f"last finalized circle {self.circle_id} at {last_updated.isoformat()} — "
+                f"last wrote circle {self.circle_id} at {newest.isoformat()} — "
                 f"the rollout hasn't reached this circle yet."
             )
 

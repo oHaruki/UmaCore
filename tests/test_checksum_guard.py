@@ -153,3 +153,59 @@ class TestGuardIsSafe:
         s = make_scraper(1_000_000, 1_000_000)
         assert s._reference_day_gain() is None
         errors_from(caplog, s, members_totalling(999_000), 1_000_000)  # must not raise
+
+
+class TestFreshnessGate:
+    """The gate decides whether a day has finalized. Getting it wrong loses a
+    whole day of history: the scheduler retries, gives up, and writes nothing.
+
+    Measured 2026-08-02 across the month rollover:
+        yesterday_updated  2026-08-01T15:01:00Z   the finalize, on every circle
+        last_updated       2026-08-01T18:06:30Z   touched at unrelated times
+                           2026-08-01T10:00:28Z   earlier the same day
+    Gating on last_updated alone rejected a day that had already finalized.
+    """
+    from datetime import date as _date
+
+    TARGET = None  # built per-test
+
+    def _target(self):
+        from utils.jst_calendar import SlotTarget
+        from datetime import date
+        return SlotTarget(year=2026, month=7, slot=31, jst_day=date(2026, 8, 1),
+                          data_date=date(2026, 7, 31), is_live=False)
+
+    def _check(self, last_updated, yesterday_updated):
+        from scrapers.base_scraper import StaleDataError
+        s = UmaMoeAPIScraper("1")
+        s._meta = CircleMeta(last_updated=last_updated,
+                             yesterday_updated=yesterday_updated)
+        try:
+            s._assert_finalized(self._target())
+            return False
+        except StaleDataError:
+            return True
+
+    def _utc(self, y, mo, d, h, mi=0, s=0):
+        from datetime import datetime, timezone
+        return datetime(y, mo, d, h, mi, s, tzinfo=timezone.utc)
+
+    def test_accepts_a_finalized_day_despite_a_stale_last_updated(self):
+        """The 2026-08-01 regression that cost a day of history."""
+        assert not self._check(self._utc(2026, 8, 1, 10, 0, 28),
+                               self._utc(2026, 8, 1, 15, 1))
+
+    def test_rejects_when_every_timestamp_predates_the_close(self):
+        assert self._check(self._utc(2026, 8, 1, 10, 0, 28),
+                           self._utc(2026, 7, 31, 15, 1))
+
+    def test_accepts_when_last_updated_is_itself_the_finalize(self):
+        """The ordinary case, where the two fields agree."""
+        assert not self._check(self._utc(2026, 8, 1, 15, 0, 44), None)
+
+    def test_accepts_on_yesterday_updated_alone(self):
+        assert not self._check(None, self._utc(2026, 8, 1, 15, 1))
+
+    def test_permissive_when_no_timestamp_is_present(self):
+        """Never block on a missing field — losing a day is worse than a stale read."""
+        assert not self._check(None, None)
