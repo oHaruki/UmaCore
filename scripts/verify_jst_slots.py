@@ -94,10 +94,13 @@ async def check(circle_id: str, label: str, club=None) -> str:
             print(f"               off by {diff:,} = {ratio:.1%} of a day "
                   f"({day_gain:,}/day), {rel:.2%} of the month")
         else:
-            bad = rel > UMAMOE_CHECKSUM_TOLERANCE and diff > UMAMOE_CHECKSUM_MIN_ABS
-            mark = f"{RED}DRIFT{RESET}" if bad else f"{GREEN}OK{RESET}"
-            print(f"  checksum   : {mark}  parsed {total:,} vs monthly_point "
-                  f"{meta.monthly_point:,}  ({rel:.3%}, no day reference)")
+            # No yesterday_points means a competition period is turning over, and
+            # the circle totals are unreliable exactly then — the check is skipped
+            # rather than compared against a figure known to be in flux.
+            bad = False
+            print(f"  checksum   : {DIM}SKIPPED{RESET}  no day reference "
+                  f"(period rollover); parsed {total:,} vs monthly_point "
+                  f"{meta.monthly_point:,}")
         if bad:
             verdict = "drift"
     else:

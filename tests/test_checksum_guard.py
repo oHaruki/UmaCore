@@ -113,19 +113,30 @@ class TestSlotErrorIsCaught:
         assert not errors_from(caplog, s, members_totalling(total), self.MONTHLY)
 
 
-class TestFallbackWithoutDayReference:
-    """With no yesterday_points, fall back to relative + an absolute floor."""
+class TestNoDayReference:
+    """Without yesterday_points the check is skipped entirely.
+
+    That field is only absent while a competition period is turning over, and the
+    circle totals are unreliable exactly then. Measured across the 2026-08
+    rollover: July's monthly_point fell from 1,837,269,789 to 1,165,044,213
+    between reads while the member rows were unchanged, which flagged all four
+    real clubs at 63-91%. Comparing against a figure known to be wrong produces
+    only false alarms.
+    """
 
     def test_small_club_churn_not_flagged(self, caplog):
-        """3.3M off a 125M club is 2.6% — under the absolute floor, so ignore it."""
         s = make_scraper(124_898_261, None)
-        errs = errors_from(caplog, s, members_totalling(121_620_634), 124_898_261)
-        assert not errs
+        assert not errors_from(caplog, s, members_totalling(121_620_634), 124_898_261)
 
-    def test_large_absolute_deviation_flagged(self, caplog):
-        s = make_scraper(1_656_751_635, None)
-        errs = errors_from(caplog, s, members_totalling(1_500_008_760), 1_656_751_635)
-        assert errs
+    def test_large_deviation_not_flagged_either(self, caplog):
+        """The 2026-08 case: a huge gap caused by the reference, not the parse."""
+        s = make_scraper(1_165_044_213, None)
+        assert not errors_from(caplog, s, members_totalling(1_902_368_089), 1_165_044_213)
+
+    def test_still_flags_when_a_day_reference_exists(self, caplog):
+        """The guard must keep working on an ordinary day."""
+        s = make_scraper(1_656_751_635, 1_500_008_760)
+        assert errors_from(caplog, s, members_totalling(1_500_008_760), 1_656_751_635)
 
 
 class TestGuardIsSafe:

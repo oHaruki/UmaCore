@@ -449,21 +449,21 @@ class UmaMoeAPIScraper(BaseScraper):
                 )
             return
 
-        # No full-day reference in this response — fall back to a relative
-        # tolerance gated on an absolute floor, so churn on a small club doesn't
-        # masquerade as a slot error.
-        rel = diff / expected_total
-        if rel > UMAMOE_CHECKSUM_TOLERANCE and diff > UMAMOE_CHECKSUM_MIN_ABS:
-            logger.error(
-                f"⚠️ circle {self.circle_id}: parsed total {ours:,} deviates "
-                f"{rel:.1%} ({diff:,}) from {label} {expected_total:,} — likely a "
-                f"slot-index error. Check utils/jst_calendar.py against the API."
-            )
-        else:
-            logger.debug(
-                f"Checksum OK vs {label} (no day reference): {ours:,} vs "
-                f"{expected_total:,} ({rel:.2%})"
-            )
+        # No full-day reference means yesterday_points is absent, which in practice
+        # only happens while a competition period is turning over — and during that
+        # window the circle totals themselves are in flux. Measured across the
+        # 2026-08 rollover: July's monthly_point fell from 1,837,269,789 to
+        # 1,165,044,213 between two reads while the member rows stayed put, so
+        # comparing against it flagged every club at 63-91%.
+        #
+        # Skip rather than compare against a figure known to be unreliable. A real
+        # slot-index error still shows up on any ordinary day, when the reference
+        # is sound.
+        logger.debug(
+            f"Checksum skipped for circle {self.circle_id} vs {label}: no "
+            f"yesterday_points to scale against (parsed {ours:,}, {label} "
+            f"{expected_total:,}, {diff / expected_total:.1%} apart)"
+        )
 
     # --------------------------------------------------------------- parsing
 
