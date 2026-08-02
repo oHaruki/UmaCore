@@ -103,6 +103,13 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
         delta = snap.rank_delta
         move = f" ({delta:+d})" if delta else ""
         summary.add_field(name="Rank", value=f"#{snap.live_rank:,}{move}", inline=True)
+    else:
+        # Uma.moe serves no live_rank until it starts publishing live data for a
+        # newly opened competition month. Say so rather than silently dropping the
+        # field, and don't substitute monthly_rank — measured across the 2026-08
+        # rollover, the circle-level rank and point fields were still shifting by
+        # hundreds of millions between reads.
+        summary.add_field(name="Rank", value="— *not published yet*", inline=True)
 
     if snap.live_points:
         summary.add_field(name="Month total", value=_fmt(snap.live_points), inline=True)

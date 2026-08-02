@@ -498,3 +498,27 @@ class TestClosedBoardKeepsItsRoster:
         assert len(wired.channel.posted) == 2, "reposted more than once for one day"
         last = wired.channel._messages[original].edits[-1]
         assert "final" in last[0].description.lower(), "archive stopped saying final"
+
+
+class TestRankAvailability:
+    """Uma.moe serves no live_rank until it publishes live data for a newly
+    opened competition month. The field must explain itself rather than vanish,
+    and must never fall back to monthly_rank — measured across the 2026-08
+    rollover, the circle-level rank and point fields were still moving by
+    hundreds of millions between reads."""
+
+    def _summary(self, **kw):
+        return live_board.build_embeds(club(), snap(**kw))[0]
+
+    def test_shows_the_live_rank_when_present(self):
+        rank = next(f for f in self._summary().fields if f.name == "Rank")
+        assert "#300" in rank.value
+
+    def test_explains_a_missing_rank_instead_of_hiding_it(self):
+        rank = next(f for f in self._summary(live_rank=None).fields if f.name == "Rank")
+        assert "not published yet" in rank.value
+
+    def test_never_substitutes_the_monthly_rank(self):
+        s = self._summary(live_rank=None, monthly_rank=477)
+        rank = next(f for f in s.fields if f.name == "Rank")
+        assert "477" not in rank.value, "showed an untrustworthy monthly_rank"
