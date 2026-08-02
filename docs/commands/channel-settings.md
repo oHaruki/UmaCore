@@ -88,6 +88,18 @@ notify anyone, so the board updating all day won't spam the channel.
 Fans earned so far today, live club rank and how it's moved, month total, and the
 members contributing today.
 
+### It pins the club's scrape time
+
+Turning the live board on moves that club's **daily report** to the competition day
+close (15:00 UTC), whatever `scrape_time` is set to. The board finalises the day at
+that moment, so scraping earlier would leave the report a day behind the board
+sitting next to it.
+
+In local terms that's 17:00 in summer / 16:00 in winter for a European club,
+00:00 for a Japanese one, 11:00 US Eastern. It follows DST automatically.
+
+Turn the board off and the club goes back to its configured `scrape_time`.
+
 ### Important
 
 The live board is **display only**. Numbers on it are not final — the day is still

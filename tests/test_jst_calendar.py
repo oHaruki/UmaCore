@@ -199,3 +199,47 @@ class TestRolloverSlot:
         for month in range(1, 13):
             _, _, slot = slot_location(date(2026, month, 1))
             assert 0 <= slot <= 31, f"month {month} rollover slot {slot} out of range"
+
+
+class TestLiveBoardPinsScrapeTime:
+    """A club running a live board is scraped at the competition day close.
+
+    The board finalises that day at 15:00 UTC. Scraping earlier would leave the
+    daily report a day behind the board sitting next to it in the same server.
+    """
+
+    def _club(self, tz, live, scrape_hour=18):
+        from types import SimpleNamespace
+        from datetime import time as dtime
+        return SimpleNamespace(
+            timezone=tz, scrape_time=dtime(scrape_hour, 0),
+            live_board_channel_id=1 if live else None,
+            live_board_enabled=live,
+        )
+
+    def _effective(self, club, now):
+        from bot.tasks import BotTasks
+        return BotTasks._effective_scrape_time(club, now)
+
+    def test_board_off_keeps_the_configured_time(self):
+        got = self._effective(self._club("Europe/Amsterdam", False), utc(2026, 7, 15, 12))
+        assert (got.hour, got.minute) == (18, 0)
+
+    def test_board_on_pins_to_the_day_close(self):
+        """17:00 Amsterdam is 15:00 UTC in summer."""
+        got = self._effective(self._club("Europe/Amsterdam", True), utc(2026, 7, 15, 12))
+        assert (got.hour, got.minute) == (17, 0)
+
+    def test_pinned_time_follows_dst(self):
+        """Same instant, one hour earlier locally in winter."""
+        got = self._effective(self._club("Europe/Amsterdam", True), utc(2026, 1, 15, 12))
+        assert (got.hour, got.minute) == (16, 0)
+
+    @pytest.mark.parametrize("tz,expected_hour", [
+        ("UTC", 15),
+        ("Asia/Tokyo", 0),          # JST midnight — the boundary itself
+        ("America/New_York", 11),   # EDT in July
+    ])
+    def test_pinned_time_is_1500_utc_everywhere(self, tz, expected_hour):
+        got = self._effective(self._club(tz, True), utc(2026, 7, 15, 12))
+        assert got.hour == expected_hour

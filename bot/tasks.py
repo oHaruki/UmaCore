@@ -184,8 +184,9 @@ class BotTasks:
                 now_in_club_tz = now_utc.astimezone(club_tz)
                 current_date = now_in_club_tz.date()
 
-                target_hour = club.scrape_time.hour
-                target_minute = club.scrape_time.minute
+                effective = self._effective_scrape_time(club, now_utc)
+                target_hour = effective.hour
+                target_minute = effective.minute
 
                 if not (now_in_club_tz.hour == target_hour and now_in_club_tz.minute >= target_minute):
                     continue
@@ -197,9 +198,10 @@ class BotTasks:
 
                 dispatch_dt, held = await self._compute_dispatch_utc(club, now_utc)
                 tag = "held for rollover grace" if held else "on time"
+                pinned = " · pinned to day close (live board)" if club.live_board_enabled else ""
                 logger.info(
                     f"⏰ {club.club_name} due ({now_in_club_tz.strftime('%H:%M')} {club.timezone}) — "
-                    f"dispatch {dispatch_dt.strftime('%H:%M:%S')} UTC [{tag}]"
+                    f"dispatch {dispatch_dt.strftime('%H:%M:%S')} UTC [{tag}]{pinned}"
                 )
                 self.scheduler.enqueue(club, dispatch_dt)
 
@@ -208,6 +210,30 @@ class BotTasks:
                 continue
 
         self._prune_last_runs(now_utc)
+
+    @staticmethod
+    def _effective_scrape_time(club: Club, now_utc: datetime) -> time:
+        """When this club should be scraped, in its own timezone.
+
+        Clubs running a live board are pinned to the competition day close
+        (15:00 UTC) rather than their configured time. The board finalises that
+        day at the close, so scraping earlier would leave the daily report a day
+        behind the board it sits next to — two surfaces disagreeing about the
+        same club on the same screen.
+
+        Clubs without a live board keep whatever time they set.
+
+        Recomputed from ``now_utc`` on every tick, so the local equivalent of
+        15:00 UTC follows the club's DST rather than drifting an hour twice a year.
+        """
+        if not club.live_board_enabled:
+            return club.scrape_time
+
+        tz = resolve_timezone(club.timezone)
+        close_local = now_utc.replace(
+            hour=ROLLOVER_UTC_HOUR, minute=0, second=0, microsecond=0
+        ).astimezone(tz)
+        return time(close_local.hour, close_local.minute)
 
     def _prune_last_runs(self, now_utc: datetime) -> None:
         """Drop run keys older than two days.
@@ -237,9 +263,10 @@ class BotTasks:
         ~3s of each other, so the rank model was also mis-calibrated.)
         """
         club_tz = resolve_timezone(club.timezone)
+        effective = self._effective_scrape_time(club, now_utc)
         target_local = club_tz.localize(
             datetime.combine(now_utc.astimezone(club_tz).date(),
-                             time(club.scrape_time.hour, club.scrape_time.minute))
+                             time(effective.hour, effective.minute))
         )
         target_utc = target_local.astimezone(timezone.utc)
 
