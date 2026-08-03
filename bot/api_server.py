@@ -16,7 +16,9 @@ from utils.timezone_helper import resolve_timezone
 
 from config.database import db
 from models import Club
+from models.quota_requirement import QuotaSchedule
 from scrapers import UmaMoeAPIScraper, ChronoGenesisScraper
+from utils.rate_limiter import PRIORITY_INTERACTIVE
 from services import QuotaCalculator, BombManager, ScrapeContext
 from config.settings import USE_UMAMOE_API, BOT_API_SECRET
 
@@ -62,33 +64,15 @@ async def _backfill_month(club: Club, scraped_data: dict, fetched_year: int, fet
     join_day is the first index that has data (1-based), so we iterate
     range(join_day, len(fans)) to cover all competition days up to current.
     """
-    period_days = {'daily': 1, 'weekly': 7, 'biweekly': 14}.get(club.quota_period, 1)
-    default_quota = club.daily_quota
+    schedule = await QuotaSchedule.load(club.club_id)
 
-    quota_reqs = await db.fetch(
-        "SELECT effective_date, daily_quota FROM quota_requirements "
-        "WHERE club_id = $1 ORDER BY effective_date ASC",
-        club.club_id
-    )
-
-    def quota_for(d: date) -> int:
-        q = default_quota
-        for row in quota_reqs:
-            if row['effective_date'] <= d:
-                q = row['daily_quota']
-            else:
-                break
-        return q
-
-    def calc_expected(join_date: date, data_date: date) -> int:
-        start_of_month = date(data_date.year, data_date.month, 1)
-        start = join_date if join_date >= start_of_month else start_of_month
-        total = 0.0
-        cur = start
-        while cur <= data_date:
-            total += quota_for(cur) / period_days
-            cur += timedelta(days=1)
-        return round(total)
+    async def calc_expected(join_date: date, data_date: date) -> int:
+        # Delegates rather than reimplementing: this used to have its own loop that
+        # did NOT skip the member's join day, so backfilled rows charged joiners one
+        # extra day of quota and showed them as behind on arrival.
+        return await QuotaCalculator.calculate_expected_fans(
+            club.club_id, join_date, data_date, club.quota_period, schedule=schedule
+        )
 
     month_start = date(fetched_year, fetched_month, 1)
     backfilled = 0
@@ -132,7 +116,7 @@ async def _backfill_month(club: Club, scraped_data: dict, fetched_year: int, fet
                 )
                 continue
 
-            expected = calc_expected(join_date_val, comp_date)
+            expected = await calc_expected(join_date_val, comp_date)
             deficit_surplus = comp_fans - expected
             consecutive_behind = consecutive_behind + 1 if deficit_surplus < 0 else 0
 
@@ -178,7 +162,7 @@ async def handle_sync(request: web.Request) -> web.StreamResponse:
             return await _send_json(request, {'error': 'Club has no circle_id configured'}, status=400)
         if not club.is_circle_id_valid():
             return await _send_json(request, {'error': 'Invalid circle_id (must be numeric)'}, status=400)
-        scraper = UmaMoeAPIScraper(club.circle_id)
+        scraper = UmaMoeAPIScraper(club.circle_id, priority=PRIORITY_INTERACTIVE)
     else:
         scraper = ChronoGenesisScraper(club.scrape_url)
 
@@ -210,8 +194,12 @@ async def handle_sync(request: web.Request) -> web.StreamResponse:
                 await bomb_manager.check_and_activate_bombs(club, current_date)
                 await bomb_manager.check_and_deactivate_bombs(club.club_id, current_date)
 
-                fetched_year = getattr(scraper, '_fetched_year', None) or current_date.year
-                fetched_month = getattr(scraper, '_fetched_month', None) or current_date.month
+                # ChronoGenesis has no notion of a fetched period — it always reads
+                # the current month — so fall back to the calendar date for it.
+                get_period = getattr(scraper, 'get_fetched_period', None)
+                fetched_year, fetched_month = get_period() if get_period else (None, None)
+                fetched_year = fetched_year or current_date.year
+                fetched_month = fetched_month or current_date.month
                 backfilled = await _backfill_month(club, scraped_data, fetched_year, fetched_month)
 
                 if backfilled:
@@ -254,33 +242,12 @@ async def handle_recalculate(request: web.Request) -> web.StreamResponse:
     if not club:
         return await _send_json(request, {'error': 'Club not found'}, status=404)
 
-    period_days = {'daily': 1, 'weekly': 7, 'biweekly': 14}.get(club.quota_period, 1)
-    default_quota = club.daily_quota
+    schedule = await QuotaSchedule.load(club_id)
 
-    quota_reqs = await db.fetch(
-        "SELECT effective_date, daily_quota FROM quota_requirements "
-        "WHERE club_id = $1 ORDER BY effective_date ASC",
-        club_id
-    )
-
-    def quota_for(d: date) -> int:
-        q = default_quota
-        for row in quota_reqs:
-            if row['effective_date'] <= d:
-                q = row['daily_quota']
-            else:
-                break
-        return q
-
-    def calc_expected(join_date: date, data_date: date) -> int:
-        month_start = date(data_date.year, data_date.month, 1)
-        start = join_date if join_date >= month_start else month_start
-        total = 0.0
-        cur = start
-        while cur <= data_date:
-            total += quota_for(cur) / period_days
-            cur += timedelta(days=1)
-        return round(total)
+    async def calc_expected(join_date: date, data_date: date) -> int:
+        return await QuotaCalculator.calculate_expected_fans(
+            club_id, join_date, data_date, club.quota_period, schedule=schedule
+        )
 
     today = date.today()
     month_start = date(today.year, today.month, 1)
@@ -309,7 +276,7 @@ async def handle_recalculate(request: web.Request) -> web.StreamResponse:
 
         consecutive_behind = 0
         for row in history:
-            expected = calc_expected(member['join_date'], row['date'])
+            expected = await calc_expected(member['join_date'], row['date'])
             deficit_surplus = row['cumulative_fans'] - expected
             consecutive_behind = consecutive_behind + 1 if deficit_surplus < 0 else 0
             await db.execute(

@@ -8,6 +8,8 @@ import logging
 import asyncio
 
 import os
+import zlib
+from pathlib import Path
 
 from models import Club, Member, ClubRankHistory, QuotaRequirement
 from scrapers import ChronoGenesisScraper, UmaMoeAPIScraper, StaleDataError
@@ -17,11 +19,14 @@ from services import (
 )
 from services.tally_renderer import generate_tally_image
 from utils.timezone_helper import resolve_timezone
+from utils.jst_calendar import ROLLOVER_UTC_HOUR
+from services.backup_service import create_backup, find_pg_dump
+from services.live_board import update_club as update_live_board
 from config.settings import (
-    USE_UMAMOE_API, SCRAPE_DEFAULT_UTC_TIME, SCRAPE_ROLLOVER_WINDOW_MIN,
-    SCRAPE_ROLLOUT_PER_SEC, SCRAPE_RANK_BUFFER_SEC, SCRAPE_MAX_RANK_DELAY_SEC,
-    SCRAPE_UNKNOWN_RANK_DELAY_SEC, SCRAPE_MAX_FRESHNESS_RETRIES,
+    USE_UMAMOE_API, SCRAPE_ROLLOVER_GRACE_SEC, SCRAPE_MAX_FRESHNESS_RETRIES,
     SCRAPE_FRESHNESS_RETRY_DELAY_SEC, SCRAPE_MAX_CONCURRENCY,
+    DATABASE_URL, DB_BACKUP_ENABLED, DB_BACKUP_DIR, DB_BACKUP_KEEP,
+    DB_BACKUP_UTC_TIME, DB_BACKUP_TIMEOUT_SEC,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,8 +45,19 @@ class BotTasks:
         # Track last run per club per day (club_id_YYYY-MM-DD -> True)
         self.last_runs = {}
 
-        # Rank-ordered dispatcher: the tick enqueues due clubs, the scheduler
-        # releases them in rank/time order and re-queues stale fetches.
+        # Parse the backup time once; fall back to a quiet default if malformed.
+        try:
+            bh, bm = map(int, DB_BACKUP_UTC_TIME.split(":"))
+            self._backup_time = time(bh, bm)
+        except Exception:
+            logger.warning(
+                f"Invalid DB_BACKUP_UTC_TIME '{DB_BACKUP_UTC_TIME}', defaulting to 03:30 UTC"
+            )
+            self._backup_time = time(3, 30)
+
+        # Time-ordered dispatcher: the tick enqueues due clubs, the scheduler
+        # releases them in dispatch order and re-queues fetches that came back
+        # stale (uma.moe hadn't finalized that circle yet).
         self.scheduler = ScrapeScheduler(
             worker=self._scheduled_worker,
             concurrency=SCRAPE_MAX_CONCURRENCY,
@@ -49,27 +65,103 @@ class BotTasks:
             retry_delay=SCRAPE_FRESHNESS_RETRY_DELAY_SEC,
         )
 
-        # Parse the shared default scrape time (UTC) once for default-club detection.
-        try:
-            dh, dm = map(int, SCRAPE_DEFAULT_UTC_TIME.split(":"))
-            self._default_utc = time(dh, dm)
-        except Exception:
-            logger.warning(f"Invalid SCRAPE_DEFAULT_UTC_TIME '{SCRAPE_DEFAULT_UTC_TIME}', defaulting to 17:00")
-            self._default_utc = time(17, 0)
-
-        logger.info("Multi-club tasks configured - rank-ordered scheduler, tick every minute")
+        logger.info("Multi-club tasks configured - time-ordered scheduler, tick every minute")
 
     def start_tasks(self):
         """Start all scheduled tasks"""
         self.scheduler.start()
         self.scrape_tick.start()
+        self.live_board_tick.start()
+        if DB_BACKUP_ENABLED:
+            self.daily_backup.change_interval(time=self._backup_time)
+            self.daily_backup.start()
+            # Resolve the directory so the log is unambiguous — DB_BACKUP_DIR is
+            # relative to the working directory, which systemd sets.
+            logger.info(
+                f"Daily DB backup enabled at {self._backup_time.strftime('%H:%M')} UTC "
+                f"→ {Path(DB_BACKUP_DIR).resolve()} (keeping {DB_BACKUP_KEEP})"
+            )
+            # Check the one external dependency now rather than discovering it
+            # missing at 03:30, when nobody is watching the logs.
+            if not find_pg_dump():
+                logger.warning(
+                    "⚠️ pg_dump not found — daily backups WILL FAIL. Install it with "
+                    "`sudo apt install postgresql-client`, or set PG_DUMP_PATH if it "
+                    "lives somewhere unusual. Check with /backup status."
+                )
+        else:
+            logger.info("Daily DB backup disabled (DB_BACKUP_ENABLED=false)")
         logger.info("Scheduled tasks started (per-minute tick + rank-ordered scheduler)")
 
     def stop_tasks(self):
         """Stop all scheduled tasks"""
         self.scrape_tick.cancel()
+        self.live_board_tick.cancel()
+        if self.daily_backup.is_running():
+            self.daily_backup.cancel()
         self.scheduler.stop()
         logger.info("Scheduled tasks stopped")
+
+    @tasks.loop(time=time(3, 30))
+    async def daily_backup(self):
+        """Dump the database once a day and prune to the retention limit.
+
+        Runs in-process so backups need no cron entry or VPS-side setup. Failures
+        are logged and never interrupt scraping — a missing backup is a problem to
+        fix, not a reason to stop reporting.
+        """
+        result = await create_backup(
+            database_url=DATABASE_URL,
+            backup_dir=Path(DB_BACKUP_DIR),
+            keep=DB_BACKUP_KEEP,
+            timeout_sec=DB_BACKUP_TIMEOUT_SEC,
+        )
+        if not result.ok:
+            logger.error(f"❌ Daily DB backup failed: {result.error}")
+
+    @daily_backup.before_loop
+    async def before_daily_backup(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=1)
+    async def live_board_tick(self):
+        """Refresh live boards, spread evenly across the hour.
+
+        Each club gets a stable slot minute derived from its id, so 200 clubs
+        become ~3 API calls a minute instead of a 200-call burst that would
+        saturate the shared limiter and stall interactive commands behind it.
+        The spread also matches reality: uma.moe's live batch reaches
+        lower-ranked circles several minutes after the top ones.
+        """
+        now_utc = datetime.now(timezone.utc)
+
+        try:
+            clubs = await Club.get_live_board_clubs()
+        except Exception as e:
+            logger.error(f"live_board_tick: failed to load clubs: {e}", exc_info=True)
+            return
+
+        if not clubs:
+            return
+
+        due = [c for c in clubs if self._live_slot_minute(c) == now_utc.minute]
+        for club in due:
+            try:
+                await update_live_board(self.bot, club, now_utc=now_utc)
+            except Exception as e:
+                # One club's board must never take down the others.
+                logger.error(
+                    f"live_board_tick: {club.club_name} failed: {e}", exc_info=True
+                )
+
+    @staticmethod
+    def _live_slot_minute(club: Club) -> int:
+        """Stable minute-of-hour for a club, so the load spreads deterministically."""
+        return zlib.crc32(str(club.club_id).encode()) % 60
+
+    @live_board_tick.before_loop
+    async def before_live_board_tick(self):
+        await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=1)
     async def scrape_tick(self):
@@ -92,8 +184,9 @@ class BotTasks:
                 now_in_club_tz = now_utc.astimezone(club_tz)
                 current_date = now_in_club_tz.date()
 
-                target_hour = club.scrape_time.hour
-                target_minute = club.scrape_time.minute
+                effective = self._effective_scrape_time(club, now_utc)
+                target_hour = effective.hour
+                target_minute = effective.minute
 
                 if not (now_in_club_tz.hour == target_hour and now_in_club_tz.minute >= target_minute):
                     continue
@@ -103,12 +196,12 @@ class BotTasks:
                     continue
                 self.last_runs[run_key] = True
 
-                dispatch_dt, rank, in_window = await self._compute_dispatch_utc(club, now_utc)
-                tag = (f"rollout window, rank={rank if rank is not None else 'unknown'}"
-                       if in_window else "off-peak → on time")
+                dispatch_dt, held = await self._compute_dispatch_utc(club, now_utc)
+                tag = "held for rollover grace" if held else "on time"
+                pinned = " · pinned to day close (live board)" if club.live_board_enabled else ""
                 logger.info(
                     f"⏰ {club.club_name} due ({now_in_club_tz.strftime('%H:%M')} {club.timezone}) — "
-                    f"dispatch {dispatch_dt.strftime('%H:%M:%S')} UTC [{tag}]"
+                    f"dispatch {dispatch_dt.strftime('%H:%M:%S')} UTC [{tag}]{pinned}"
                 )
                 self.scheduler.enqueue(club, dispatch_dt)
 
@@ -116,48 +209,80 @@ class BotTasks:
                 logger.error(f"scrape_tick: error for {club.club_name}: {e}", exc_info=True)
                 continue
 
+        self._prune_last_runs(now_utc)
+
+    @staticmethod
+    def _effective_scrape_time(club: Club, now_utc: datetime) -> time:
+        """When this club should be scraped, in its own timezone.
+
+        Clubs running a live board are pinned to the competition day close
+        (15:00 UTC) rather than their configured time. The board finalises that
+        day at the close, so scraping earlier would leave the daily report a day
+        behind the board it sits next to — two surfaces disagreeing about the
+        same club on the same screen.
+
+        Clubs without a live board keep whatever time they set.
+
+        Recomputed from ``now_utc`` on every tick, so the local equivalent of
+        15:00 UTC follows the club's DST rather than drifting an hour twice a year.
+        """
+        if not club.live_board_enabled:
+            return club.scrape_time
+
+        tz = resolve_timezone(club.timezone)
+        close_local = now_utc.replace(
+            hour=ROLLOVER_UTC_HOUR, minute=0, second=0, microsecond=0
+        ).astimezone(tz)
+        return time(close_local.hour, close_local.minute)
+
+    def _prune_last_runs(self, now_utc: datetime) -> None:
+        """Drop run keys older than two days.
+
+        The dict is keyed ``{club_id}_{date}`` and was never cleaned, so it grew
+        by one entry per club per day for the process's lifetime.
+        """
+        keep = {str((now_utc - timedelta(days=d)).date()) for d in range(3)}
+        stale = [k for k in self.last_runs if k.rsplit("_", 1)[-1] not in keep]
+        for k in stale:
+            del self.last_runs[k]
+
     async def _compute_dispatch_utc(self, club: Club, now_utc: datetime):
         """Decide when a due club should actually be fetched.
 
-        Returns (dispatch_dt_utc, monthly_rank, in_window).
+        Returns (dispatch_dt_utc, blocked_by_rollover).
 
-        uma.moe publishes today's data gradually starting at the rollover time
-        (SCRAPE_DEFAULT_UTC_TIME). Any club scheduled within the rollout window
-        — not just the exact default minute, so 17:00, 17:01, 17:05 all count —
-        gets a rank-aware delay so its data has rolled out before we fetch.
-        Clubs outside the window read already-settled data and fire on time.
+        A club's target JST day finalizes at 15:00 UTC, so a scrape scheduled in
+        the minutes right after that can beat uma.moe's write for this particular
+        circle. Hold those until a short grace period has passed.
+
+        This used to estimate readiness from the club's rank against an assumed
+        ~20 circles/s rollout. That guess is no longer needed: the scraper now
+        reads ``circle.last_updated`` and raises StaleDataError when the target day
+        genuinely hasn't finalized, so the scheduler re-queues on fact rather than
+        prediction. (Measured 2026-07-25: the top 100 circles all finalized within
+        ~3s of each other, so the rank model was also mis-calibrated.)
         """
         club_tz = resolve_timezone(club.timezone)
+        effective = self._effective_scrape_time(club, now_utc)
         target_local = club_tz.localize(
             datetime.combine(now_utc.astimezone(club_tz).date(),
-                             time(club.scrape_time.hour, club.scrape_time.minute))
+                             time(effective.hour, effective.minute))
         )
         target_utc = target_local.astimezone(timezone.utc)
 
-        # Rollover window in UTC for today.
-        rollover_start = now_utc.replace(
-            hour=self._default_utc.hour, minute=self._default_utc.minute,
-            second=0, microsecond=0,
+        # The finalize for the day this scrape will read.
+        rollover = target_utc.replace(
+            hour=ROLLOVER_UTC_HOUR, minute=0, second=0, microsecond=0
         )
-        window_end = rollover_start + timedelta(minutes=SCRAPE_ROLLOVER_WINDOW_MIN)
-        in_window = rollover_start <= target_utc <= window_end
+        if target_utc < rollover:
+            # Scheduled before today's finalize — it reads the previous JST day,
+            # which settled 24h ago. Nothing to wait for.
+            return target_utc, False
 
-        if not in_window:
-            return target_utc, None, False
-
-        rank = await ClubRankHistory.get_latest_monthly_rank(club.club_id)
-        if rank and rank > 0:
-            delay = min(SCRAPE_MAX_RANK_DELAY_SEC,
-                        rank / SCRAPE_ROLLOUT_PER_SEC + SCRAPE_RANK_BUFFER_SEC)
-        else:
-            # No rank history yet (new club): wait a fixed safe interval.
-            delay = SCRAPE_UNKNOWN_RANK_DELAY_SEC
-
-        # Don't fetch before the data is fresh (rollover_start + rank delay), but
-        # never before the club's own scheduled time either.
-        fresh_at = rollover_start + timedelta(seconds=delay)
-        dispatch_dt = max(target_utc, fresh_at)
-        return dispatch_dt, rank, True
+        fresh_at = rollover + timedelta(seconds=SCRAPE_ROLLOVER_GRACE_SEC)
+        if target_utc >= fresh_at:
+            return target_utc, False
+        return fresh_at, True
 
     async def _scheduled_worker(self, club: Club, attempt: int, is_final: bool) -> str:
         """Adapter the scheduler calls. Returns 'ok' | 'stale' | 'failed'."""
@@ -281,8 +406,8 @@ class BotTasks:
                         f"Failed to scrape data after {max_retries} attempts.\n\n"
                         f"**Last error:** {str(last_error)}\n\n"
                         f"**Most likely cause:**\n"
-                        f"• Data for current day not yet available on Uma.moe\n"
-                        f"• Uma.moe typically updates around 15:10 UTC daily\n\n"
+                        f"• Data for the target day not yet finalized on Uma.moe\n"
+                        f"• Uma.moe finalizes each competition day at 15:00 UTC (00:00 JST)\n\n"
                         f"**Other possible causes:**\n"
                         f"• Uma.moe API is down or unreachable\n"
                         f"• Network timeout\n"
@@ -449,7 +574,8 @@ class BotTasks:
                             logger.error(f"❌ Tally image failed for {club.club_name}, falling back to embeds: {img_err}", exc_info=True)
                             daily_reports = self.report_generator.create_daily_report(
                                 club.club_name, effective_quota, status_summary, bombs_data, current_date,
-                                rank_data=rank_data, quota_period=club.quota_period
+                                rank_data=rank_data, quota_period=club.quota_period,
+                                club_timezone=club.timezone,
                             )
                             for embed in daily_reports:
                                 await report_channel.send(embed=embed)
@@ -459,7 +585,8 @@ class BotTasks:
                     else:
                         daily_reports = self.report_generator.create_daily_report(
                             club.club_name, effective_quota, status_summary, bombs_data, current_date,
-                            rank_data=rank_data, quota_period=club.quota_period
+                            rank_data=rank_data, quota_period=club.quota_period,
+                            club_timezone=club.timezone,
                         )
                         for embed in daily_reports:
                             await report_channel.send(embed=embed)

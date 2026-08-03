@@ -113,8 +113,34 @@ class Bomb:
         return count
 
     @classmethod
+    async def expire_before(cls, club_id: UUID, cutoff_date: date) -> int:
+        """Deactivate bombs activated before ``cutoff_date`` (competition month rollover).
+
+        Bombs are the only month-scoped state without a date filter on its read
+        path (``get_all_active`` matches on ``is_active`` alone), so they have to
+        be closed out explicitly when a club crosses into a new month.
+
+        Deactivates rather than deletes: the rows stay queryable as history for
+        the web dashboard, and nothing downstream treats an inactive bomb as a
+        pending kick.
+        """
+        query = """
+            UPDATE bombs
+            SET is_active = FALSE, deactivation_date = $1
+            WHERE club_id = $2 AND is_active = TRUE AND activation_date < $1
+        """
+        result = await db.execute(query, cutoff_date, club_id)
+        count = int(result.split()[-1]) if result.split()[-1].isdigit() else 0
+        if count:
+            logger.info(
+                f"Expired {count} bomb(s) for club {club_id} predating {cutoff_date} "
+                f"(competition month rollover)"
+            )
+        return count
+
+    @classmethod
     async def clear_all(cls, club_id: UUID):
-        """Clear all bombs for a club (for monthly reset)"""
+        """Clear all bombs for a club. Destructive — admin/reset paths only."""
         query = "DELETE FROM bombs WHERE club_id = $1"
         await db.execute(query, club_id)
-        logger.info(f"Cleared all bombs for club {club_id} (monthly reset)")
+        logger.info(f"Cleared all bombs for club {club_id}")

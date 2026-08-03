@@ -13,10 +13,14 @@ Alternatively, you can self-host it — the bot is open source.
 **1. Add your club**
 
 ```
-/add_club club_name:YourClub scrape_url:... circle_id:860280110
+/add_club club_name:YourClub circle_id:860280110 daily_quota:1000000
 ```
 
-See [Finding Your Circle ID](#finding-your-circle-id) below if you're not sure what to put there.
+All three are required. See [Finding Your Circle ID](#finding-your-circle-id) below if you're
+not sure what to put there.
+
+`daily_quota` is the fan goal per quota period — add `quota_period:weekly` (or `biweekly`)
+if your club doesn't run on daily targets.
 
 **2. Set your report and alert channels**
 

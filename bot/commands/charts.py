@@ -15,7 +15,7 @@ import aiohttp
 from models import Club, QuotaHistory, QuotaRequirement
 from scrapers import UmaMoeAPIScraper
 from utils.timezone_helper import resolve_timezone
-from utils.rate_limiter import umamoe_limiter
+from utils.rate_limiter import umamoe_limiter, PRIORITY_INTERACTIVE
 from utils.api_metrics import track_api_call
 
 UMAMOE_API_URL = "https://uma.moe/api/v4/circles"
@@ -31,7 +31,7 @@ async def _fetch_previous_month_totals(circle_id: str, year: int, month: int) ->
     `joined_mid_month` is True if they weren't in the club on day 1.
     """
     params = {"circle_id": circle_id, "year": year, "month": month}
-    await umamoe_limiter.acquire()
+    await umamoe_limiter.acquire(PRIORITY_INTERACTIVE)
     async with aiohttp.ClientSession() as session:
         async with track_api_call("uma.moe", "circles", context=f"prev_month:{circle_id}") as m:
             async with session.get(
@@ -89,12 +89,11 @@ async def _fetch_via_scraper(circle_id: str) -> tuple[dict[str, dict], int, int,
     member_data maps trainer_name -> {dates: [str], fans: [int]} using
     dd.mm date strings and monthly-cumulative fan values.
     """
-    scraper = UmaMoeAPIScraper(circle_id)
+    scraper = UmaMoeAPIScraper(circle_id, priority=PRIORITY_INTERACTIVE)
     parsed_data = await scraper.scrape()
 
-    current_day = scraper.current_day_count
-    year = scraper._fetched_year
-    month = scraper._fetched_month
+    current_day = scraper.get_current_day()
+    year, month = scraper.get_fetched_period()
 
     member_data: dict[str, dict] = {}
     for data in parsed_data.values():

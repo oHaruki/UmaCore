@@ -1,15 +1,79 @@
 """
 Quota Requirement data model for dynamic quota management
 """
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date
-from typing import Optional, List
+from typing import Dict, Optional, List, Tuple
 from uuid import UUID
 import logging
 
 from config.database import db
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class QuotaSchedule:
+    """A club's quota timeline, resolvable for any date without further queries.
+
+    Exists because resolving one date at a time is quadratic in practice.
+    ``calculate_expected_fans`` sums the quota for every day of the month, per
+    member, and each lookup cost up to two queries — so a 30-member club on day
+    25 issued roughly 1500 sequential round trips per scrape. ``/recalculate``
+    was worse still, nesting that inside a per-history-row loop.
+
+    Load once, resolve in memory: two queries per scrape regardless of club size
+    or how far into the month it is.
+    """
+    effective_dates: Tuple[date, ...]     # ascending, one entry per distinct date
+    quotas: Tuple[int, ...]               # parallel to effective_dates
+    default_quota: int
+
+    @classmethod
+    async def load(cls, club_id: UUID) -> "QuotaSchedule":
+        rows = await db.fetch(
+            """
+            SELECT effective_date, daily_quota
+            FROM quota_requirements
+            WHERE club_id = $1
+            ORDER BY effective_date ASC, created_at ASC NULLS FIRST
+            """,
+            club_id,
+        )
+        # Collapse duplicate effective_dates, newest wins. The SQL this replaces
+        # used `ORDER BY effective_date DESC LIMIT 1` with no tiebreaker, so ties
+        # resolved arbitrarily; newest-wins is at least deterministic.
+        by_date: Dict[date, int] = {}
+        for r in rows:
+            by_date[r["effective_date"]] = r["daily_quota"]
+        ordered = sorted(by_date.items())
+
+        from models import Club
+        club = await Club.get_by_id(club_id)
+
+        return cls(
+            effective_dates=tuple(d for d, _ in ordered),
+            quotas=tuple(q for _, q in ordered),
+            default_quota=club.daily_quota if club else 1_000_000,
+        )
+
+    def for_date(self, check_date: date) -> int:
+        """The applicable daily quota: the latest requirement effective on or
+        before ``check_date``, else the club's default."""
+        i = bisect_right(self.effective_dates, check_date) - 1
+        return self.quotas[i] if i >= 0 else self.default_quota
+
+    @classmethod
+    def from_pairs(cls, pairs, default_quota: int) -> "QuotaSchedule":
+        """Build directly from ``(effective_date, quota)`` pairs. For tests."""
+        by_date = dict(pairs)
+        ordered = sorted(by_date.items())
+        return cls(
+            effective_dates=tuple(d for d, _ in ordered),
+            quotas=tuple(q for _, q in ordered),
+            default_quota=default_quota,
+        )
 
 
 @dataclass
@@ -36,31 +100,22 @@ class QuotaRequirement:
     @classmethod
     async def get_quota_for_date(cls, club_id: UUID, check_date: date) -> int:
         """
-        Get the applicable daily quota for a specific date in a club
-        
+        Get the applicable daily quota for a specific date in a club.
+
+        Convenience wrapper for one-off lookups (reports, cards, info boards).
+        Delegates to :class:`QuotaSchedule` so the resolution rule lives in one
+        place. **Do not call this in a loop** — load a ``QuotaSchedule`` once and
+        use ``for_date`` instead, or you reintroduce a query per iteration.
+
         Args:
             club_id: Club UUID
             check_date: The date to check
-        
+
         Returns:
             The daily quota amount (defaults to club's default quota if none found)
         """
-        query = """
-            SELECT daily_quota
-            FROM quota_requirements
-            WHERE club_id = $1 AND effective_date <= $2
-            ORDER BY effective_date DESC
-            LIMIT 1
-        """
-        result = await db.fetchval(query, club_id, check_date)
-        
-        if result is not None:
-            return result
-        
-        # No quota requirement found, use club's default quota
-        from models import Club
-        club = await Club.get_by_id(club_id)
-        return club.daily_quota if club else 1000000
+        schedule = await QuotaSchedule.load(club_id)
+        return schedule.for_date(check_date)
     
     @classmethod
     async def get_all_for_month(cls, club_id: UUID, year: int, month: int) -> List['QuotaRequirement']:
