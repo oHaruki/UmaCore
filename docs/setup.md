@@ -77,7 +77,7 @@ Once the bot is running, do this to get started:
 
 **1. Add your club**
 ```
-/add_club club_name:YourClub scrape_url:... circle_id:860280110
+/add_club club_name:YourClub circle_id:860280110 daily_quota:1000000
 ```
 
 **2. Set up channels**
