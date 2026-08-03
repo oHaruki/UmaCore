@@ -244,10 +244,19 @@ geckodriver
 # ============================================
 # Project Specific
 # ============================================
-# Any personal test files
+# Any personal test files (ad-hoc scripts dropped in the repo root).
+# The tests/ package is the real suite and must stay tracked — without the
+# negation below this rule silently excluded every file in it.
 test_*.py
+!tests/test_*.py
 scratch_*.py
 playground/
+
+# Database dumps written by the in-bot daily backup. These contain the full
+# member table — never commit them.
+backups/
+*.sql.gz
+*.sql.gz.partial
 
 # Downloaded data
 data/

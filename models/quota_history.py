@@ -27,17 +27,29 @@ class QuotaHistory:
     @classmethod
     async def create(cls, member_id: UUID, club_id: UUID, date: date, cumulative_fans: int,
                      expected_fans: int, deficit_surplus: int, days_behind: int) -> 'QuotaHistory':
-        """Create or update quota history for a date"""
+        """Create or update quota history for a date.
+
+        ``created_at`` is refreshed on update, so it means "when this row was last
+        written by a scrape" rather than "first inserted". The web club page reads
+        ``MAX(created_at)`` as the last-scrape time for its staleness badge, and a
+        rewrite of an existing date is still a scrape that ran.
+
+        This matters at the month boundary: a new month's day 1 is deferred (see
+        utils.jst_calendar.resolve_finalized), so the 1st rewrites the previous
+        month's final row instead of inserting a new date. Leaving the timestamp
+        untouched would show every club as days stale at the start of each month.
+        """
         query = """
-            INSERT INTO quota_history 
+            INSERT INTO quota_history
                 (member_id, club_id, date, cumulative_fans, expected_fans, deficit_surplus, days_behind)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (member_id, date) 
-            DO UPDATE SET 
+            ON CONFLICT (member_id, date)
+            DO UPDATE SET
                 cumulative_fans = $4,
                 expected_fans = $5,
                 deficit_surplus = $6,
-                days_behind = $7
+                days_behind = $7,
+                created_at = NOW()
             RETURNING id, member_id, club_id, date, cumulative_fans, expected_fans, deficit_surplus, days_behind
         """
         row = await db.fetchrow(query, member_id, club_id, date, cumulative_fans, 

@@ -11,17 +11,25 @@ Register a new club to track.
 | Parameter | Required | Description |
 |---|---|---|
 | `club_name` | Yes | Name of the club |
-| `scrape_url` | Yes | ChronoGenesis URL for the club |
-| `circle_id` | No | Numeric ID from uma.moe (recommended) |
-| `daily_quota` | No | Fan goal per period (default: 1,000,000) |
+| `circle_id` | Yes | Numeric ID from uma.moe — digits only, e.g. `860280110` |
+| `daily_quota` | Yes | Fan goal **per quota period**, not necessarily per day |
 | `quota_period` | No | `daily`, `weekly`, or `biweekly` (default: daily) |
 | `timezone` | No | IANA timezone (default: Europe/Amsterdam) |
 | `scrape_time` | No | Time to run daily check in HH:MM (default: 16:00) |
+| `scrape_url` | No | ChronoGenesis URL — legacy fallback, only needed without a circle ID |
 
 **Example:**
 ```
-/add_club club_name:MyClub scrape_url:https://... circle_id:860280110 daily_quota:1000000
+/add_club club_name:MyClub circle_id:860280110 daily_quota:1000000
 ```
+
+!!! note
+    `circle_id` must be numeric — the bot rejects anything else and tells you where to
+    find it. With a circle ID set, the club uses the Uma.moe API. Without one it falls
+    back to the slower ChronoGenesis scraper, which needs `scrape_url`.
+
+Despite the name, `daily_quota` is the target for one `quota_period` — set
+`quota_period:weekly daily_quota:7000000` for a weekly goal of 7M.
 
 ---
 
@@ -70,3 +78,34 @@ Modify settings for an existing club.
 | `bombs_enabled` | No | Enable or disable bomb system (`true`/`false`) |
 
 Only include the parameters you want to change.
+
+
+---
+
+## /recalculate
+
+Re-fetch the current month from Uma.moe and repair everything that derives from it.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `club` | Yes | Target club |
+
+Use this whenever the numbers look wrong. Unlike a normal scrape, it treats Uma.moe
+as the source of truth and **overwrites** what's stored:
+
+- Rewrites each member's daily fan totals for the whole month
+- Fills in any days that are missing
+- Re-derives join dates from the fan history
+- Recomputes expected fans, deficits and days-behind
+- Clears every bomb and re-arms only the ones the corrected history justifies
+
+The report tells you what was actually wrong — how many fan totals were rewritten,
+days filled in, and join dates corrected. If nothing was wrong it says so.
+
+Members that Uma.moe no longer returns (they left) are left untouched.
+
+If Uma.moe can't be reached, it still recomputes deficits and bombs from stored
+values and flags the result as partial rather than failing outright.
+
+!!! note
+    Run `/force_check` afterwards to post a fresh report with the corrected numbers.

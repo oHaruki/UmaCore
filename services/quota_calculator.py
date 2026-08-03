@@ -9,6 +9,7 @@ import calendar
 import math
 
 from models import Member, QuotaHistory, QuotaRequirement, Bomb, Club
+from models.quota_requirement import QuotaSchedule
 from config.database import db
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,8 @@ class QuotaCalculator:
     
     @staticmethod
     async def calculate_expected_fans(club_id: UUID, member_join_date: date,
-                                     current_date: date, quota_period: str = 'daily') -> int:
+                                     current_date: date, quota_period: str = 'daily',
+                                     schedule: Optional[QuotaSchedule] = None) -> int:
         """
         Calculate expected cumulative fans based on days active in current month.
 
@@ -31,10 +33,17 @@ class QuotaCalculator:
             member_join_date: When the member joined the club
             current_date: The date the data belongs to (not necessarily today)
             quota_period: 'daily', 'weekly', or 'biweekly'
+            schedule: Pre-loaded quota timeline. **Pass this when calling in a
+                loop** — otherwise every call reloads it, which is what made this
+                function issue a query per day per member. Omitting it is safe but
+                costs two queries.
 
         Returns:
             Expected cumulative fan count for this month only
         """
+        if schedule is None:
+            schedule = await QuotaSchedule.load(club_id)
+
         # Determine the effective start date for this month
         if member_join_date.year == current_date.year and member_join_date.month == current_date.month:
             start_date = member_join_date
@@ -48,8 +57,13 @@ class QuotaCalculator:
         day_count = (current_date - start_date).days + 1
         current_day = start_date
         for _ in range(day_count):
-            period_quota = await QuotaRequirement.get_quota_for_date(club_id, current_day)
-            total_expected += period_quota / period_days
+            # A member's join day establishes their baseline (actual gain is always
+            # recorded as +0 that day), so it carries no quota requirement either.
+            if current_day == member_join_date:
+                current_day += timedelta(days=1)
+                continue
+
+            total_expected += schedule.for_date(current_day) / period_days
             current_day += timedelta(days=1)
 
         result = round(total_expected)
@@ -75,63 +89,56 @@ class QuotaCalculator:
         """Calculate deficit or surplus (positive = surplus, negative = deficit)"""
         return actual_fans - expected_fans
     
-    async def _get_previous_cumulative_totals(self, club_id: UUID) -> Dict[str, int]:
+    async def _latest_history_date(self, club_id: UUID) -> Optional[date]:
+        """Date of the newest quota_history row for a club, or None if it has none."""
+        return await db.fetchval(
+            "SELECT MAX(date) FROM quota_history WHERE club_id = $1", club_id
+        )
+
+    async def handle_month_rollover(self, club_id: UUID, data_date: date) -> bool:
+        """Carry a club into a new competition month. Returns True if it rolled over.
+
+        Replaces the old "did anyone's fans drop by >50%?" detector, which drove an
+        irreversible ``DELETE`` of quota_history, bombs and quota_requirements off a
+        fuzzy threshold — one transferring member with a large lifetime total was
+        enough to wipe a club's month.
+
+        The month is not something to infer: the scraper fetches an explicit
+        ``(year, month)`` and ``data_date`` names the day. So compare it to the
+        newest row we already have and act only on a real boundary crossing.
+
+        Deliberately does NOT delete anything:
+
+        * ``quota_history`` is keyed by date, so a new month simply writes new rows
+          and the old ones stay as history for the dashboard.
+        * ``quota_requirements`` resolves via ``effective_date <= date``, so it is
+          already month-correct; the old delete silently wiped an admin's
+          configured quota schedule at every rollover.
+        * ``bombs`` are the one exception — see :meth:`Bomb.expire_before`.
         """
-        Get the latest cumulative fan counts from database for monthly reset detection
-        
-        Args:
-            club_id: Club UUID
-        
-        Returns:
-            Dict mapping trainer_id/name -> cumulative_fans
-        """
-        query = """
-            SELECT m.trainer_id, m.trainer_name, qh.cumulative_fans
-            FROM members m
-            JOIN quota_history qh ON m.member_id = qh.member_id
-            WHERE m.club_id = $1 AND qh.date = (
-                SELECT MAX(date) FROM quota_history WHERE club_id = $1
-            )
-        """
-        rows = await db.fetch(query, club_id)
-        
-        result = {}
-        for row in rows:
-            key = row['trainer_id'] if row['trainer_id'] else row['trainer_name']
-            result[key] = row['cumulative_fans']
-        
-        return result
-    
-    def _detect_monthly_reset_from_scraped(self, scraped_data: Dict[str, Dict], 
-                                           previous_totals: Dict[str, int]) -> bool:
-        """
-        Detect if a monthly reset has occurred by comparing scraped data to previous totals
-        """
-        if not previous_totals:
-            logger.info("No previous data found, skipping reset detection")
+        latest = await self._latest_history_date(club_id)
+        if latest is None:
             return False
-        
-        if not scraped_data:
-            logger.warning("No scraped data, cannot detect reset")
+        if (latest.year, latest.month) >= (data_date.year, data_date.month):
             return False
-        
-        # Check if any member has significantly lower fans than before
-        for key, member_data in scraped_data.items():
-            current_fans = member_data["fans"][-1] if member_data["fans"] else 0
-            
-            if key in previous_totals:
-                previous_fans = previous_totals[key]
-                
-                # If current count is less than 50% of previous, it's a reset
-                if current_fans > 0 and current_fans < previous_fans * 0.5:
-                    logger.warning(
-                        f"Monthly reset detected: {member_data['name']} went from "
-                        f"{previous_fans:,} to {current_fans:,} fans"
-                    )
-                    return True
-        
-        return False
-    
+
+        month_start = date(data_date.year, data_date.month, 1)
+        logger.info(
+            f"📅 Club {club_id} entering {data_date.year}-{data_date.month:02d} "
+            f"(previous data ends {latest}) — expiring last month's bombs"
+        )
+
+        await Bomb.expire_before(club_id, month_start)
+
+        # A new month is a clean slate for manual deactivations.
+        await db.execute(
+            "UPDATE members SET manually_deactivated = FALSE "
+            "WHERE club_id = $1 AND manually_deactivated = TRUE",
+            club_id,
+        )
+        return True
+
+
     async def _auto_deactivate_missing_members(self, club_id: UUID, scraped_trainer_ids: Set[str]):
         """Auto-deactivate members who are no longer in the scraped data"""
         active_members = await Member.get_all_active(club_id)
@@ -167,33 +174,21 @@ class QuotaCalculator:
         data_date = current_date
         logger.info(f"Processing scraped data for club {club_id}: data_date = {data_date}, current_day = {current_day}")
         
-        # Check for monthly reset
-        logger.info(f"Checking for monthly reset for club {club_id}...")
-        previous_totals = await self._get_previous_cumulative_totals(club_id)
-        
-        if self._detect_monthly_reset_from_scraped(scraped_data, previous_totals):
-            logger.warning(f"Monthly reset detected for club {club_id}! Clearing all history...")
-            
-            # Clear club-specific data
-            await db.execute("DELETE FROM quota_history WHERE club_id = $1", club_id)
-            await db.execute("DELETE FROM bombs WHERE club_id = $1", club_id)
-            await db.execute("DELETE FROM quota_requirements WHERE club_id = $1", club_id)
-            
-            # Clear manual deactivation flags for this club
-            await db.execute(
-                "UPDATE members SET manually_deactivated = FALSE WHERE club_id = $1 AND manually_deactivated = TRUE",
-                club_id
-            )
-            logger.info(f"Monthly reset complete for club {club_id}")
-        
+        # Competition month boundary — deterministic, no heuristics, no deletes.
+        await self.handle_month_rollover(club_id, data_date)
+
         # Auto-deactivate members who are no longer in the scraped data
         scraped_trainer_ids = set(scraped_data.keys())
         await self._auto_deactivate_missing_members(club_id, scraped_trainer_ids)
-        
+
+        # Load the quota timeline once for the whole batch. Resolving it per day
+        # per member is what made this O(members x days) queries.
+        schedule = await QuotaSchedule.load(club_id)
+
         # Process each member
         new_members = 0
         updated_members = 0
-        
+
         for key, member_data in scraped_data.items():
             trainer_id = member_data.get("trainer_id")
             trainer_name = member_data["name"]
@@ -223,11 +218,19 @@ class QuotaCalculator:
                     # Join day is within the current month being processed
                     join_date = date(data_date.year, data_date.month, detected_join_day)
                 else:
-                    # Join day exceeds current month, must be from previous month
-                    if data_date.month == 1:
-                        join_date = date(data_date.year - 1, 12, detected_join_day)
-                    else:
-                        join_date = date(data_date.year, data_date.month - 1, detected_join_day)
+                    # Out of range for this month — fall back to the previous one,
+                    # clamped to a day that exists there. (A bad value used to
+                    # raise ValueError and abort the whole club's processing.)
+                    prev_year = data_date.year - 1 if data_date.month == 1 else data_date.year
+                    prev_month = 12 if data_date.month == 1 else data_date.month - 1
+                    prev_last = calendar.monthrange(prev_year, prev_month)[1]
+                    safe_day = min(max(1, detected_join_day), prev_last)
+                    if safe_day != detected_join_day:
+                        logger.warning(
+                            f"{trainer_name}: join day {detected_join_day} is not a valid "
+                            f"date in {prev_year}-{prev_month:02d}, clamped to {safe_day}"
+                        )
+                    join_date = date(prev_year, prev_month, safe_day)
                 
                 member = await Member.create(club_id, trainer_name, join_date, trainer_id)
                 new_members += 1
@@ -254,7 +257,7 @@ class QuotaCalculator:
             days_active = self.calculate_days_active_in_month(member.join_date, data_date)
             
             expected_fans = await self.calculate_expected_fans(
-                club_id, member.join_date, data_date, quota_period
+                club_id, member.join_date, data_date, quota_period, schedule=schedule
             )
             
             deficit_surplus = self.calculate_deficit_surplus(cumulative_fans, expected_fans)

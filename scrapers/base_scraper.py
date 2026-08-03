@@ -55,29 +55,8 @@ class BaseScraper(ABC):
         """
         pass
     
-    def detect_monthly_reset(self, previous_data: Dict[str, int], current_data: Dict[str, List[int]]) -> bool:
-        """
-        Detect if a monthly reset has occurred
-        
-        Args:
-            previous_data: Dict of trainer_name -> previous cumulative fans
-            current_data: Dict of trainer_name -> list of cumulative fans
-        
-        Returns:
-            True if reset detected, False otherwise
-        """
-        if not previous_data or not current_data:
-            return False
-        
-        # Check if any member's latest cumulative count is significantly lower than before
-        for trainer_name, fan_counts in current_data.items():
-            if trainer_name in previous_data:
-                latest_count = fan_counts[-1] if fan_counts else 0
-                previous_count = previous_data[trainer_name]
-                
-                # If current count is less than half of previous, likely a reset
-                if latest_count < previous_count * 0.5:
-                    logger.info(f"Monthly reset detected: {trainer_name} went from {previous_count} to {latest_count}")
-                    return True
-        
-        return False
+    # NOTE: a `detect_monthly_reset` heuristic used to live here (flagging a reset
+    # when any member's fans halved). It was unused, and the equivalent in
+    # QuotaCalculator drove an irreversible DELETE off that same fuzzy threshold.
+    # Month boundaries are now handled deterministically from the calendar in
+    # QuotaCalculator.handle_month_rollover — don't reintroduce a guess.

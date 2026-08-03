@@ -2,7 +2,7 @@
 Club data model for multi-club support with circle_id validation
 """
 from dataclasses import dataclass
-from datetime import time
+from datetime import date, time
 from typing import Optional, List
 from uuid import UUID
 import logging
@@ -41,6 +41,15 @@ class Club:
     created_at: Optional[str]
     updated_at: Optional[str]
     public_slug: Optional[str] = None
+    # Live board. A NULL channel means the feature is off — it is opt-in, so no
+    # club is polled for live data until an admin sets a channel.
+    live_board_channel_id: Optional[int] = None
+    live_board_message_id: Optional[int] = None
+    live_board_day: Optional[date] = None
+
+    @property
+    def live_board_enabled(self) -> bool:
+        return self.live_board_channel_id is not None
     
     @classmethod
     async def create(cls, club_name: str, scrape_url: str, circle_id: Optional[str] = None,
@@ -60,7 +69,9 @@ class Club:
             RETURNING club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                      timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
                      image_report_enabled, is_active, report_channel_id, alert_channel_id,
-                     monthly_info_channel_id, monthly_info_message_id, created_at, updated_at, public_slug
+                     monthly_info_channel_id, monthly_info_message_id,
+                   live_board_channel_id, live_board_message_id, live_board_day,
+                   created_at, updated_at, public_slug
         """
         row = await db.fetchrow(query, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                                 timezone, scrape_time, bomb_trigger_days, bomb_countdown_days,
@@ -75,7 +86,9 @@ class Club:
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
                    image_report_enabled, is_active, report_channel_id, alert_channel_id,
-                   monthly_info_channel_id, monthly_info_message_id, created_at, updated_at, public_slug
+                   monthly_info_channel_id, monthly_info_message_id,
+                   live_board_channel_id, live_board_message_id, live_board_day,
+                   created_at, updated_at, public_slug
             FROM clubs
             WHERE club_id = $1
         """
@@ -91,7 +104,9 @@ class Club:
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
                    image_report_enabled, is_active, report_channel_id, alert_channel_id,
-                   monthly_info_channel_id, monthly_info_message_id, created_at, updated_at, public_slug
+                   monthly_info_channel_id, monthly_info_message_id,
+                   live_board_channel_id, live_board_message_id, live_board_day,
+                   created_at, updated_at, public_slug
             FROM clubs
             WHERE club_name = $1
         """
@@ -107,7 +122,9 @@ class Club:
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
                    image_report_enabled, is_active, report_channel_id, alert_channel_id,
-                   monthly_info_channel_id, monthly_info_message_id, created_at, updated_at, public_slug
+                   monthly_info_channel_id, monthly_info_message_id,
+                   live_board_channel_id, live_board_message_id, live_board_day,
+                   created_at, updated_at, public_slug
             FROM clubs
             WHERE is_active = TRUE
             ORDER BY club_name
@@ -122,7 +139,9 @@ class Club:
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
                    image_report_enabled, is_active, report_channel_id, alert_channel_id,
-                   monthly_info_channel_id, monthly_info_message_id, created_at, updated_at, public_slug
+                   monthly_info_channel_id, monthly_info_message_id,
+                   live_board_channel_id, live_board_message_id, live_board_day,
+                   created_at, updated_at, public_slug
             FROM clubs
             ORDER BY club_name
         """
@@ -136,7 +155,9 @@ class Club:
             SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                    timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
                    image_report_enabled, is_active, report_channel_id, alert_channel_id,
-                   monthly_info_channel_id, monthly_info_message_id, created_at, updated_at, public_slug
+                   monthly_info_channel_id, monthly_info_message_id,
+                   live_board_channel_id, live_board_message_id, live_board_day,
+                   created_at, updated_at, public_slug
             FROM clubs
             WHERE guild_id = $1 OR guild_id IS NULL
             ORDER BY club_name
@@ -232,6 +253,54 @@ class Club:
             setattr(self, k, v)
         logger.info(f"Updated channels for {self.club_name}: {updates}")
     
+    @classmethod
+    async def get_live_board_clubs(cls) -> List['Club']:
+        """Active clubs that have opted into the live board."""
+        query = """
+            SELECT club_id, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
+                   timezone, scrape_time, bomb_trigger_days, bomb_countdown_days, bombs_enabled,
+                   image_report_enabled, is_active, report_channel_id, alert_channel_id,
+                   monthly_info_channel_id, monthly_info_message_id,
+                   live_board_channel_id, live_board_message_id, live_board_day,
+                   created_at, updated_at, public_slug
+            FROM clubs
+            WHERE is_active = TRUE
+              AND live_board_channel_id IS NOT NULL
+              AND circle_id IS NOT NULL
+            ORDER BY club_name
+        """
+        rows = await db.fetch(query)
+        return [cls(**dict(row)) for row in rows]
+
+    async def set_live_board(self, channel_id: Optional[int]) -> None:
+        """Enable the live board in a channel, or disable it with ``None``."""
+        await db.execute(
+            "UPDATE clubs SET live_board_channel_id = $2, live_board_message_id = NULL, "
+            "live_board_day = NULL, updated_at = NOW() WHERE club_id = $1",
+            self.club_id, channel_id,
+        )
+        self.live_board_channel_id = channel_id
+        self.live_board_message_id = None
+        self.live_board_day = None
+        logger.info(
+            f"Live board {'enabled in channel ' + str(channel_id) if channel_id else 'disabled'} "
+            f"for {self.club_name}"
+        )
+
+    async def set_live_board_message(self, message_id: Optional[int],
+                                     jst_day: Optional[date]) -> None:
+        """Record which message is the board and which JST day it covers.
+
+        Both ``None`` releases the board — used after a day is closed out, so the
+        next refresh opens a fresh message instead of overwriting the archive.
+        """
+        await db.execute(
+            "UPDATE clubs SET live_board_message_id = $2, live_board_day = $3 WHERE club_id = $1",
+            self.club_id, message_id, jst_day,
+        )
+        self.live_board_message_id = message_id
+        self.live_board_day = jst_day
+
     async def set_monthly_info_location(self, channel_id: int, message_id: int):
         """Set the monthly info message location for this club"""
         query = """
