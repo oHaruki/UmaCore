@@ -240,8 +240,15 @@ class BotTasks:
 
         The dict is keyed ``{club_id}_{date}`` and was never cleaned, so it grew
         by one entry per club per day for the process's lifetime.
+
+        The date in that key is the club's *local* date, which runs up to a day
+        ahead of UTC — Kiritimati is UTC+14, and a club merely on JST is already
+        a day ahead whenever it is due between 15:00 and 24:00 UTC. Pruning
+        against UTC dates alone evicted those keys on the very tick that set
+        them, so the club re-reported every minute for its whole trigger hour.
+        Keeping tomorrow too means the sweep can never race the guard.
         """
-        keep = {str((now_utc - timedelta(days=d)).date()) for d in range(3)}
+        keep = {str((now_utc + timedelta(days=1 - d)).date()) for d in range(4)}
         stale = [k for k in self.last_runs if k.rsplit("_", 1)[-1] not in keep]
         for k in stale:
             del self.last_runs[k]
