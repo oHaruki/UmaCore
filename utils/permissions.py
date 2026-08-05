@@ -30,9 +30,30 @@ def _member_role_ids(interaction: discord.Interaction) -> List[int]:
 
 
 def is_admin(interaction: discord.Interaction) -> bool:
-    """True if the invoking member has Discord administrator in this guild."""
-    perms = getattr(interaction.user, 'guild_permissions', None)
-    return bool(perms and perms.administrator)
+    """True if the invoking member has Discord administrator in this guild.
+
+    Reads ``interaction.permissions`` — the permissions Discord computed and sent
+    with the interaction — rather than ``user.guild_permissions``, which discord.py
+    recomputes locally from the cached guild and member.
+
+    That local route fails open-ended: when the cached guild is a partial object
+    its role cache is empty and ``owner_id`` is unset, so every member resolves to
+    base permissions and administrator silently reads False. Measured 2026-08-05
+    on guild 1426560692932317186, where a server admin was refused ``/remove_club``
+    while ``interaction.permissions.administrator`` was True the whole time — the
+    same reading ``app_commands.checks.has_permissions`` uses, which is why the
+    admin-gated ``/add_manager_role`` had let him through minutes earlier.
+
+    Administrator cannot be revoked by channel overwrites, so the channel-resolved
+    permissions in the payload carry it faithfully.
+    """
+    perms = getattr(interaction, 'permissions', None)
+    if perms is not None and perms.administrator:
+        return True
+    # Fall back to the member object for any context that carries no payload
+    # permissions; it can only add a True, never mask one.
+    member_perms = getattr(interaction.user, 'guild_permissions', None)
+    return bool(member_perms and member_perms.administrator)
 
 
 async def is_full_manager(interaction: discord.Interaction) -> bool:
