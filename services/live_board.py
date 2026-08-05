@@ -20,7 +20,7 @@ from typing import List, Optional
 import discord
 
 from models import Club
-from scrapers.umamoe_api_scraper import LiveSnapshot, UmaMoeAPIScraper
+from scrapers.umamoe_api_scraper import LiveSnapshot, MemberGain, UmaMoeAPIScraper
 from utils.jst_calendar import competition_day, resolve_live
 from config.settings import COLOR_INFO, COLOR_ON_TRACK, COLOR_BEHIND
 
@@ -37,6 +37,21 @@ def _fmt(n: Optional[int]) -> str:
     if abs(n) >= 1_000:
         return f"{n / 1_000:.1f}K"
     return f"{n:,}"
+
+
+def _span(gain: MemberGain, comp: date, *, idle: bool = False) -> str:
+    """What period a member's running total actually covers.
+
+    Everyone present at the month's baseline is measured from it, so "total" is
+    accurate for them. A mid-month joiner is measured from the day they arrived,
+    which makes their figure look small beside a full month's — say which day it
+    starts from rather than leave the two looking comparable.
+    """
+    slot = gain.joined_slot
+    if not 1 <= slot < comp.day:
+        return "this month" if idle else "total"
+    since = comp.replace(day=slot)
+    return f"since {since:%b} {since.day}"
 
 
 def _split(lines: List[str], max_length: int = 1900) -> List[str]:
@@ -68,8 +83,9 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
     live in the one message that gets edited.
 
     Every member is listed, split into "raced today" and "not yet", which parallels
-    the report's on-track/behind split. A circle holds ~30 members, so the whole
-    roster fits comfortably inside one message's 6000-character budget.
+    the report's on-track/behind split, plus "joined today" for members whose first
+    day cannot be measured. A circle holds ~30 members, so the whole roster fits
+    comfortably inside one message's 6000-character budget.
     """
     # Emoji use deliberately mirrors create_daily_report: one conventional marker
     # per section header and none in the body. The live/closed distinction is
@@ -85,15 +101,24 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
         blurb = "Updating through the day — **not final** until the day closes."
 
     stamp = snap.as_of.strftime("%H:%M UTC") if snap.as_of else "unknown"
-    raced = [g for g in snap.gains if g.gained_today > 0]
-    idle = [g for g in snap.gains if g.gained_today <= 0]
+    # Members on their first day are pulled out before the raced/idle split. Their
+    # slot mixes fans earned before and after they arrived, so both their figures
+    # come out as 0 — which would otherwise park them among people who genuinely
+    # haven't raced and read as a reprimand on the day they joined.
+    fresh = [g for g in snap.gains if g.is_new]
+    counted = [g for g in snap.gains if not g.is_new]
+    raced = [g for g in counted if g.gained_today > 0]
+    idle = [g for g in counted if g.gained_today <= 0]
     raced.sort(key=lambda g: g.gained_today, reverse=True)
     idle.sort(key=lambda g: g.month_total, reverse=True)
+    fresh.sort(key=lambda g: g.name.lower())
+
+    comp = competition_day(snap.jst_day)
 
     # ---- summary -------------------------------------------------------------
     summary = discord.Embed(
         title=title,
-        description=f"**Competition day:** {competition_day(snap.jst_day):%B %d}\n{blurb}",
+        description=f"**Competition day:** {comp:%B %d}\n{blurb}",
         colour=colour,
         timestamp=datetime.now(timezone.utc),
     )
@@ -114,20 +139,19 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
     if snap.live_points:
         summary.add_field(name="Month total", value=_fmt(snap.live_points), inline=True)
 
-    summary.add_field(
-        name="📈 Summary",
-        value=(f"**Total Members:** {len(snap.gains)}\n"
-               f"Raced today: {len(raced)}\n"
-               f"Not yet: {len(idle)}"),
-        inline=False,
-    )
+    tally = (f"**Total Members:** {len(snap.gains)}\n"
+             f"Raced today: {len(raced)}\n"
+             f"Not yet: {len(idle)}")
+    if fresh:
+        tally += f"\nJoined today: {len(fresh)} (not counted)"
+    summary.add_field(name="📈 Summary", value=tally, inline=False)
     summary.set_footer(text=f"Umamusume Quota Tracker - {club.club_name} · uma.moe as of {stamp}")
     embeds = [summary]
 
     # ---- everyone who raced --------------------------------------------------
     if raced:
         lines = [
-            f"`{i:>2}` **{g.name}**: +{_fmt(g.gained_today)} ({_fmt(g.month_total)} total)"
+            f"`{i:>2}` **{g.name}**: +{_fmt(g.gained_today)} ({_fmt(g.month_total)} {_span(g, comp)})"
             for i, g in enumerate(raced, 1)
         ]
         for idx, section in enumerate(_split(lines)):
@@ -139,13 +163,29 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
 
     # ---- everyone who hasn't -------------------------------------------------
     if idle:
-        lines = [f"**{g.name}**: {_fmt(g.month_total)} this month" for g in idle]
+        lines = [f"**{g.name}**: {_fmt(g.month_total)} {_span(g, comp, idle=True)}" for g in idle]
         for idx, section in enumerate(_split(lines)):
             embeds.append(discord.Embed(
                 title="⚠️ No Fans Yet Today" if idx == 0
                       else f"⚠️ No Fans Yet Today (continued {idx + 1})",
                 description=section,
                 colour=COLOR_BEHIND,
+            ))
+
+    # ---- everyone who arrived today ------------------------------------------
+    if fresh:
+        lines = [f"**{g.name}**" for g in fresh]
+        for idx, section in enumerate(_split(lines)):
+            embeds.append(discord.Embed(
+                title="🆕 Joined Today" if idx == 0
+                      else f"🆕 Joined Today (continued {idx + 1})",
+                description=(
+                    f"{section}\n\n_Not counted today._ Uma.moe records a whole day "
+                    f"per member and nothing about the moment they joined, so their "
+                    f"first day mixes fans earned before and after arriving. "
+                    f"They start counting tomorrow."
+                ) if idx == 0 else section,
+                colour=COLOR_INFO,
             ))
 
     if not snap.gains:
