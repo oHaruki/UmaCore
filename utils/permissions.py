@@ -46,8 +46,50 @@ async def is_full_manager(interaction: discord.Interaction) -> bool:
         return True
     role_ids = _member_role_ids(interaction)
     if not role_ids or interaction.guild_id is None:
+        await _log_denial(interaction, role_ids)
         return False
-    return await GuildManagerRole.has_any_role(interaction.guild_id, role_ids)
+    if await GuildManagerRole.has_any_role(interaction.guild_id, role_ids):
+        return True
+    await _log_denial(interaction, role_ids)
+    return False
+
+
+async def _log_denial(interaction: discord.Interaction, role_ids: List[int]) -> None:
+    """Record why a manager check failed. Denials were previously silent, which
+    made "why can't I delete a club?" unanswerable from the server.
+
+    Two fields matter most and are easy to confuse:
+
+    ``member_perms``  administrator as computed from the cached Member object —
+                      what :func:`is_admin` actually gates on.
+    ``payload_perms`` administrator as Discord sent it in the interaction —
+                      what ``app_commands.checks.has_permissions`` gates on.
+
+    They should agree. When they don't, the user IS an admin and the member
+    object failed to resolve, which silently empties their role list too and so
+    fails both halves of the check at once.
+    """
+    try:
+        user = interaction.user
+        guild_id = interaction.guild_id
+        member_perms = getattr(user, 'guild_permissions', None)
+        payload_perms = getattr(interaction, 'permissions', None)
+        managers = await GuildManagerRole.get_role_ids(guild_id) if guild_id else []
+        everyone = [r for r in managers if r == guild_id]
+
+        logger.info(
+            "Manager check DENIED: user=%s (%s) guild=%s user_type=%s "
+            "guild_cached=%s member_perms.admin=%s payload_perms.admin=%s "
+            "roles_seen=%s manager_roles=%s%s",
+            user, user.id, guild_id, type(user).__name__,
+            interaction.guild is not None,
+            getattr(member_perms, 'administrator', None),
+            getattr(payload_perms, 'administrator', None),
+            role_ids, managers,
+            f" [@everyone bound as manager: {everyone} — can never match]" if everyone else "",
+        )
+    except Exception as e:                       # never break a command to log
+        logger.warning(f"Could not log manager denial: {e}")
 
 
 async def can_manage_club(interaction: discord.Interaction, club) -> bool:

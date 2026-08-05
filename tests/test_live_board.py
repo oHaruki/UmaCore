@@ -103,6 +103,57 @@ class TestMemberGains:
         assert UmaMoeAPIScraper._member_gains(members, live_slot=0) == []
 
 
+class TestJoinDetection:
+    """Real rows from circle 690001342, competition days 2-4 of 2026-08. Three
+    members joined on day 2; Bandeeto transferred in from another tracked circle,
+    which is why his earlier slots are negative rather than zero."""
+
+    BANDEETO = [-16_098_052, -16_440_151, 19_097_325, 20_981_069, 23_755_009]
+    SUZUKALESS = [0, 0, 201_186_215, 203_704_605, 206_307_591]
+    VETERAN = [295_845_244, 296_055_849, 298_000_000, 299_000_000, 300_000_000]
+
+    def _gain(self, fans, slot, name="X"):
+        members = [{"viewer_id": 1, "trainer_name": name, "daily_fans": fans}]
+        return UmaMoeAPIScraper._member_gains(members, live_slot=slot)[0]
+
+    def test_veteran_is_measured_from_the_month_baseline(self):
+        g = self._gain(self.VETERAN, 4)
+        assert (g.joined_slot, g.is_new) == (0, False)
+        assert g.month_total == 300_000_000 - 295_845_244
+
+    def test_negative_slots_are_not_mistaken_for_an_arrival(self):
+        """A transfer marker is not a fan total — the first POSITIVE slot is."""
+        g = self._gain(self.BANDEETO, 4)
+        assert g.joined_slot == 2
+
+    def test_joiner_is_flagged_on_their_own_day_only(self):
+        assert self._gain(self.BANDEETO, 2).is_new is True
+        assert self._gain(self.BANDEETO, 3).is_new is False
+        assert self._gain(self.SUZUKALESS, 2).is_new is True
+
+    def test_join_day_reports_nothing_measurable(self):
+        """The slot mixes fans earned before and after they arrived."""
+        g = self._gain(self.BANDEETO, 2)
+        assert (g.gained_today, g.month_total) == (0, 0)
+
+    def test_figures_after_the_join_day_are_real(self):
+        """This is what the board actually showed: +2.77M, 4.66M since day 2."""
+        g = self._gain(self.BANDEETO, 4)
+        assert g.gained_today == 2_773_940
+        assert g.month_total == 4_657_684
+
+    def test_new_members_do_not_move_the_club_total(self):
+        members = [
+            {"viewer_id": 1, "trainer_name": "Vet", "daily_fans": self.VETERAN},
+            {"viewer_id": 2, "trainer_name": "New", "daily_fans": self.SUZUKALESS},
+        ]
+        gains = UmaMoeAPIScraper._member_gains(members, live_slot=2)
+        s = snap(gains=gains)
+        assert s.gained_today == 298_000_000 - 296_055_849
+        assert s.active_today == 1
+        assert [g.name for g in s.new_today] == ["New"]
+
+
 # --------------------------------------------------------------------------- #
 # spreading — the thing that makes 200 clubs viable
 # --------------------------------------------------------------------------- #
@@ -187,6 +238,73 @@ class TestEmbed:
 
     def test_footer_carries_the_data_timestamp(self):
         assert "12:00 UTC" in self._all()[0].footer.text
+
+
+class TestNewMemberSection:
+    """Someone who joined today must be visibly set aside, not filed under
+    'No Fans Yet Today' where a zero reads as a reprimand on their first day."""
+
+    def _all(self, **kw):
+        return live_board.build_embeds(club(), snap(**kw))
+
+    def _with_newcomer(self):
+        return self._all(gains=[
+            MemberGain("1", "Alpha", 5_000_000, 60_000_000),
+            MemberGain("2", "Idle", 0, 20_000_000),
+            MemberGain("3", "Rookie", 0, 0, joined_slot=24, is_new=True),
+        ])
+
+    def test_newcomer_gets_their_own_section(self):
+        embeds = self._with_newcomer()
+        new = next((e for e in embeds if "Joined Today" in e.title), None)
+        assert new is not None, "no section for the newcomer"
+        assert "Rookie" in new.description
+
+    def test_newcomer_is_not_listed_as_slacking(self):
+        idle = next(e for e in self._with_newcomer() if "No Fans Yet" in e.title)
+        assert "Rookie" not in idle.description
+        assert "Idle" in idle.description
+
+    def test_section_explains_why_the_day_is_not_counted(self):
+        new = next(e for e in self._with_newcomer() if "Joined Today" in e.title)
+        assert "not counted" in new.description.lower()
+
+    def test_summary_counts_them_separately(self):
+        summary = next(f for f in self._with_newcomer()[0].fields if "Summary" in f.name)
+        assert "Total Members:** 3" in summary.value
+        assert "Raced today: 1" in summary.value
+        assert "Not yet: 1" in summary.value, "newcomer was counted as idle"
+        assert "Joined today: 1" in summary.value
+
+    def test_no_new_member_section_on_an_ordinary_day(self):
+        assert not any("Joined Today" in e.title for e in self._all())
+        summary = next(f for f in self._all()[0].fields if "Summary" in f.name)
+        assert "Joined today" not in summary.value
+
+
+class TestPartialMonthTotals:
+    """A mid-month joiner's running total spans days, not a month. Saying 'total'
+    beside a veteran's month invites exactly the comparison it shouldn't."""
+
+    def _body(self, gains):
+        embeds = live_board.build_embeds(club(), snap(gains=gains))
+        return " ".join((e.description or "") for e in embeds)
+
+    def test_mid_month_joiner_shows_the_day_their_total_starts(self):
+        """snap() is competition day Jul 24; slot 2 is Jul 2."""
+        body = self._body([MemberGain("1", "Bandeeto", 2_773_940, 4_657_684,
+                                      joined_slot=2)])
+        assert "since Jul 2" in body
+        assert "4.66M total" not in body
+
+    def test_veteran_still_reads_as_a_full_month(self):
+        body = self._body([MemberGain("1", "Alpha", 5_000_000, 60_000_000)])
+        assert "60.00M total" in body
+
+    def test_idle_mid_month_joiner_is_labelled_too(self):
+        body = self._body([MemberGain("1", "Quiet", 0, 4_000_000, joined_slot=9)])
+        assert "since Jul 9" in body
+        assert "this month" not in body
 
     def test_fits_discord_limits_for_a_full_roster(self):
         """30 members must fit one message: <=10 embeds and <6000 characters."""

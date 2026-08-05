@@ -88,6 +88,22 @@ notify anyone, so the board updating all day won't spam the channel.
 Fans earned so far today, live club rank and how it's moved, month total, and the
 members contributing today.
 
+### Members who just joined
+
+Uma.moe records one figure per member per day and nothing about *when* someone
+joined your club. On a new member's first day that figure therefore mixes fans
+they earned before arriving with fans they earned after, and there's no way to
+separate the two.
+
+So a member's first day isn't counted. They're listed under **🆕 Joined Today**
+rather than among the members who haven't raced, and they contribute nothing to
+the club's "Fans today" total. They start counting normally the next day.
+
+After that their running total is measured from the day they arrived, and the
+board says so — `+2.77M (4.66M since Aug 2)` instead of `(4.66M total)` — because
+that figure covers a few days rather than the whole month and shouldn't be read
+next to a full-month total as though the two were comparable.
+
 ### It pins the club's scrape time
 
 Turning the live board on moves that club's **daily report** to the competition day

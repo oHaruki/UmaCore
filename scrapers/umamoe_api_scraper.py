@@ -69,11 +69,19 @@ class CircleMeta:
 
 @dataclass
 class MemberGain:
-    """One member's contribution to the in-progress day."""
+    """One member's contribution to the in-progress day.
+
+    ``joined_slot`` is the competition day they first appear on, so it doubles as
+    the day-of-month label. 0 means they were already here at the month's
+    baseline. ``is_new`` is set when that day IS the day being shown — see
+    :meth:`UmaMoeAPIScraper._member_gains` for why their figures aren't usable.
+    """
     trainer_id: str
     name: str
     gained_today: int
     month_total: int
+    joined_slot: int = 0
+    is_new: bool = False
 
 
 @dataclass
@@ -101,9 +109,13 @@ class LiveSnapshot:
         now: a freshly opened competition month keeps serving the *previous*
         month's ``monthly_point`` for a while, which made that subtraction wildly
         negative and clamp to zero while members visibly had fans.
+
+        Members who joined today contribute nothing: their day is unmeasurable,
+        not zero. They already sum to 0, so this is about keeping the two sides
+        of the board honest — the total covers exactly the rows counted beneath it.
         """
         if self.gains:
-            return sum(g.gained_today for g in self.gains)
+            return sum(g.gained_today for g in self.gains if not g.is_new)
         if self.live_points is None or self.monthly_point is None:
             return None
         return max(0, self.live_points - self.monthly_point)
@@ -120,7 +132,12 @@ class LiveSnapshot:
 
     @property
     def active_today(self) -> int:
-        return sum(1 for g in self.gains if g.gained_today > 0)
+        return sum(1 for g in self.gains if g.gained_today > 0 and not g.is_new)
+
+    @property
+    def new_today(self) -> List[MemberGain]:
+        """Members whose first day this is. Shown, but never counted."""
+        return [g for g in self.gains if g.is_new]
 
 
 class UmaMoeAPIScraper(BaseScraper):
@@ -378,6 +395,16 @@ class UmaMoeAPIScraper(BaseScraper):
         Needs no month-boundary case: the slot is the competition day, so the
         preceding day is always slot-1 in the same array, and slot 0 is the
         month's baseline.
+
+        Someone whose first positive slot IS the live slot joined today, and their
+        figures are not measurable rather than merely zero: the slot holds their
+        carry-in *lifetime* total, and uma.moe records nothing about the moment
+        they joined, so the fans sitting in it were earned partly before and
+        partly after they arrived. Both numbers therefore come out as 0 and the
+        row is flagged ``is_new`` so the board can say so instead of listing them
+        among members who simply haven't raced. Measured on circle 690001342,
+        2026-08-03: three members joined on competition day 2 the same day two
+        others left.
         """
         gains: List[MemberGain] = []
         prev_slot = live_slot - 1
@@ -393,14 +420,21 @@ class UmaMoeAPIScraper(BaseScraper):
                 prev = fans[live_slot]        # joined today: no prior day to diff
 
             gained = max(0, fans[live_slot] - prev)
-            baseline = next((v for v in fans[:live_slot + 1] if v > 0), 0)
-            month_total = max(0, fans[live_slot] - baseline)
+            # Negative entries are transfer markers, not totals — a member who
+            # moved here from another tracked circle carries them for the days
+            # before the move, so the first *positive* slot is the arrival.
+            joined_slot = next(
+                (i for i, v in enumerate(fans[:live_slot + 1]) if v > 0), live_slot
+            )
+            month_total = max(0, fans[live_slot] - fans[joined_slot])
 
             gains.append(MemberGain(
                 trainer_id=str(m.get("viewer_id")),
                 name=m.get("trainer_name") or "?",
                 gained_today=gained,
                 month_total=month_total,
+                joined_slot=joined_slot,
+                is_new=joined_slot == live_slot,
             ))
         return gains
 
