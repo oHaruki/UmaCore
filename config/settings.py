@@ -100,10 +100,30 @@ DAILY_QUOTA = 1_000_000
 BOMB_TRIGGER_DAYS = 3
 BOMB_COUNTDOWN_DAYS = 7
 
-# Rank-promotion milestones (club position ranks). The /promotion command and the
-# daily report use these as the default "next target" a club is climbing toward: the
-# best milestone strictly above the club's current rank. Editable — order doesn't matter.
-PROMOTION_MILESTONES = [10, 50, 100, 500, 3000]
+# Club rank grades, as leaderboard position bands. The key is the last position
+# still inside that grade, so a club qualifies for the grade whose bound is the
+# smallest one >= its rank: #1483 -> B+, #507 -> A, #100 -> S.
+#
+# These bands are what /promotion climbs between. They used to be a hand-picked
+# list with nothing between 500 and 3000, so every club from #501 to #2999 was
+# told to climb to Top 500 — a B+ club at #1483 was pointed four grades up
+# instead of at the A band right above it.
+CLUB_RANK_GRADES = [
+    (10,     "SS"),
+    (30,     "S+"),
+    (100,    "S"),
+    (500,    "A+"),
+    (1_000,  "A"),
+    (3_000,  "B+"),
+    (5_000,  "B"),
+    (7_000,  "C+"),
+    (10_000, "C"),
+]
+
+# The /promotion command and the daily report use these as the default "next
+# target" a club is climbing toward: the best milestone strictly above the club's
+# current rank. Editable — order doesn't matter.
+PROMOTION_MILESTONES = [bound for bound, _ in CLUB_RANK_GRADES]
 
 # Internal API server (web UI integration)
 BOT_API_PORT = int(os.getenv("BOT_API_PORT", "7890"))

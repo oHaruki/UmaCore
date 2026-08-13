@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from models import Club
-from services.promotion_calculator import compute_promotion
+from services.promotion_calculator import compute_promotion, grade_for_rank
 
 logger = logging.getLogger(__name__)
 
@@ -97,14 +97,27 @@ class PromotionCommands(commands.Cog):
                 await interaction.followup.send(msg)
                 return
 
+            # Grades only mean something when the target is a grade boundary —
+            # a hand-typed target_rank usually lands mid-band.
+            current_grade = grade_for_rank(result.current_rank)
+            target_grade = grade_for_rank(result.target_rank) if result.is_milestone else None
+
+            title = f"📈 {club} — climb to Top {result.target_rank}"
+            if target_grade:
+                title += f" ({target_grade})"
+
             embed = discord.Embed(
-                title=f"📈 {club} — climb to Top {result.target_rank}",
+                title=title,
                 color=0x6366F1,
                 timestamp=discord.utils.utcnow(),
             )
             embed.add_field(
                 name="Current standing",
-                value=f"Rank **#{result.current_rank}** · {_fmt(result.our_fans)} monthly fans",
+                value=(
+                    f"Rank **#{result.current_rank}**"
+                    f"{f' · **{current_grade}**' if current_grade else ''}"
+                    f" · {_fmt(result.our_fans)} monthly fans"
+                ),
                 inline=False,
             )
             embed.add_field(

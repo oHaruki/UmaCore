@@ -19,7 +19,7 @@ import calendar
 import logging
 
 from config.database import db
-from config.settings import PROMOTION_MILESTONES
+from config.settings import CLUB_RANK_GRADES, PROMOTION_MILESTONES
 from models.club import Club
 from scrapers.umamoe_leaderboard import fetch_entry_at_rank, fetch_own_standing
 
@@ -48,11 +48,24 @@ def next_milestone(current_rank: int, milestones: Optional[List[int]] = None) ->
     i.e. the closest promotion target that is an actual improvement — or ``None`` when
     the club already sits at or above the top milestone.
 
-    Example: rank 107 → 100; rank 45 → 10; rank 600 → 500; rank 7 → None.
+    Example: rank 107 → 100; rank 45 → 30; rank 600 → 500; rank 1483 → 1000; rank 7 → None.
     """
     pool = milestones if milestones is not None else PROMOTION_MILESTONES
     better = [m for m in pool if m < current_rank]
     return max(better) if better else None
+
+
+def grade_for_rank(rank: Optional[int]) -> Optional[str]:
+    """The club grade a leaderboard position sits in, e.g. 1483 → 'B+'.
+
+    ``None`` for ranks past the bottom band, where the game shows no grade.
+    """
+    if rank is None:
+        return None
+    for bound, grade in CLUB_RANK_GRADES:
+        if rank <= bound:
+            return grade
+    return None
 
 
 async def _recent_daily_rate(club_id: UUID) -> Optional[int]:
