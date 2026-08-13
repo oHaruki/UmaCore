@@ -448,6 +448,21 @@ class Database:
             END IF;
         END $$;
 
+        -- Migration: Add last_report_date column if it doesn't exist.
+        -- The club's local date of its last scheduled daily report. The tick
+        -- claims a date here before running, so a restart inside a club's
+        -- trigger hour can't re-post a report that already went out.
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='clubs' AND column_name='last_report_date'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN last_report_date DATE;
+                RAISE NOTICE 'Added last_report_date column to clubs';
+            END IF;
+        END $$;
+
         -- Audit log table (web dashboard actions)
         CREATE TABLE IF NOT EXISTS audit_logs (
             id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),

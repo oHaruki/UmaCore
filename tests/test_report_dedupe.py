@@ -1,19 +1,25 @@
 """The daily report must fire once per club per day, whatever the club's timezone.
 
-`scrape_tick` dedupes with `last_runs[f"{club_id}_{local_date}"]`, where the date
-is the club's *own* date. `_prune_last_runs` swept that dict against UTC dates,
-so any club whose local date ran ahead of UTC — JST is a day ahead from 15:00 UTC
-onward, and the live board pins such clubs to exactly that moment — had its key
-evicted on the same tick that wrote it. The guard never saw its own mark and the
-club re-reported every minute for its entire trigger hour.
+Two production bugs live here, both of them the same mistake — the "already
+reported" marker being less durable than the report it guards.
 
-Observed 2026-08-04 in production: two clubs configured at 00:00 JST posted 59 and
-36 daily reports between 15:00 and 15:59 UTC, and one at 01:05 Australia/Sydney
-re-dispatched every minute alongside them.
+1. The marker was an in-memory dict swept against UTC dates. Any club whose local
+   date ran ahead of UTC — JST is a day ahead from 15:00 UTC onward, and the live
+   board pins such clubs to exactly that moment — had its key evicted on the same
+   tick that wrote it, so it re-reported every minute of its trigger hour.
+   Observed 2026-08-04: two clubs at 00:00 JST posted 59 and 36 daily reports
+   between 15:00 and 15:59 UTC, and one at 01:05 Australia/Sydney alongside them.
 
-The second half of this file is the control: every timezone that was *not*
-affected, including the `clubs.timezone` column default, must keep reporting
-exactly once a day.
+2. The dict didn't survive a restart at all. A club counts as due for its whole
+   trigger hour, so a bot restarted mid-hour re-ran the check and re-posted the
+   report and its kick alerts. Observed 2026-08-13 after a deploy.
+
+The marker now lives in `clubs.last_report_date`, claimed atomically by
+`Club.claim_report_day`. `FakeClaims` below is the in-memory stand-in for that
+UPDATE; `TestSurvivesRestarts` is the regression test for (2).
+
+The middle of this file is the control: every timezone that was *not* affected by
+(1), including the `clubs.timezone` column default, must keep reporting once a day.
 """
 import asyncio
 from datetime import date, datetime, time, timedelta, timezone
@@ -59,11 +65,34 @@ def make_club(tz, scrape_time=time(16, 0), live_board=False, name="Test"):
     )
 
 
-def run_ticks(monkeypatch, club, *, start="2026-08-03 00:00", hours=48):
+class FakeClaims:
+    """In-memory stand-in for the `clubs.last_report_date` claim.
+
+    Mirrors `UPDATE ... WHERE last_report_date IS DISTINCT FROM $2 RETURNING`:
+    the first caller for a (club, date) wins, everyone after it loses. Unlike the
+    dict this replaces, it is owned by the *test*, not by BotTasks — which is the
+    whole point, since a restart must not clear it.
+    """
+
+    def __init__(self):
+        self.last = {}
+
+    async def claim(self, club_id, run_date):
+        if self.last.get(club_id) == run_date:
+            return False
+        self.last[club_id] = run_date
+        return True
+
+
+def run_ticks(monkeypatch, club, *, start="2026-08-03 00:00", hours=48,
+              restart_every_minutes=None):
     """Drive the real `scrape_tick` minute by minute against a frozen clock.
 
-    Returns (dispatch_times_utc, bot_tasks) so callers can assert on both what
-    was dispatched and what the dedupe dict looks like afterwards.
+    `restart_every_minutes` rebuilds BotTasks on that cadence, simulating a bot
+    that keeps being restarted. The claim store deliberately survives, exactly as
+    the database column does.
+
+    Returns (dispatch_times_utc, claims).
     """
     real_datetime = tasks_module.datetime
 
@@ -81,23 +110,30 @@ def run_ticks(monkeypatch, club, *, start="2026-08-03 00:00", hours=48):
 
     monkeypatch.setattr(Club, "get_all_active", staticmethod(fake_get_all_active))
 
-    bot_tasks = BotTasks(object())
+    claims = FakeClaims()
+    monkeypatch.setattr(Club, "claim_report_day", staticmethod(claims.claim))
+
     dispatched = []
-    monkeypatch.setattr(
-        bot_tasks.scheduler, "enqueue",
-        lambda c, dispatch_dt, attempt=1: dispatched.append(FrozenDatetime.current),
-    )
+
+    def build():
+        bot_tasks = BotTasks(object())
+        bot_tasks.scheduler.enqueue = (
+            lambda c, dispatch_dt, attempt=1: dispatched.append(FrozenDatetime.current)
+        )
+        return bot_tasks
 
     t0 = real_datetime.strptime(start, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-    tick = bot_tasks.scrape_tick.coro
 
     async def drive():
+        bot_tasks = build()
         for i in range(hours * 60):
+            if restart_every_minutes and i and i % restart_every_minutes == 0:
+                bot_tasks = build()
             FrozenDatetime.current = t0 + timedelta(minutes=i)
-            await tick(bot_tasks)
+            await bot_tasks.scrape_tick.coro(bot_tasks)
 
     asyncio.run(drive())
-    return dispatched, bot_tasks
+    return dispatched, claims
 
 
 def fires(monkeypatch, club, **kw):
@@ -214,35 +250,52 @@ class TestOtherZonesStillReportOnce:
         assert len(fires(monkeypatch, club)) == EXPECTED_PER_48H
 
 
-class TestPruneKeepsTheWindowBounded:
-    """Pruning still has to happen — the dict grew forever before it existed."""
+class TestSurvivesRestarts:
+    """The 2026-08-13 regression: restarting must not re-post the report.
 
-    def test_drops_keys_older_than_two_days(self):
-        bot_tasks = BotTasks(object())
-        now = datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
-        bot_tasks.last_runs = {
-            "club_2026-08-05": True,   # tomorrow — a club east of UTC
-            "club_2026-08-04": True,   # today
-            "club_2026-08-03": True,   # yesterday
-            "club_2026-08-02": True,   # still inside the window
-            "club_2026-08-01": True,   # stale
-            "club_2026-07-20": True,   # stale
-        }
-        bot_tasks._prune_last_runs(now)
-        assert set(bot_tasks.last_runs) == {
-            "club_2026-08-05", "club_2026-08-04",
-            "club_2026-08-03", "club_2026-08-02",
-        }
+    A club is due for its whole trigger hour, so with the marker held in process
+    memory every restart inside that hour ran the check again — duplicate report,
+    duplicate kick alerts, duplicate DMs.
+    """
 
-    def test_does_not_grow_without_bound(self, monkeypatch):
-        """Ten days of ticks must not leave ten days of keys behind."""
-        club = make_club("Asia/Tokyo", scrape_time=time(0, 0))
-        _, bot_tasks = run_ticks(monkeypatch, club,
-                                 start="2026-08-01 00:00", hours=24 * 10)
-        assert len(bot_tasks.last_runs) <= 4
+    def test_restart_inside_the_trigger_hour_does_not_repeat(self, monkeypatch):
+        """Restart every minute for two days. Still two reports."""
+        club = make_club(DEFAULT_TIMEZONE, scrape_time=time(16, 0))
+        assert len(fires(monkeypatch, club, restart_every_minutes=1)) == \
+            EXPECTED_PER_48H
 
-    def test_the_key_date_survives_the_rsplit(self):
-        """The key is `{uuid}_{date}` and pruning recovers the date by rsplit."""
-        club = make_club("Asia/Tokyo")
-        key = f"{club.club_id}_{date(2026, 8, 5)}"
-        assert key.rsplit("_", 1)[-1] == "2026-08-05"
+    def test_restart_storm_on_an_eastern_club(self, monkeypatch):
+        """The worst case: a live-board JST club, whose whole trigger hour is
+        15:00 UTC, restarted every minute of it."""
+        club = make_club("Asia/Tokyo", scrape_time=time(0, 0), live_board=True)
+        assert len(fires(monkeypatch, club, restart_every_minutes=1)) == \
+            EXPECTED_PER_48H
+
+    def test_a_restart_still_reports_a_day_it_has_not_done(self, monkeypatch):
+        """The guard must not overshoot: restarts are fine, missing a day is not."""
+        club = make_club(DEFAULT_TIMEZONE, scrape_time=time(16, 0))
+        fired, claims = run_ticks(monkeypatch, club, restart_every_minutes=17)
+        assert [t.strftime("%d %H:%M") for t in fired] == ["03 14:00", "04 14:00"]
+        assert claims.last[club.club_id] == date(2026, 8, 4)
+
+
+class TestTheClaimItself:
+    """`FakeClaims` has to behave like the SQL it stands in for."""
+
+    def test_first_caller_wins_and_the_rest_lose(self):
+        claims = FakeClaims()
+        day = date(2026, 8, 13)
+        assert asyncio.run(claims.claim("club", day)) is True
+        assert asyncio.run(claims.claim("club", day)) is False
+        assert asyncio.run(claims.claim("club", day)) is False
+
+    def test_a_new_date_can_be_claimed_again(self):
+        claims = FakeClaims()
+        assert asyncio.run(claims.claim("club", date(2026, 8, 13))) is True
+        assert asyncio.run(claims.claim("club", date(2026, 8, 14))) is True
+
+    def test_clubs_claim_independently(self):
+        claims = FakeClaims()
+        day = date(2026, 8, 13)
+        assert asyncio.run(claims.claim("a", day)) is True
+        assert asyncio.run(claims.claim("b", day)) is True
