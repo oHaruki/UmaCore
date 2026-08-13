@@ -272,6 +272,36 @@ class Club:
         rows = await db.fetch(query)
         return [cls(**dict(row)) for row in rows]
 
+    @classmethod
+    async def claim_report_day(cls, club_id: UUID, run_date: date) -> bool:
+        """Claim a club's scheduled daily report for ``run_date``.
+
+        Returns True only for the caller that actually claimed it; every later
+        caller for the same date gets False.
+
+        This is the guard that stops a restart re-posting a report that already
+        went out. A club counts as due for its whole trigger hour, so a bot that
+        comes back up mid-hour would otherwise run the check a second time —
+        duplicate report, duplicate kick alerts, duplicate DMs. Postgres does the
+        mutual exclusion, so the guard also holds across two instances sharing a
+        database, which an in-process marker never could.
+
+        The claim is kept whatever the run's outcome: it means "this club's slot
+        for this date is spent", not "this club reported successfully". Releasing
+        it on failure would let the next tick, still inside the trigger hour,
+        immediately re-claim and retry every minute. A run that genuinely failed
+        is re-run with /force_check, which bypasses the tick entirely.
+        """
+        row = await db.fetchrow(
+            """
+            UPDATE clubs SET last_report_date = $2
+            WHERE club_id = $1 AND last_report_date IS DISTINCT FROM $2
+            RETURNING club_id
+            """,
+            club_id, run_date,
+        )
+        return row is not None
+
     async def set_live_board(self, channel_id: Optional[int]) -> None:
         """Enable the live board in a channel, or disable it with ``None``."""
         await db.execute(

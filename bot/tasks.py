@@ -42,9 +42,6 @@ class BotTasks:
         self.report_generator = ReportGenerator()
         self.notification_service = NotificationService(bot)
 
-        # Track last run per club per day (club_id_YYYY-MM-DD -> True)
-        self.last_runs = {}
-
         # Parse the backup time once; fall back to a quiet default if malformed.
         try:
             bh, bm = map(int, DB_BACKUP_UTC_TIME.split(":"))
@@ -191,10 +188,10 @@ class BotTasks:
                 if not (now_in_club_tz.hour == target_hour and now_in_club_tz.minute >= target_minute):
                     continue
 
-                run_key = f"{club.club_id}_{current_date}"
-                if self.last_runs.get(run_key):
+                # Durable claim — an in-memory marker was lost on restart, so a
+                # bot coming back up mid-trigger-hour re-posted the whole report.
+                if not await Club.claim_report_day(club.club_id, current_date):
                     continue
-                self.last_runs[run_key] = True
 
                 dispatch_dt, held = await self._compute_dispatch_utc(club, now_utc)
                 tag = "held for rollover grace" if held else "on time"
@@ -208,8 +205,6 @@ class BotTasks:
             except Exception as e:
                 logger.error(f"scrape_tick: error for {club.club_name}: {e}", exc_info=True)
                 continue
-
-        self._prune_last_runs(now_utc)
 
     @staticmethod
     def _effective_scrape_time(club: Club, now_utc: datetime) -> time:
@@ -234,24 +229,6 @@ class BotTasks:
             hour=ROLLOVER_UTC_HOUR, minute=0, second=0, microsecond=0
         ).astimezone(tz)
         return time(close_local.hour, close_local.minute)
-
-    def _prune_last_runs(self, now_utc: datetime) -> None:
-        """Drop run keys older than two days.
-
-        The dict is keyed ``{club_id}_{date}`` and was never cleaned, so it grew
-        by one entry per club per day for the process's lifetime.
-
-        The date in that key is the club's *local* date, which runs up to a day
-        ahead of UTC — Kiritimati is UTC+14, and a club merely on JST is already
-        a day ahead whenever it is due between 15:00 and 24:00 UTC. Pruning
-        against UTC dates alone evicted those keys on the very tick that set
-        them, so the club re-reported every minute for its whole trigger hour.
-        Keeping tomorrow too means the sweep can never race the guard.
-        """
-        keep = {str((now_utc + timedelta(days=1 - d)).date()) for d in range(4)}
-        stale = [k for k in self.last_runs if k.rsplit("_", 1)[-1] not in keep]
-        for k in stale:
-            del self.last_runs[k]
 
     async def _compute_dispatch_utc(self, club: Club, now_utc: datetime):
         """Decide when a due club should actually be fetched.
