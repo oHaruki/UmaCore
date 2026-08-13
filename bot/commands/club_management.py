@@ -9,6 +9,7 @@ import logging
 import pytz
 
 from models import Club, ClubPermission, GuildManagerRole
+from utils.audit import log_audit
 from utils.permissions import ensure_can_manage, can_create_club, creator_role_ids, is_full_manager
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,16 @@ class DeleteConfirmModal(discord.ui.Modal, title="Confirm Club Deletion"):
             return
 
         await interaction.response.defer()
+        deleted_club_id = self.club_obj.club_id
         await self.club_obj.delete()
+
+        # club_id stays None: audit_logs.club_id cascades, so an entry pointing
+        # at the club we just deleted would delete itself.
+        await log_audit(
+            interaction, 'club.delete', 'club',
+            entity_id=deleted_club_id,
+            details={'club_name': self.club_name},
+        )
 
         embed = discord.Embed(
             title="✅ Club Deleted",
@@ -254,6 +264,15 @@ class ClubManagementCommands(commands.Cog):
             embed.set_footer(text=f"Added by {interaction.user}")
             
             await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'club.create', 'club',
+                entity_id=club.club_id, club_id=club.club_id,
+                details={
+                    'club_name': club_name,
+                    'daily_quota': daily_quota,
+                    'quota_period': resolved_quota_period,
+                },
+            )
             logger.info(f"Club '{club_name}' added by {interaction.user} (circle_id: {resolved_circle_id}, guild_id: {interaction.guild_id})")
             
         except Exception as e:
@@ -366,6 +385,11 @@ class ClubManagementCommands(commands.Cog):
             embed.set_footer(text=f"Reactivated by {interaction.user}")
             
             await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'club.activate', 'club',
+                entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                details={'club_name': club_obj.club_name},
+            )
             logger.info(f"Club '{club}' reactivated by {interaction.user}")
             
         except Exception as e:
@@ -584,6 +608,15 @@ class ClubManagementCommands(commands.Cog):
             embed.set_footer(text=f"Updated by {interaction.user}")
             
             await interaction.followup.send(embed=embed)
+            # scrape_time is a datetime.time — stringify anything not JSON-native.
+            await log_audit(
+                interaction, 'club.update', 'club',
+                entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                details={'changes': {
+                    k: v if isinstance(v, (int, str, bool, type(None))) else str(v)
+                    for k, v in updates.items()
+                }},
+            )
             logger.info(f"Club '{club}' settings updated by {interaction.user}: {updates}")
             
         except Exception as e:
@@ -628,6 +661,11 @@ class ClubManagementCommands(commands.Cog):
             )
             embed.set_footer(text=f"Added by {interaction.user}")
             await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'club.editor.add', 'club',
+                entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                details={'role_id': str(role.id), 'role_name': role.name},
+            )
             logger.info(f"Role {role.id} bound to club '{club_obj.club_name}' by {interaction.user}")
 
         except Exception as e:
@@ -665,6 +703,11 @@ class ClubManagementCommands(commands.Cog):
             )
             embed.set_footer(text=f"Removed by {interaction.user}")
             await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'club.editor.remove', 'club',
+                entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                details={'role_id': str(role.id), 'role_name': role.name},
+            )
             logger.info(f"Role {role.id} unbound from club '{club_obj.club_name}' by {interaction.user}")
 
         except Exception as e:
@@ -734,6 +777,11 @@ class ClubManagementCommands(commands.Cog):
             )
             embed.set_footer(text=f"Added by {interaction.user}")
             await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'guild.manager.add', 'guild',
+                entity_id=interaction.guild_id,
+                details={'role_id': str(role.id), 'role_name': role.name},
+            )
             logger.info(f"Manager role {role.id} added for guild {interaction.guild_id} by {interaction.user}")
         except Exception as e:
             logger.error(f"Error in add_manager_role: {e}", exc_info=True)
@@ -754,6 +802,11 @@ class ClubManagementCommands(commands.Cog):
             )
             embed.set_footer(text=f"Removed by {interaction.user}")
             await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'guild.manager.remove', 'guild',
+                entity_id=interaction.guild_id,
+                details={'role_id': str(role.id), 'role_name': role.name},
+            )
             logger.info(f"Manager role {role.id} removed for guild {interaction.guild_id} by {interaction.user}")
         except Exception as e:
             logger.error(f"Error in remove_manager_role: {e}", exc_info=True)

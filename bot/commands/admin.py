@@ -23,6 +23,7 @@ from config.settings import (
 )
 from utils.rate_limiter import umamoe_limiter, PRIORITY_INTERACTIVE
 from utils.timezone_helper import resolve_timezone
+from utils.audit import log_audit
 from utils.permissions import ensure_can_manage
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,14 @@ class AdminCommands(commands.Cog):
             )
 
             await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'quota_req.create', 'quota_requirement',
+                entity_id=quota_req.id, club_id=club_obj.club_id,
+                details={
+                    'effective_date': current_date.isoformat(),
+                    'daily_quota': amount,
+                },
+            )
             logger.info(f"Quota set to {amount:,} for {club} by {set_by} effective {current_date}")
 
             # Auto-update monthly info board
@@ -350,6 +359,15 @@ class AdminCommands(commands.Cog):
             embed.set_footer(text=f"Deleted by {interaction.user}")
 
             await interaction.followup.send(embed=embed)
+            # Deleted by date+amount rather than id, so there is no entity_id to record.
+            await log_audit(
+                interaction, 'quota_req.delete', 'quota_requirement',
+                club_id=club_obj.club_id,
+                details={
+                    'effective_date': effective_date.isoformat(),
+                    'daily_quota': amount,
+                },
+            )
             logger.info(f"Quota entry deleted for {club} ({amount:,} on {date}) by {interaction.user}")
 
             await self._update_monthly_info_board(club_obj, effective_date)
@@ -586,6 +604,12 @@ class AdminCommands(commands.Cog):
                     f"✅ Check complete for {club}: {updated_members} members updated, {new_members} new members"
                 )
 
+            await log_audit(
+                interaction, 'sync.trigger', 'club',
+                entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                details={'success': True, 'updated_members': updated_members},
+            )
+
         except Exception as e:
             logger.error(f"Error in force_check: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
@@ -624,6 +648,15 @@ class AdminCommands(commands.Cog):
 
             await interaction.followup.send(
                 f"✅ Added member to {club}: {trainer_name} (joined {join_date}, ID: {trainer_id or 'N/A'})"
+            )
+            await log_audit(
+                interaction, 'member.create', 'member',
+                entity_id=member.member_id, club_id=club_obj.club_id,
+                details={
+                    'trainer_name': trainer_name,
+                    'trainer_id': trainer_id,
+                    'join_date': join_date_obj.isoformat(),
+                },
             )
 
         except ValueError:
@@ -676,6 +709,11 @@ class AdminCommands(commands.Cog):
             )
 
             await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'member.deactivate', 'member',
+                entity_id=member.member_id, club_id=club_obj.club_id,
+                details={'trainer_name': trainer_name},
+            )
             logger.info(f"Manually deactivated member: {trainer_name} in {club} by {interaction.user}")
 
         except Exception as e:
@@ -720,6 +758,11 @@ class AdminCommands(commands.Cog):
             )
 
             await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'member.reactivate', 'member',
+                entity_id=member.member_id, club_id=club_obj.club_id,
+                details={'trainer_name': trainer_name},
+            )
             logger.info(f"Reactivated member: {trainer_name} in {club} by {interaction.user}")
 
         except Exception as e:
@@ -870,6 +913,19 @@ class AdminCommands(commands.Cog):
             embed.set_footer(text=f"Run /force_check for a fresh report · by {interaction.user}")
             await interaction.followup.send(embed=embed)
 
+            await log_audit(
+                interaction, 'club.recalculate', 'club',
+                entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                details={
+                    'rows_written': result.rows_written,
+                    'fans_corrected': result.fans_corrected,
+                    'rows_added': result.rows_added,
+                    'join_dates_fixed': result.join_dates_fixed,
+                    'bombs_cleared': result.bombs_cleared,
+                    'bombs_activated': result.bombs_activated,
+                },
+            )
+
             logger.info(
                 f"recalculate {club} by {interaction.user}: "
                 f"{result.rows_written} rows, {result.fans_corrected} fans corrected, "
@@ -925,6 +981,11 @@ class AdminCommands(commands.Cog):
             )
             embed.set_footer(text=f"Reset by {interaction.user}")
             await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'club.reset_month', 'club',
+                entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                details={'club_name': club_obj.club_name},
+            )
             logger.warning(f"Manual monthly reset performed for {club} by {interaction.user}")
 
         except Exception as e:
@@ -1094,6 +1155,11 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(
                 f"✅ Live board disabled for **{club}**. The last message stays where it is."
             )
+            await log_audit(
+                interaction, 'club.update', 'club',
+                entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                details={'changes': {'live_board_channel_id': None}},
+            )
             return
 
         if not club_obj.is_circle_id_valid():
@@ -1133,6 +1199,11 @@ class AdminCommands(commands.Cog):
         )
         embed.set_footer(text="The first board appears within the hour.")
         await interaction.followup.send(embed=embed)
+        await log_audit(
+            interaction, 'club.update', 'club',
+            entity_id=club_obj.club_id, club_id=club_obj.club_id,
+            details={'changes': {'live_board_channel_id': str(channel.id)}},
+        )
         logger.info(f"Live board enabled for {club} in channel {channel.id}")
 
     @app_commands.command(
