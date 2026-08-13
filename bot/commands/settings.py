@@ -11,6 +11,7 @@ import pytz
 from models import Club
 from services import MonthlyInfoService
 from utils.timezone_helper import resolve_timezone
+from utils.audit import log_audit
 from utils.permissions import ensure_can_manage
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,11 @@ class SettingsCommands(commands.Cog):
             )
             
             await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'club.update', 'club',
+                entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                details={'changes': {'report_channel_id': str(channel.id)}},
+            )
             logger.info(f"Report channel for {club} set to {channel.name} ({channel.id}) by {interaction.user}")
             
         except Exception as e:
@@ -98,6 +104,11 @@ class SettingsCommands(commands.Cog):
             )
             
             await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'club.update', 'club',
+                entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                details={'changes': {'alert_channel_id': str(channel.id)}},
+            )
             logger.info(f"Alert channel for {club} set to {channel.name} ({channel.id}) by {interaction.user}")
             
         except Exception as e:
@@ -256,6 +267,11 @@ class SettingsCommands(commands.Cog):
             )
             
             await interaction.followup.send(embed=embed_response)
+            await log_audit(
+                interaction, 'club.update', 'club',
+                entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                details={'changes': {'monthly_info_channel_id': str(target_channel.id)}},
+            )
             logger.info(f"Monthly info board posted for {club_obj.club_name} in {target_channel.name} by {interaction.user} - saved location")
             
         except Exception as e:
