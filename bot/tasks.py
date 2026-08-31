@@ -21,7 +21,8 @@ from services.tally_renderer import generate_tally_image
 from utils.timezone_helper import resolve_timezone
 from utils.jst_calendar import ROLLOVER_UTC_HOUR
 from services.backup_service import create_backup, find_pg_dump
-from services.live_board import update_club as update_live_board
+from services.live_board import refresh as refresh_live_board
+from services import channel_names
 from config.settings import (
     USE_UMAMOE_API, SCRAPE_ROLLOVER_GRACE_SEC, SCRAPE_MAX_FRESHNESS_RETRIES,
     SCRAPE_FRESHNESS_RETRY_DELAY_SEC, SCRAPE_MAX_CONCURRENCY,
@@ -122,34 +123,72 @@ class BotTasks:
 
     @tasks.loop(minutes=1)
     async def live_board_tick(self):
-        """Refresh live boards, spread evenly across the hour.
+        """Refresh live boards and tracking channel names, spread across the hour.
 
         Each club gets a stable slot minute derived from its id, so 200 clubs
         become ~3 API calls a minute instead of a 200-call burst that would
         saturate the shared limiter and stall interactive commands behind it.
         The spread also matches reality: uma.moe's live batch reaches
         lower-ranked circles several minutes after the top ones.
+
+        Two features share the slot because they want the same figures: a club
+        running both gets its board edit and its channel renames out of a single
+        fetch. A club that only wants renamed channels is polled here too — it
+        needs the live data just as much, it simply has no message to post.
         """
         now_utc = datetime.now(timezone.utc)
 
         try:
-            clubs = await Club.get_live_board_clubs()
+            board_clubs = await Club.get_live_board_clubs()
+            name_clubs = await channel_names.clubs_needing_updates()
         except Exception as e:
             logger.error(f"live_board_tick: failed to load clubs: {e}", exc_info=True)
             return
 
-        if not clubs:
-            return
+        # One entry per club, remembering which of the two it is due for.
+        merged = {c.club_id: c for c in board_clubs}
+        merged.update({c.club_id: c for c in name_clubs})
+        wants_board = {c.club_id for c in board_clubs}
+        wants_names = {c.club_id for c in name_clubs}
 
-        due = [c for c in clubs if self._live_slot_minute(c) == now_utc.minute]
+        due = [c for c in merged.values() if self._live_slot_minute(c) == now_utc.minute]
         for club in due:
             try:
-                await update_live_board(self.bot, club, now_utc=now_utc)
+                await self._live_slot(club, now_utc,
+                                      board=club.club_id in wants_board,
+                                      names=club.club_id in wants_names)
             except Exception as e:
-                # One club's board must never take down the others.
+                # One club's slot must never take down the others.
                 logger.error(
                     f"live_board_tick: {club.club_name} failed: {e}", exc_info=True
                 )
+
+    async def _live_slot(self, club: Club, now_utc: datetime, *,
+                         board: bool, names: bool) -> None:
+        """Run one club's slot: refresh its board and/or its channel names.
+
+        The snapshot is fetched once and used for both. When the club has no
+        board, the fetch happens here instead — same call, no message.
+        """
+        if board:
+            _, snap = await refresh_live_board(self.bot, club, now_utc=now_utc)
+        else:
+            snap = await UmaMoeAPIScraper(club.circle_id, now_utc=now_utc).fetch_live()
+
+        if not names or snap is None:
+            return
+
+        # Best-effort and deliberately last: a rename that fails must not affect
+        # the board, which is the surface people actually read.
+        try:
+            await channel_names.apply_for_club(
+                self.bot, club, channel_names.context_from_live(club, snap)
+            )
+        except Exception as e:
+            logger.error(
+                f"live_board_tick: channel names failed for {club.club_name}: {e}",
+                exc_info=True,
+            )
 
     @staticmethod
     def _live_slot_minute(club: Club) -> int:
@@ -454,6 +493,21 @@ class BotTasks:
                                 }
                         except Exception as e:
                             logger.warning(f"Promotion calc failed for {club.club_name}: {e}")
+
+                # Channel names tracking this club's figures. Clubs running the
+                # live board have already had these updated within the hour; this
+                # is the path that keeps a club without one current, and either way
+                # it writes the finalized numbers for the day that just closed.
+                if isinstance(scraper, UmaMoeAPIScraper):
+                    try:
+                        await channel_names.apply_for_club(
+                            self.bot, club,
+                            channel_names.context_from_meta(club, scraper.get_meta()),
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Channel name update failed for {club.club_name}: {e}"
+                        )
 
                 # STEP 4: Process the scraped data
                 try:

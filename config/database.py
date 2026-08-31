@@ -529,6 +529,28 @@ class Database:
             ON api_usage(provider, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_api_usage_endpoint_created
             ON api_usage(endpoint, created_at DESC);
+
+        -- Channel name templates: rename a Discord channel (typically a locked
+        -- voice channel used as a display board) to show a club's live figures.
+        -- A row per channel rather than a column per club, so one club can drive
+        -- several channels — rank in one, monthly fans in another.
+        --
+        -- last_rendered holds the name this bot last wrote. Discord throttles
+        -- renames hard (2 per 10 minutes, per channel), so the updater compares
+        -- against it and skips the API call entirely when nothing changed.
+        CREATE TABLE IF NOT EXISTS club_channel_names (
+            id            UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+            club_id       UUID        NOT NULL REFERENCES clubs(club_id) ON DELETE CASCADE,
+            channel_id    BIGINT      NOT NULL UNIQUE,
+            template      TEXT        NOT NULL,
+            enabled       BOOLEAN     NOT NULL DEFAULT TRUE,
+            last_rendered TEXT,
+            last_updated  TIMESTAMPTZ,
+            created_at    TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_club_channel_names_club
+            ON club_channel_names(club_id);
         """
         
         try:

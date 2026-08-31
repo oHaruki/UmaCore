@@ -15,7 +15,7 @@ one club costs 24 API calls a day and enabling it for none costs nothing.
 """
 import logging
 from datetime import date, datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import discord
 
@@ -253,6 +253,13 @@ async def _edit_existing(bot, club: Club, snap: LiveSnapshot, *, closed: bool) -
 
 
 async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) -> str:
+    """Bring one club's board up to date. See :func:`refresh` for the detail."""
+    status, _ = await refresh(bot, club, now_utc=now_utc)
+    return status
+
+
+async def refresh(bot, club: Club, *,
+                  now_utc: Optional[datetime] = None) -> Tuple[str, Optional[LiveSnapshot]]:
     """Bring one club's board up to date.
 
     Handles the three cases: no board yet, same day (edit), and the day having
@@ -267,6 +274,10 @@ async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) ->
         ``"edited"``   the existing board was updated in place
         ``"no_data"``  uma.moe has nothing for this day yet; board left untouched
         ``"failed"``   the message could not be sent or edited
+
+    Paired with the snapshot it read, so a caller wanting the same figures for
+    something else — the channel-name updater does — reuses this fetch instead of
+    making a second identical call a moment later.
     """
     target = resolve_live(now_utc)
 
@@ -278,18 +289,18 @@ async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) ->
         if not await _close_out(bot, club):
             # Couldn't reach that day's final numbers. Leave the board exactly as
             # it is and retry next cycle rather than abandoning it half-finished.
-            return "no_data"
+            return "no_data", None
 
     snap = await UmaMoeAPIScraper(club.circle_id, now_utc=now_utc).fetch_live()
     if snap is None:
-        return "no_data"
+        return "no_data", None
 
     if not club.live_board_message_id or not club.live_board_day:
-        return "posted" if await _post_new(bot, club, snap) else "failed"
+        return ("posted" if await _post_new(bot, club, snap) else "failed"), snap
 
     if await _edit_existing(bot, club, snap, closed=False):
-        return "edited"
-    return "posted" if await _post_new(bot, club, snap) else "failed"
+        return "edited", snap
+    return ("posted" if await _post_new(bot, club, snap) else "failed"), snap
 
 
 def _midday_utc(jst_day: date) -> datetime:
