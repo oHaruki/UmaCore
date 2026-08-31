@@ -8,8 +8,10 @@ from datetime import datetime
 import logging
 import pytz
 
-from models import Club
-from services import MonthlyInfoService
+from typing import Optional, Union
+
+from models import Club, ChannelName
+from services import MonthlyInfoService, channel_names
 from utils.timezone_helper import resolve_timezone
 from utils.audit import log_audit
 from utils.permissions import ensure_can_manage
@@ -278,10 +280,196 @@ class SettingsCommands(commands.Cog):
             logger.error(f"Error in post_monthly_info: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
+    @app_commands.command(
+        name="set_channel_name",
+        description="Make a channel's name display this club's rank or fans",
+    )
+    @app_commands.describe(
+        club="Which club's figures to display",
+        channel="The channel to rename - usually a locked voice channel",
+        template="Name with tokens, e.g. 'Rank #{rank}'. Leave empty to stop tracking.",
+    )
+    async def set_channel_name(
+        self, interaction: discord.Interaction, club: str,
+        channel: Union[discord.VoiceChannel, discord.StageChannel, discord.TextChannel],
+        template: Optional[str] = None,
+    ):
+        """Bind a channel's name to a club's live figures, or unbind it.
+
+        The name is rewritten after each live update (hourly, for clubs running
+        the live board) and after the daily scrape. The first change happens
+        immediately, so you can see whether the template reads the way you wanted
+        instead of waiting an hour to find out.
+        """
+        await interaction.response.defer()
+
+        club_obj = await Club.get_by_name(club)
+        if not club_obj:
+            await interaction.followup.send(f"❌ Club '{club}' not found")
+            return
+        if not club_obj.belongs_to_guild(interaction.guild_id):
+            await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+            return
+        if not await ensure_can_manage(interaction, club_obj):
+            return
+
+        if template is None:
+            if await ChannelName.remove(channel.id):
+                await interaction.followup.send(
+                    f"✅ {channel.mention} no longer tracks **{club}**. "
+                    f"Its current name stays as it is."
+                )
+                await log_audit(
+                    interaction, 'club.update', 'club',
+                    entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                    details={'changes': {'channel_name': None,
+                                         'channel_id': str(channel.id)}},
+                )
+            else:
+                await interaction.followup.send(
+                    f"ℹ️ {channel.mention} wasn't tracking anything."
+                )
+            return
+
+        bad = channel_names.unknown_tokens(template)
+        if bad:
+            listed = ", ".join("`{" + t + "}`" for t in bad)
+            available = ", ".join("`{" + t + "}`" for t in channel_names.TOKENS)
+            await interaction.followup.send(
+                f"❌ Unknown token{'s' if len(bad) > 1 else ''}: {listed}\n"
+                f"Available: {available}"
+            )
+            return
+
+        perms = channel.permissions_for(interaction.guild.me)
+        if not perms.manage_channels:
+            await interaction.followup.send(
+                f"❌ I need **Manage Channels** in {channel.mention} to rename it."
+            )
+            return
+
+        if not club_obj.is_circle_id_valid():
+            await interaction.followup.send(club_obj.get_circle_id_help_message())
+            return
+
+        await ChannelName.upsert(club_obj.club_id, channel.id, template)
+        result = await channel_names.refresh_now(self.bot, club_obj)
+
+        embed = discord.Embed(
+            title="✅ Channel name tracking enabled",
+            description=f"{channel.mention} now follows **{club}**",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Template", value=f"`{template}`", inline=False)
+
+        if result["updated"]:
+            row = await ChannelName.get_by_channel(channel.id)
+            embed.add_field(name="Now showing", value=f"`{row.last_rendered}`", inline=False)
+        elif result["failed"]:
+            embed.add_field(
+                name="⚠️ Couldn't rename it yet",
+                value="Saved anyway - check that I still have **Manage Channels** here. "
+                      "It will retry on the next update.",
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="⏳ No figures yet",
+                value=f"Uma.moe has nothing to show for **{club}** right now. "
+                      f"This is how it will read: `{channel_names.preview(template)}`",
+                inline=False,
+            )
+
+        if club_obj.live_board_enabled:
+            cadence = "Updates hourly from live data, and again after the daily scrape."
+        else:
+            cadence = ("Updates hourly from live data. This club has no live board, "
+                       "so it now gets an hourly uma.moe read of its own for this.")
+        embed.set_footer(text=cadence)
+
+        await interaction.followup.send(embed=embed)
+        await log_audit(
+            interaction, 'club.update', 'club',
+            entity_id=club_obj.club_id, club_id=club_obj.club_id,
+            details={'changes': {'channel_name': template,
+                                 'channel_id': str(channel.id)}},
+        )
+        logger.info(f"Channel {channel.id} bound to {club} as {template!r} by {interaction.user}")
+
+    @app_commands.command(
+        name="channel_names",
+        description="List the channels whose names track this club, and the tokens you can use",
+    )
+    @app_commands.describe(club="Which club", refresh="Update those channels right now")
+    async def channel_names_cmd(self, interaction: discord.Interaction, club: str,
+                                refresh: bool = False):
+        """Show a club's tracking channels, with what each one currently reads."""
+        await interaction.response.defer()
+
+        club_obj = await Club.get_by_name(club)
+        if not club_obj:
+            await interaction.followup.send(f"❌ Club '{club}' not found")
+            return
+        if not club_obj.belongs_to_guild(interaction.guild_id):
+            await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+            return
+
+        if refresh and not await ensure_can_manage(interaction, club_obj):
+            return
+
+        result = await channel_names.refresh_now(self.bot, club_obj) if refresh else None
+
+        rows = await ChannelName.get_for_club(club_obj.club_id)
+        embed = discord.Embed(
+            title=f"🔤 Channel names - {club}",
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow(),
+        )
+
+        if rows:
+            for row in rows:
+                target = self.bot.get_channel(row.channel_id)
+                where = target.mention if target else f"`{row.channel_id}` (not found)"
+                state = "" if row.enabled else " · paused"
+                showing = f"\nShowing `{row.last_rendered}`" if row.last_rendered else ""
+                embed.add_field(
+                    name=f"{where}{state}",
+                    value=f"`{row.template}`{showing}",
+                    inline=False,
+                )
+        else:
+            embed.description = (
+                f"No channels are tracking **{club}** yet.\n"
+                f"Set one with `/set_channel_name club:{club} channel:#some-vc "
+                f"template:Rank #{{rank}}`"
+            )
+
+        embed.add_field(
+            name="Tokens",
+            value="\n".join("`{" + t + "}` - " + d for t, d in channel_names.TOKENS.items()),
+            inline=False,
+        )
+
+        if result is not None:
+            embed.set_footer(
+                text=f"Refreshed now: {result['updated']} updated, "
+                     f"{result['skipped']} unchanged, {result['failed']} failed"
+            )
+        else:
+            embed.set_footer(
+                text="Discord throttles renames, so a channel changes at most "
+                     "once every few minutes."
+            )
+
+        await interaction.followup.send(embed=embed)
+
     # Apply autocomplete
     set_report_channel.autocomplete('club')(club_autocomplete)
     set_alert_channel.autocomplete('club')(club_autocomplete)
     channel_settings.autocomplete('club')(club_autocomplete)
+    set_channel_name.autocomplete('club')(club_autocomplete)
+    channel_names_cmd.autocomplete('club')(club_autocomplete)
     post_monthly_info.autocomplete('club')(club_autocomplete)
 
 

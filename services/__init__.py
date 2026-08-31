@@ -8,6 +8,7 @@ from .notification_service import NotificationService
 from .monthly_info_service import MonthlyInfoService
 from .scrape_lock_manager import ScrapeLockManager, ScrapeContext
 from .scrape_scheduler import ScrapeScheduler
+from . import channel_names
 
 __all__ = [
     'QuotaCalculator',
@@ -17,5 +18,6 @@ __all__ = [
     'MonthlyInfoService',
     'ScrapeLockManager',
     'ScrapeContext',
-    'ScrapeScheduler'
+    'ScrapeScheduler',
+    'channel_names',
 ]

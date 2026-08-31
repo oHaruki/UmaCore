@@ -11,5 +11,6 @@ from .club import Club
 from .club_rank_history import ClubRankHistory
 from .club_permission import ClubPermission
 from .guild_manager import GuildManagerRole
+from .channel_name import ChannelName
 
-__all__ = ['Member', 'QuotaHistory', 'Bomb', 'QuotaRequirement', 'BotSettings', 'UserLink', 'Club', 'ClubRankHistory', 'ClubPermission', 'GuildManagerRole']
+__all__ = ['Member', 'QuotaHistory', 'Bomb', 'QuotaRequirement', 'BotSettings', 'UserLink', 'Club', 'ClubRankHistory', 'ClubPermission', 'GuildManagerRole', 'ChannelName']

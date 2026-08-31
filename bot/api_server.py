@@ -15,7 +15,7 @@ from aiohttp import web
 from utils.timezone_helper import resolve_timezone
 
 from config.database import db
-from models import Club
+from models import Club, ChannelName
 from models.quota_requirement import QuotaSchedule
 from scrapers import UmaMoeAPIScraper, ChronoGenesisScraper
 from utils.rate_limiter import PRIORITY_INTERACTIVE
@@ -335,6 +335,130 @@ async def handle_guild_roles(request: web.Request) -> web.StreamResponse:
     return await _send_json(request, {'roles': roles})
 
 
+async def handle_guild_channels(request: web.Request) -> web.StreamResponse:
+    """List a guild's channels, from the bot's gateway cache.
+
+    Powers the dashboard's channel pickers. Each entry carries whether the bot
+    can actually rename it, so the UI can warn about a missing permission at the
+    moment someone picks the channel rather than an hour later when the first
+    scheduled rename quietly fails.
+    """
+    guild_id_str = request.rel_url.query.get('guild_id')
+    if not guild_id_str:
+        return await _send_json(request, {'error': 'guild_id required'}, status=400)
+
+    try:
+        guild_id = int(guild_id_str)
+    except ValueError:
+        return await _send_json(request, {'error': 'Invalid guild_id'}, status=400)
+
+    bot = request.app.get('bot')
+    if bot is None:
+        return await _send_json(request, {'error': 'Bot unavailable'}, status=503)
+
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        return await _send_json(
+            request,
+            {'error': 'Guild not found (bot is not in this server or not ready yet)'},
+            status=404,
+        )
+
+    import discord as _discord
+
+    kinds = {
+        _discord.ChannelType.text: 'text',
+        _discord.ChannelType.voice: 'voice',
+        _discord.ChannelType.stage_voice: 'stage',
+        _discord.ChannelType.category: 'category',
+        _discord.ChannelType.news: 'news',
+        _discord.ChannelType.forum: 'forum',
+    }
+
+    me = guild.me
+    channels = []
+    for ch in guild.channels:
+        kind = kinds.get(ch.type)
+        if kind is None or kind == 'category':
+            continue
+        perms = ch.permissions_for(me) if me else None
+        channels.append({
+            'id': str(ch.id),
+            'name': ch.name,
+            'type': kind,
+            'position': ch.position,
+            'category': ch.category.name if ch.category else None,
+            'can_rename': bool(perms and perms.manage_channels),
+            'can_post': bool(perms and perms.view_channel and perms.send_messages),
+        })
+
+    channels.sort(key=lambda c: (c['category'] or '', c['position']))
+    return await _send_json(request, {'channels': channels})
+
+
+async def handle_refresh_channel_names(request: web.Request) -> web.StreamResponse:
+    """Rename a club's tracking channels right now.
+
+    Called by the dashboard straight after a template is saved: the scheduled
+    paths would take up to an hour, which is far too long to find out whether
+    what you typed reads the way you meant.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return await _send_json(request, {'error': 'Invalid JSON body'}, status=400)
+
+    club_id_str = body.get('club_id')
+    if not club_id_str:
+        return await _send_json(request, {'error': 'club_id required'}, status=400)
+
+    try:
+        club_id = UUID(club_id_str)
+    except ValueError:
+        return await _send_json(request, {'error': 'Invalid club_id'}, status=400)
+
+    club = await Club.get_by_id(club_id)
+    if not club:
+        return await _send_json(request, {'error': 'Club not found'}, status=404)
+
+    bot = request.app.get('bot')
+    if bot is None:
+        return await _send_json(request, {'error': 'Bot unavailable'}, status=503)
+
+    from services import channel_names
+
+    try:
+        result = await channel_names.refresh_now(bot, club)
+    except Exception as e:
+        logger.error(f"Channel name refresh failed for {club.club_name}: {e}", exc_info=True)
+        return await _send_json(request, {'error': str(e)}, status=500)
+
+    rows = await ChannelName.get_for_club(club_id)
+    result['channels'] = [
+        {'channel_id': str(r.channel_id), 'template': r.template,
+         'enabled': r.enabled, 'last_rendered': r.last_rendered}
+        for r in rows
+    ]
+    return await _send_json(request, result)
+
+
+async def handle_preview_channel_name(request: web.Request) -> web.StreamResponse:
+    """Render a template against representative figures, plus the token list.
+
+    Lets the dashboard show what a template will look like — and reject a typo —
+    without duplicating the renderer in TypeScript, where it would drift.
+    """
+    template = request.rel_url.query.get('template', '')
+    from services import channel_names
+
+    return await _send_json(request, {
+        'preview': channel_names.preview(template) if template else '',
+        'unknown_tokens': channel_names.unknown_tokens(template),
+        'tokens': channel_names.TOKENS,
+        'max_length': channel_names.MAX_NAME_LENGTH,
+    })
+
+
 async def handle_bot_guilds(request: web.Request) -> web.StreamResponse:
     """List the guilds the bot is actually a member of.
 
@@ -374,6 +498,9 @@ def create_app(bot=None) -> web.Application:
     app.router.add_post('/sync', handle_sync)
     app.router.add_post('/recalculate', handle_recalculate)
     app.router.add_get('/guild_roles', handle_guild_roles)
+    app.router.add_get('/guild_channels', handle_guild_channels)
+    app.router.add_get('/channel_names/preview', handle_preview_channel_name)
+    app.router.add_post('/channel_names/refresh', handle_refresh_channel_names)
     app.router.add_get('/bot_guilds', handle_bot_guilds)
     app.router.add_get('/health', handle_health)
     app.router.add_get('/logs', handle_logs)
