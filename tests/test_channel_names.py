@@ -421,3 +421,67 @@ class TestForbiddenAdvice:
         text = self._advice(code=50001, missing=None)
         assert "reliably" in text
         assert "View Channel" in text and "Manage Channels" in text
+
+
+class TestRetryFromTheApi:
+    """A refusal gets one authoritative round trip before it is believed.
+
+    Cached state proved not self-consistent on 2026-09-01: the overwrites the
+    gateway held granted Manage Channels to two targets that both applied to the
+    bot, while permissions_for computed from those same overwrites said it was
+    absent. Both cannot be true, so the cache stopped being worth trusting here.
+    """
+
+    def _forbidden(self):
+        return discord.Forbidden(
+            SimpleNamespace(status=403, reason="Forbidden"),
+            {"code": 50001, "message": "Missing Access"},
+        )
+
+    def _bot(self, cached, fetched=None, fetch_raises=None):
+        async def fetch_channel(_cid):
+            if fetch_raises:
+                raise fetch_raises
+            return fetched
+        return SimpleNamespace(get_channel=lambda _: cached, fetch_channel=fetch_channel)
+
+    def test_a_stale_cache_refusal_recovers_without_anyone_reconfiguring(self, wired):
+        cached = FakeChannel(raises=self._forbidden())
+        fresh = FakeChannel()
+        result = run(cn.apply_for_club(self._bot(cached, fresh), club(),
+                                       cn.context_from_live(club(), snap())))
+        assert fresh.edits == ["Rank #87"]
+        assert result["updated"] == 1
+        assert result["forbidden"] == 0
+
+    def test_the_binding_records_what_the_retry_wrote(self, wired):
+        cached = FakeChannel(raises=self._forbidden())
+        fresh = FakeChannel()
+        run(cn.apply_for_club(self._bot(cached, fresh), club(),
+                              cn.context_from_live(club(), snap())))
+        assert wired.state["rows"][0].last_rendered == "Rank #87"
+
+    def test_a_real_refusal_survives_the_retry_and_is_reported(self, wired):
+        cached = FakeChannel(raises=self._forbidden())
+        fresh = FakeChannel(raises=self._forbidden())
+        result = run(cn.apply_for_club(self._bot(cached, fresh), club(),
+                                       cn.context_from_live(club(), snap())))
+        assert result["forbidden"] == 1
+        assert "refused again" in result["retry"]
+
+    def test_a_failed_fetch_is_not_mistaken_for_a_recovery(self, wired):
+        cached = FakeChannel(raises=self._forbidden())
+        result = run(cn.apply_for_club(
+            self._bot(cached, fetch_raises=RuntimeError("network")), club(),
+            cn.context_from_live(club(), snap())))
+        assert result["forbidden"] == 1
+        assert "couldn't fetch" in result["retry"]
+
+    def test_the_retry_never_raises_out_of_the_failure_handler(self, wired):
+        """One failure must not produce a second."""
+        cached = FakeChannel(raises=self._forbidden())
+        result = run(cn.apply_for_club(
+            self._bot(cached, fetch_raises=discord.HTTPException(
+                SimpleNamespace(status=500, reason="x"), "boom")), club(),
+            cn.context_from_live(club(), snap())))
+        assert result["forbidden"] == 1
