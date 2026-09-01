@@ -19,6 +19,47 @@ from utils.permissions import ensure_can_manage
 logger = logging.getLogger(__name__)
 
 
+# Discord error codes worth telling apart. They send you to different settings,
+# and naming the wrong one costs someone an afternoon on a permission that was
+# never the problem.
+MISSING_ACCESS = 50001
+MISSING_PERMISSIONS = 50013
+
+
+def _forbidden_advice(result: dict, channel) -> str:
+    """What to actually change, based on the code Discord returned."""
+    code = result.get("code")
+
+    if code == MISSING_ACCESS:
+        return (
+            f"**I can't see {channel.mention} at all** (Missing Access). This is a "
+            f"**View Channel** problem, not Manage Channels — a permission I hold "
+            f"server-wide does nothing on a channel I'm not allowed to view.\n\n"
+            f"Open the channel → **Permissions** → add my role → allow **View "
+            f"Channel** *and* **Manage Channels**. Check the category above it too: "
+            f"a private category denies both to everything inside it unless the "
+            f"channel overrides it."
+        )
+
+    if code == MISSING_PERMISSIONS:
+        return (
+            f"**Manage Channels is denied on {channel.mention} itself** (Missing "
+            f"Permissions). Granting it server-wide doesn't help — a deny on the "
+            f"channel, or on the category above it, overrides the server-wide "
+            f"permission.\n\n"
+            f"Open the channel → **Permissions** → add **my role specifically** → "
+            f"allow **Manage Channels**. Two things that catch people: giving the "
+            f"permission to *your* role instead of mine, and picking *Manage "
+            f"Permissions* or *Manage Roles* instead of **Manage Channels**."
+        )
+
+    return (
+        f"Discord returned a refusal I don't have specific advice for. Check my "
+        f"**View Channel** and **Manage Channels** on {channel.mention} and on the "
+        f"category above it, then try `/channel_names club:… refresh:true`."
+    )
+
+
 class SettingsCommands(commands.Cog):
     """Channel and bot configuration commands"""
     
@@ -368,14 +409,16 @@ class SettingsCommands(commands.Cog):
             embed.colour = discord.Color.orange()
             embed.add_field(
                 name="⚠️ Discord refused the rename",
-                value=(
-                    f"Saved anyway, and it retries on every update.\n\n"
-                    f"Give me **Manage Channels** on {channel.mention} itself — "
-                    f"open its settings → **Permissions**, add my role, and allow "
-                    f"Manage Channels there. A channel-level or category-level "
-                    f"**deny** overrides the server-wide permission, which is the "
-                    f"usual cause. Note this is *Manage Channels*, not Manage Roles."
-                ),
+                value=(f"Saved anyway, and it retries on every update.\n\n"
+                       f"{_forbidden_advice(result, channel)}"),
+                inline=False,
+            )
+            # The raw answer, so a report of this comes with the one detail that
+            # separates the possible causes instead of a guess at which it was.
+            embed.add_field(
+                name="What Discord said",
+                value=(f"`{result.get('code')} {result.get('detail') or 'Forbidden'}`\n"
+                       f"My own reading: `{result.get('access') or 'unavailable'}`"),
                 inline=False,
             )
         elif result["failed"]:

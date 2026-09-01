@@ -83,6 +83,34 @@ def missing_channel_permissions(channel, me, *names: str) -> Optional[List[str]]
     return missing
 
 
+def describe_channel_access(channel, me, *names: str) -> str:
+    """One line of what the bot thinks it can do in ``channel``, for diagnostics.
+
+    Printed beside a refusal from Discord so the two readings can be compared.
+    When they disagree — the cache says the permission is held and the API still
+    refuses — the cache is stale or the permission is being denied somewhere the
+    cached overwrites don't reflect, and that is worth knowing rather than
+    guessing at.
+    """
+    if me is None:
+        return "the bot's member object isn't cached in this server"
+
+    try:
+        perms = channel.permissions_for(me)
+    except Exception as e:
+        return f"couldn't resolve permissions ({e.__class__.__name__})"
+
+    parts = [
+        f"{_PERMISSION_LABELS.get(n, n)}: {'yes' if getattr(perms, n, False) else 'no'}"
+        for n in names
+    ]
+    if perms.administrator:
+        parts.append("Administrator: yes")
+    roles = getattr(me, 'roles', None) or []
+    parts.append(f"roles seen: {len(roles)}")
+    return " · ".join(parts)
+
+
 def can_use_channel(channel, me, *names: str) -> Optional[bool]:
     """``missing_channel_permissions`` as a yes/no/unknown."""
     missing = missing_channel_permissions(channel, me, *names)
