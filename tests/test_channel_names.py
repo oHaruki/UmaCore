@@ -382,35 +382,42 @@ class TestForbiddenIsExplained:
 
 
 class TestForbiddenAdvice:
-    """Advice follows the permission we resolve as missing, not Discord's code.
+    """Short, and pointing at the one thing that actually fixes it.
 
-    Observed 2026-09-01: a refused rename came back as 50001 Missing Access with
-    View Channel plainly granted and only Manage Channels missing. Reading the
-    code literally told the admin to fix visibility, which was never the problem.
+    The fix is nearly always the same and is not obvious: channel permissions are
+    applied on top of the server-wide ones, so a channel that denies @everyone
+    removes them again for anyone not named on the channel. A server-wide grant
+    does nothing on the locked voice channels this feature exists for, and
+    Administrator hides the whole problem by bypassing overwrites.
+
+    Advice follows the permission we resolve as missing, not Discord's error
+    code: a refused edit returns 50001 whether the bot cannot see the channel or
+    merely cannot rename it, and reading it literally sent an admin to fix
+    visibility that was never broken.
     """
 
     def _advice(self, **result):
         from bot.commands.settings import _forbidden_advice
         return _forbidden_advice(result, SimpleNamespace(mention="#vc"))
 
-    def test_names_the_permission_we_resolved_as_missing(self):
-        text = self._advice(code=50001, missing=["Manage Channels"])
-        assert "Manage Channels" in text
-        assert "View Channel" not in text
-
-    def test_missing_access_alone_does_not_send_anyone_to_view_channel(self):
-        """The bug this replaced: 50001 was read as 'cannot see the channel'."""
-        text = self._advice(code=50001, missing=["Manage Channels"])
-        assert "can't see" not in text.lower()
-
-    def test_a_genuine_visibility_problem_still_names_view_channel(self):
+    def test_a_visibility_problem_says_to_add_the_bot_to_the_channel(self):
         text = self._advice(code=50001, missing=["View Channel", "Manage Channels"])
-        assert "View Channel" in text and "Manage Channels" in text
+        assert "can't see" in text
+        assert "don't reach private channels" in text
+        assert "Edit Channel → Permissions" in text
 
-    def test_always_points_at_the_channel_and_its_category(self):
-        text = self._advice(code=50013, missing=["Manage Channels"])
-        assert "category" in text
-        assert "server-wide" in text
+    def test_a_rename_problem_does_not_mention_visibility(self):
+        """50001 was previously read as 'cannot see the channel' regardless."""
+        text = self._advice(code=50001, missing=["Manage Channels"])
+        assert "can't see" not in text
+        assert "can't rename it" in text
+        assert "Manage Channel" in text
+
+    def test_a_timeout_beats_every_permission_explanation(self):
+        text = self._advice(code=50001, missing=["Manage Channels"],
+                            timeout="I am timed out")
+        assert "timed out" in text
+        assert "Edit Channel" not in text
 
     def test_a_disagreement_is_reported_as_one(self):
         """Everything resolves as granted and Discord still refuses — do not send
@@ -418,10 +425,21 @@ class TestForbiddenAdvice:
         text = self._advice(code=50001, missing=[])
         assert "refused anyway" in text
 
-    def test_an_unreadable_cache_says_so(self):
+    def test_an_unreadable_cache_still_says_what_to_click(self):
         text = self._advice(code=50001, missing=None)
-        assert "reliably" in text
-        assert "View Channel" in text and "Manage Channels" in text
+        assert "Edit Channel → Permissions" in text
+
+    def test_every_branch_stays_short(self):
+        """These are read in a Discord embed by someone who wants to fix it, not
+        a document about the permission model."""
+        for kw in ({"missing": ["View Channel", "Manage Channels"]},
+                   {"missing": ["Manage Channels"]},
+                   {"missing": []},
+                   {"missing": None},
+                   {"timeout": "I am timed out", "missing": None}):
+            text = self._advice(code=50001, **kw)
+            assert len(text) < 320, f"too long: {text}"
+            assert text.count(chr(10)) <= 2
 
 
 class TestRetryFromTheApi:
