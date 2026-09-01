@@ -128,8 +128,9 @@ class TestRendering:
 # --------------------------------------------------------------------------- #
 
 class FakeChannel:
-    def __init__(self, cid=555, raises=None):
+    def __init__(self, cid=555, raises=None, guild=None):
         self.id, self.name, self.edits, self._raises = cid, "old-name", [], raises
+        self.guild = guild
 
     async def edit(self, *, name, reason=None):
         if self._raises:
@@ -335,3 +336,66 @@ class TestForbiddenIsReportedSeparately:
                                        cn.context_from_live(club(), snap())))
         assert result["forbidden"] == 0
         assert result["failed"] == 1
+
+
+class TestForbiddenIsExplained:
+    """A refusal has to carry Discord's own answer. 50001 and 50013 send an admin
+    to different settings, and the first version of this reported a guess at one
+    of them, which sent people to change something that was already right."""
+
+    def _forbidden(self, code, text="nope"):
+        return discord.Forbidden(
+            SimpleNamespace(status=403, reason="Forbidden"),
+            {"code": code, "message": text},
+        )
+
+    def test_the_error_code_is_kept(self, wired):
+        wired.channel._raises = self._forbidden(50013, "Missing Permissions")
+        result = run(cn.apply_for_club(wired.bot, club(),
+                                       cn.context_from_live(club(), snap())))
+        assert result["code"] == 50013
+        assert result["detail"] == "Missing Permissions"
+
+    def test_missing_access_is_kept_apart_from_missing_permissions(self, wired):
+        wired.channel._raises = self._forbidden(50001, "Missing Access")
+        result = run(cn.apply_for_club(wired.bot, club(),
+                                       cn.context_from_live(club(), snap())))
+        assert result["code"] == 50001
+
+    def test_our_own_reading_is_recorded_beside_it(self, wired):
+        """When the cache says the permission is held and Discord still refuses,
+        that disagreement is the diagnosis."""
+        wired.channel._raises = self._forbidden(50013)
+        result = run(cn.apply_for_club(wired.bot, club(),
+                                       cn.context_from_live(club(), snap())))
+        assert isinstance(result["access"], str) and result["access"]
+
+    def test_a_channel_with_no_guild_does_not_break_the_error_path(self, wired):
+        """A thin cache can hand back a channel carrying no guild; the handler
+        for one failure must not raise a second."""
+        wired.channel._raises = self._forbidden(50013)
+        wired.channel.guild = None
+        result = run(cn.apply_for_club(wired.bot, club(),
+                                       cn.context_from_live(club(), snap())))
+        assert result["forbidden"] == 1
+
+
+class TestForbiddenAdvice:
+    """The advice has to name the right setting for the code."""
+
+    def _advice(self, code):
+        from bot.commands.settings import _forbidden_advice
+        return _forbidden_advice({"code": code}, SimpleNamespace(mention="#vc"))
+
+    def test_missing_access_points_at_view_channel(self):
+        text = self._advice(50001)
+        assert "View Channel" in text
+
+    def test_missing_permissions_points_at_manage_channels(self):
+        text = self._advice(50013)
+        assert "Manage Channels" in text
+        assert "category" in text
+
+    def test_an_unknown_code_still_says_something_useful(self):
+        text = self._advice(0)
+        assert "View Channel" in text and "Manage Channels" in text

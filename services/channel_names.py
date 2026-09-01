@@ -26,7 +26,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 import discord
@@ -34,7 +34,7 @@ import discord
 from models import ChannelName, Club
 from scrapers.umamoe_api_scraper import CircleMeta, LiveSnapshot
 from services.promotion_calculator import grade_for_rank
-from utils.permissions import can_use_channel
+from utils.permissions import can_use_channel, describe_channel_access
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +234,7 @@ async def _rename(channel: discord.abc.GuildChannel, name: str) -> bool:
 
 
 async def apply_for_club(bot, club: Club, ctx: NameContext, *,
-                         force: bool = False) -> Dict[str, int]:
+                         force: bool = False) -> Dict[str, Any]:
     """Bring every channel bound to this club up to date.
 
     ``force`` skips the per-channel interval floor and the unchanged-name check.
@@ -244,7 +244,8 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
     Never raises: a club's channels failing must not take down the tick that
     called this, nor the daily report it runs beside.
     """
-    result = {"updated": 0, "skipped": 0, "failed": 0, "removed": 0, "forbidden": 0}
+    result: Dict[str, Any] = {"updated": 0, "skipped": 0, "failed": 0,
+                              "removed": 0, "forbidden": 0}
 
     try:
         rows = await ChannelName.get_enabled_for_club(club.club_id)
@@ -293,14 +294,28 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
             result["updated"] += 1
             logger.info(f"channel_names: {club.club_name} → #{row.channel_id} = {name!r}")
 
-        except discord.Forbidden:
+        except discord.Forbidden as e:
             # Kept configured: this is a permission to grant, not a setting to lose.
+            #
+            # Report what Discord actually said. 50001 (Missing Access) and 50013
+            # (Missing Permissions) call for different fixes — View Channel versus
+            # Manage Channels — and this used to log a guess at one of them, which
+            # sent people to change a setting that was already correct.
+            # getattr twice over: a channel reached from a thin cache may carry
+            # no guild, and the error path must not raise its own error.
+            access = describe_channel_access(
+                channel, getattr(getattr(channel, 'guild', None), 'me', None),
+                'view_channel', 'manage_channels',
+            )
             logger.error(
-                f"channel_names: missing Manage Channels on {row.channel_id} for "
-                f"{club.club_name}"
+                f"channel_names: Discord refused the rename of {row.channel_id} for "
+                f"{club.club_name} — HTTP {e.status}, code {e.code}: {e.text} · {access}"
             )
             result["failed"] += 1
             result["forbidden"] += 1
+            result["code"] = e.code
+            result["detail"] = e.text
+            result["access"] = access
         except discord.NotFound:
             # The channel is genuinely gone, so the binding can never work again.
             logger.info(
@@ -325,7 +340,7 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
     return result
 
 
-async def refresh_now(bot, club: Club) -> Dict[str, int]:
+async def refresh_now(bot, club: Club) -> Dict[str, Any]:
     """Fetch fresh figures and update this club's channels immediately.
 
     The instant first change after a template is saved, and what ``/channel_name``
@@ -341,8 +356,8 @@ async def refresh_now(bot, club: Club) -> Dict[str, int]:
     from scrapers.umamoe_api_scraper import UmaMoeAPIScraper
     from utils.rate_limiter import PRIORITY_INTERACTIVE
 
-    empty = {"updated": 0, "skipped": 0, "failed": 0, "removed": 0,
-             "forbidden": 0, "source": None}
+    empty: Dict[str, Any] = {"updated": 0, "skipped": 0, "failed": 0,
+                             "removed": 0, "forbidden": 0, "source": None}
 
     if not club.is_circle_id_valid():
         logger.warning(
