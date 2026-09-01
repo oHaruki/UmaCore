@@ -15,6 +15,7 @@ import pytest
 from utils import permissions
 from utils.permissions import (
     is_admin, is_full_manager, missing_channel_permissions, can_use_channel,
+    describe_channel_overwrites,
 )
 
 GUILD = 1426560692932317186
@@ -200,3 +201,75 @@ class TestChannelPermissions:
         assert can_use_channel(BotChannel(), BotMember(roles=4),
                                'manage_channels') is False
         assert can_use_channel(BotChannel(), None, 'manage_channels') is None
+
+
+class FakeRole:
+    """Hashable, and carries no roles of its own — which is how the diagnostic
+    tells a role target apart from a member one."""
+    def __init__(self, id, name):
+        self.id, self.name = id, name
+
+
+class TestOverwriteDiagnostic:
+    """Prints the bot's side of a channel's permissions.
+
+    Added after a refusal that the server's own settings screen said could not
+    happen. An override named after the bot is not necessarily one the bot is
+    subject to, and that distinction is what the output has to make visible.
+    """
+
+    def channel(self, overwrites):
+        return SimpleNamespace(
+            id=1465928987216711774, name="Crew Rank: 825",
+            overwrites=overwrites, category=SimpleNamespace(name="Info"),
+            permissions_synced=False,
+        )
+
+    def bot(self, role_ids=(1, 2)):
+        return SimpleNamespace(
+            id=999, roles=[SimpleNamespace(id=i) for i in role_ids]
+        )
+
+    def test_marks_an_override_that_does_not_apply_to_the_bot(self):
+        """A role called UmaCore that the bot does not actually hold — the exact
+        thing that looks correct in the settings screen and does nothing."""
+        role = FakeRole(555, "UmaCore")
+        out = describe_channel_overwrites(
+            self.channel({role: discord.PermissionOverwrite(manage_channels=True)}),
+            self.bot(), 'manage_channels',
+        )
+        assert "applies to me: NO" in out
+        assert "manage_channels=allow" in out
+
+    def test_marks_an_override_that_does_apply(self):
+        role = FakeRole(2, "UmaCore")
+        out = describe_channel_overwrites(
+            self.channel({role: discord.PermissionOverwrite(manage_channels=True)}),
+            self.bot(role_ids=(1, 2)), 'manage_channels',
+        )
+        assert "applies to me: yes" in out
+
+    def test_says_so_when_there_are_no_overwrites_at_all(self):
+        """Distinguishes 'the setting never saved' from 'it saved as a deny'."""
+        out = describe_channel_overwrites(self.channel({}), self.bot(), 'manage_channels')
+        assert "no permission overwrites at all" in out
+
+    def test_distinguishes_deny_from_inherit(self):
+        role = FakeRole(2, "x")
+        out = describe_channel_overwrites(
+            self.channel({role: discord.PermissionOverwrite(manage_channels=False)}),
+            self.bot(), 'manage_channels',
+        )
+        assert "manage_channels=deny" in out
+
+    def test_carries_the_channel_and_category_identity(self):
+        """So a report can be checked against the right channel — one candidate
+        for a refusal is simply looking at a different one."""
+        out = describe_channel_overwrites(self.channel({}), self.bot(), 'manage_channels')
+        assert "1465928987216711774" in out and "Info" in out
+
+    def test_never_raises_on_an_unreadable_channel(self):
+        broken = SimpleNamespace()
+        assert "couldn't read" in describe_channel_overwrites(
+            broken, self.bot(), 'manage_channels')
+        assert describe_channel_overwrites(None, self.bot()) == "no channel"

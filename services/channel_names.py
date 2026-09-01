@@ -35,7 +35,8 @@ from models import ChannelName, Club
 from scrapers.umamoe_api_scraper import CircleMeta, LiveSnapshot
 from services.promotion_calculator import grade_for_rank
 from utils.permissions import (
-    can_use_channel, describe_channel_access, missing_channel_permissions,
+    can_use_channel, describe_channel_access, describe_channel_overwrites,
+    missing_channel_permissions,
 )
 
 logger = logging.getLogger(__name__)
@@ -317,6 +318,12 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
             logger.error(
                 f"channel_names: Discord refused the rename of {row.channel_id} for "
                 f"{club.club_name} — HTTP {e.status}, code {e.code}: {e.text} · {access}"
+            )
+            # Logged separately because it is long, and because it is the line
+            # that settles whether the server's settings ever reached us.
+            logger.error(
+                f"channel_names: overwrites on {row.channel_id} as I see them — "
+                f"{describe_channel_overwrites(channel, me, 'view_channel', 'manage_channels')}"
             )
             result["failed"] += 1
             result["forbidden"] += 1
