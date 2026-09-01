@@ -111,6 +111,60 @@ def describe_channel_access(channel, me, *names: str) -> str:
     return " · ".join(parts)
 
 
+def describe_channel_overwrites(channel, me, *names: str) -> str:
+    """The channel's permission overwrites as the bot actually received them.
+
+    Written after two rounds of guessing at a refusal that Discord's own UI said
+    should not happen. An admin reading the channel settings and the bot reading
+    the gateway can disagree — a mobile edit that was never saved, an override
+    added to a role the bot does not hold, or the wrong channel entirely all look
+    identical from the outside. This prints the bot's side so the two can be
+    compared instead of argued about.
+
+    Each line says whether the overwrite applies to the bot at all, which is the
+    distinction that matters: an override named after the bot is not necessarily
+    one the bot is subject to.
+    """
+    if channel is None:
+        return "no channel"
+
+    try:
+        overwrites = channel.overwrites
+    except Exception as e:
+        return f"couldn't read overwrites ({e.__class__.__name__})"
+
+    my_role_ids = {r.id for r in (getattr(me, 'roles', None) or [])}
+    my_id = getattr(me, 'id', None)
+
+    lines = []
+    for target, overwrite in overwrites.items():
+        # Duck-typed rather than isinstance: only a member carries roles of its
+        # own, and this has to keep working for whatever the cache hands back.
+        is_member = hasattr(target, 'roles') or hasattr(target, 'bot')
+        kind = 'member' if is_member else 'role'
+        applies = (target.id == my_id) if is_member else (target.id in my_role_ids)
+        states = []
+        for n in names:
+            value = getattr(overwrite, n, None)
+            states.append(f"{n}={'allow' if value else 'deny' if value is False else 'inherit'}")
+        lines.append(
+            f"{kind} {getattr(target, 'name', '?')} ({target.id}): "
+            f"{', '.join(states)} [applies to me: {'yes' if applies else 'NO'}]"
+        )
+
+    if not lines:
+        lines.append("none — this channel has no permission overwrites at all")
+
+    category = getattr(channel, 'category', None)
+    header = (
+        f"channel {getattr(channel, 'name', '?')} ({channel.id}), "
+        f"category {getattr(category, 'name', None)!r}, "
+        f"synced={getattr(channel, 'permissions_synced', None)}, "
+        f"my roles={sorted(my_role_ids)}"
+    )
+    return header + " | " + " | ".join(lines)
+
+
 def can_use_channel(channel, me, *names: str) -> Optional[bool]:
     """``missing_channel_permissions`` as a yes/no/unknown."""
     missing = missing_channel_permissions(channel, me, *names)
