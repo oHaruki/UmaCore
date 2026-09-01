@@ -50,6 +50,16 @@ def _forbidden_advice(result: dict, channel) -> str:
     missing = result.get("missing")
     code = result.get("code")
 
+    # Before anything about permissions: a timeout counterfeits a permission
+    # problem exactly, and no amount of granting will fix one.
+    if result.get("timeout"):
+        return (
+            f"{result['timeout']}\n\n"
+            f"Nothing is wrong with {channel.mention}'s permissions — remove the "
+            f"timeout from me in the member list (right-click me → **Timeout** → "
+            f"remove), then try again."
+        )
+
     if missing:
         names = ", ".join(f"**{m}**" for m in missing)
         return (
