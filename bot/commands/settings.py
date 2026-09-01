@@ -49,6 +49,12 @@ def _forbidden_advice(result: dict, channel) -> str:
     missing = result.get("missing")
     code = result.get("code")
 
+    if missing and "Connect" in missing:
+        return (f"I can't rename {channel.mention} because I can't **join** it.\n"
+                f"Discord blocks editing a voice channel you can't connect to, even "
+                f"with Manage Channel.\n"
+                f"{ADD_ME}**Connect** — everyone else can stay locked out.")
+
     if missing and "View Channel" in missing:
         return (f"I can't see {channel.mention}.\n"
                 f"Server-wide permissions don't reach private channels — I have to "
@@ -57,7 +63,7 @@ def _forbidden_advice(result: dict, channel) -> str:
 
     if missing:
         return (f"I can see {channel.mention} but can't rename it.\n"
-                f"{ADD_ME}**Manage Channel**.")
+                f"{ADD_ME}**{'**, **'.join(missing)}**.")
 
     if missing == []:
         return (f"Odd one: everything I need on {channel.mention} looks granted and "
