@@ -433,12 +433,14 @@ class SettingsCommands(commands.Cog):
                 value=_forbidden_advice(outcome, channel),
                 inline=False,
             )
-            # Kept small and last: useful in a bug report, noise to everyone else.
-            embed.add_field(
-                name="Details",
-                value=f"`{outcome.get('code')} {outcome.get('detail') or 'Forbidden'}`",
-                inline=False,
-            )
+            # Only when we could not name a cause. Otherwise the advice above
+            # is the whole answer and a raw error code just adds doubt to it.
+            if not outcome.get("missing") and not outcome.get("timeout"):
+                embed.add_field(
+                    name="Details",
+                    value=f"`{outcome.get('code')} {outcome.get('detail') or 'Forbidden'}`",
+                    inline=False,
+                )
 
         elif status == "rate_limited":
             wait = outcome.get("wait") or 0

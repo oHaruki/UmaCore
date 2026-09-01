@@ -408,65 +408,74 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
             logger.info(f"channel_names: {club.club_name} → #{row.channel_id} = {name!r}")
 
         except discord.Forbidden as e:
-            # Kept configured: this is a permission to grant, not a setting to lose.
+            # Kept configured: a permission to grant, not a setting to lose.
             #
-            # Report what Discord actually said. 50001 (Missing Access) and 50013
-            # (Missing Permissions) call for different fixes, and this used to log
-            # a guess at one of them.
-            # getattr twice over: a channel reached from a thin cache may carry
-            # no guild, and the error path must not raise its own error.
+            # Two kinds of refusal, logged very differently. When we can name the
+            # permission that is missing — which is nearly always, and is nearly
+            # always Connect on a voice channel — one line says so and that is
+            # the whole story. The deep diagnostics below exist for the refusal
+            # we cannot explain, and printing them for the ordinary case buries
+            # the answer in four lines of noise.
+            #
+            # getattr twice over: a channel from a thin cache may carry no guild,
+            # and the error path must not raise its own error.
             me = getattr(getattr(channel, 'guild', None), 'me', None)
             needs = rename_requirements(channel)
-            access = describe_channel_access(channel, me, *needs)
             lacking = missing_channel_permissions(channel, me, *needs)
-            logger.error(
-                f"channel_names: Discord refused the rename of {row.channel_id} for "
-                f"{club.club_name} — HTTP {e.status}, code {e.code}: {e.text} · {access}"
-            )
-            logger.error(
-                f"channel_names: overwrites on {row.channel_id} as I see them — "
-                f"{describe_channel_overwrites(channel, me, *needs)}"
-            )
-            # How that reading was arrived at. Two of discord.py's paths ignore
-            # overwrites entirely and produce a fixed set that looks like a
-            # misconfigured channel; this says which one we are on.
-            logger.error(
-                f"channel_names: how {row.channel_id} resolved — "
-                f"{resolution_fingerprint(channel, me)}"
-            )
-
             timed_out = timeout_note(me)
+            note = None
+
             if timed_out:
-                # No point fetching or retrying: a timeout masks every permission
-                # and Discord will refuse identically until it is lifted.
                 logger.error(
-                    f"channel_names: {club.club_name} — the bot is timed out in "
-                    f"guild {getattr(getattr(channel, 'guild', None), 'id', '?')}; "
-                    f"no permission can take effect until that is lifted"
+                    f"channel_names: can't rename #{row.channel_id} for "
+                    f"{club.club_name} — the bot is timed out in this server, which "
+                    f"masks every permission until it is lifted"
                 )
-                note = "skipped — the bot is timed out in this server"
+
+            elif lacking:
+                logger.error(
+                    f"channel_names: can't rename #{row.channel_id} for "
+                    f"{club.club_name} — missing {', '.join(lacking)}"
+                    + (" (a voice channel can only be renamed by someone who can "
+                       "join it)" if "Connect" in lacking else "")
+                )
+
             else:
-                # A cached refusal is worth one authoritative round trip, since
-                # the gateway cache has been seen disagreeing with itself.
+                # We see everything granted and Discord refused anyway. That is
+                # the case worth the full kit, including one authoritative round
+                # trip, because nothing here can be inferred from a symptom.
+                logger.error(
+                    f"channel_names: unexplained refusal renaming #{row.channel_id} "
+                    f"for {club.club_name} — HTTP {e.status}, code {e.code}: {e.text} "
+                    f"· {describe_channel_access(channel, me, *needs)}"
+                )
+                logger.error(
+                    f"channel_names: overwrites on {row.channel_id} — "
+                    f"{describe_channel_overwrites(channel, me, *needs)}"
+                )
+                logger.error(
+                    f"channel_names: how {row.channel_id} resolved — "
+                    f"{resolution_fingerprint(channel, me)}"
+                )
+
                 recovered, note = await _retry_from_api(bot, row.channel_id, name)
                 logger.error(
                     f"channel_names: retry from the API on {row.channel_id} — {note}"
                 )
-
                 if recovered:
                     await row.mark_rendered(name)
                     result["updated"] += 1
                     record(row.channel_id, "updated", name=name, recovered=True)
                     logger.info(
-                        f"channel_names: {club.club_name} → #{row.channel_id} = {name!r} "
-                        f"(recovered after a stale-cache refusal)"
+                        f"channel_names: {club.club_name} → #{row.channel_id} = "
+                        f"{name!r} (recovered on a fresh fetch)"
                     )
                     continue
 
             result["failed"] += 1
             result["forbidden"] += 1
             record(row.channel_id, "forbidden", code=e.code, detail=e.text,
-                   access=access, missing=lacking, retry=note, timeout=timed_out)
+                   missing=lacking, timeout=timed_out, retry=note)
 
         except discord.RateLimited as e:
             logger.warning(

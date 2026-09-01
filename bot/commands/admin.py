@@ -1206,11 +1206,12 @@ class AdminCommands(commands.Cog):
             embed.add_field(
                 name="⚠️ Couldn't post the first board",
                 value=(
-                    f"The setting is saved and it retries every hour.\n\n"
-                    f"Discord refused, so check my permissions on {channel.mention} "
-                    f"itself — **View Channel**, **Send Messages** and **Embed Links**. "
-                    f"A deny on the channel or its category overrides the server-wide "
-                    f"permission, which is the usual cause."
+                    f"Saved, and it retries every hour.\n"
+                    f"I need **View Channel**, **Send Messages** and **Embed Links** "
+                    f"on {channel.mention}.\n"
+                    f"**Edit Channel → Permissions → add UmaCore →** allow them there "
+                    f"— server-wide permissions don't reach a channel that denies "
+                    f"@everyone."
                 ),
                 inline=False,
             )
