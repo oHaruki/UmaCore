@@ -365,14 +365,16 @@ class TestForbiddenIsExplained:
                                        cn.context_from_live(club(), snap())))
         assert result["per_channel"][555]["code"] == 50001
 
-    def test_our_own_reading_is_recorded_beside_it(self, wired):
-        """When the cache says the permission is held and Discord still refuses,
-        that disagreement is the diagnosis."""
+    def test_what_we_resolved_as_missing_is_recorded_beside_it(self, wired):
+        """The reply is built from this, not from the error code — and when it
+        comes back empty against a refusal, that disagreement is itself the
+        diagnosis and earns the deep logging."""
         wired.channel._raises = self._forbidden(50013)
         result = run(cn.apply_for_club(wired.bot, club(),
                                        cn.context_from_live(club(), snap())))
         entry = result["per_channel"][555]
-        assert isinstance(entry["access"], str) and entry["access"]
+        assert "missing" in entry
+        assert entry["code"] == 50013
 
     def test_a_channel_with_no_guild_does_not_break_the_error_path(self, wired):
         """A thin cache can hand back a channel carrying no guild; the handler
