@@ -36,7 +36,7 @@ from scrapers.umamoe_api_scraper import CircleMeta, LiveSnapshot
 from services.promotion_calculator import grade_for_rank
 from utils.permissions import (
     can_use_channel, describe_channel_access, describe_channel_overwrites,
-    missing_channel_permissions,
+    missing_channel_permissions, timeout_note,
 )
 
 logger = logging.getLogger(__name__)
@@ -364,19 +364,32 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
                 f"{describe_channel_overwrites(channel, me, 'view_channel', 'manage_channels')}"
             )
 
-            # Cached state has proven unreliable enough here that it is worth one
-            # authoritative round trip before concluding anything.
-            recovered, note = await _retry_from_api(bot, row.channel_id, name)
-            logger.error(f"channel_names: retry from the API on {row.channel_id} — {note}")
-
-            if recovered:
-                await row.mark_rendered(name)
-                result["updated"] += 1
-                logger.info(
-                    f"channel_names: {club.club_name} → #{row.channel_id} = {name!r} "
-                    f"(recovered after a stale-cache refusal)"
+            timed_out = timeout_note(me)
+            if timed_out:
+                # No point fetching or retrying: a timeout masks every permission
+                # and Discord will refuse identically until it is lifted.
+                logger.error(
+                    f"channel_names: {club.club_name} — the bot is timed out in "
+                    f"guild {getattr(getattr(channel, 'guild', None), 'id', '?')}; "
+                    f"no permission can take effect until that is lifted"
                 )
-                continue
+                note = "skipped — the bot is timed out in this server"
+            else:
+                # Cached state has proven unreliable enough here that it is worth
+                # one authoritative round trip before concluding anything.
+                recovered, note = await _retry_from_api(bot, row.channel_id, name)
+                logger.error(
+                    f"channel_names: retry from the API on {row.channel_id} — {note}"
+                )
+
+                if recovered:
+                    await row.mark_rendered(name)
+                    result["updated"] += 1
+                    logger.info(
+                        f"channel_names: {club.club_name} → #{row.channel_id} = {name!r} "
+                        f"(recovered after a stale-cache refusal)"
+                    )
+                    continue
 
             result["failed"] += 1
             result["forbidden"] += 1
@@ -385,6 +398,7 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
             result["access"] = access
             result["missing"] = lacking
             result["retry"] = note
+            result["timeout"] = timeout_note(me)
         except discord.NotFound:
             # The channel is genuinely gone, so the binding can never work again.
             logger.info(

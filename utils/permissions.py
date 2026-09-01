@@ -108,7 +108,45 @@ def describe_channel_access(channel, me, *names: str) -> str:
         parts.append("Administrator: yes")
     roles = getattr(me, 'roles', None) or []
     parts.append(f"roles seen: {len(roles)}")
+
+    # First, because it explains every other value on this line.
+    try:
+        if me.is_timed_out():
+            parts.insert(0, "TIMED OUT — permissions below are masked")
+    except Exception:
+        pass
+
     return " · ".join(parts)
+
+
+def timeout_note(me) -> Optional[str]:
+    """Say so if the bot itself is timed out in this guild.
+
+    A timed-out member keeps **only** View Channel and Read Message History, and
+    discord.py applies that mask last with the comment that it is conclusive — it
+    overrides every role and every channel overwrite. Discord's API applies the
+    same rule, so the member is refused server-side too.
+
+    This is worth checking before anything else, because it counterfeits a
+    permission problem exactly: the channel's settings look correct because they
+    *are* correct, and every permission except viewing reads as missing no matter
+    what is granted. Diagnosed 2026-09-01 after three wrong guesses at a refusal
+    whose overwrites plainly allowed the action.
+    """
+    try:
+        if not me.is_timed_out():
+            return None
+    except Exception:
+        return None
+
+    until = getattr(me, 'timed_out_until', None)
+    when = f" until {until:%Y-%m-%d %H:%M UTC}" if until else ""
+    return (
+        f"I am **timed out** in this server{when}. A timeout strips every "
+        f"permission except viewing channels and reading history, and it "
+        f"overrides all roles and channel permissions — so nothing granted to me "
+        f"has any effect until it is lifted."
+    )
 
 
 def describe_channel_overwrites(channel, me, *names: str) -> str:

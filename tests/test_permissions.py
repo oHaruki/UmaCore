@@ -15,7 +15,7 @@ import pytest
 from utils import permissions
 from utils.permissions import (
     is_admin, is_full_manager, missing_channel_permissions, can_use_channel,
-    describe_channel_overwrites,
+    describe_channel_overwrites, timeout_note, describe_channel_access,
 )
 
 GUILD = 1426560692932317186
@@ -273,3 +273,58 @@ class TestOverwriteDiagnostic:
         assert "couldn't read" in describe_channel_overwrites(
             broken, self.bot(), 'manage_channels')
         assert describe_channel_overwrites(None, self.bot()) == "no channel"
+
+
+class TestTimeout:
+    """The thing that counterfeits a permission problem exactly.
+
+    A timed-out member keeps only View Channel and Read Message History, and
+    discord.py applies that mask last as a conclusive override of every role and
+    overwrite. Discord's API does the same. Diagnosed 2026-09-01 after three
+    wrong guesses at a refusal whose channel overwrites plainly allowed it.
+    """
+
+    def member(self, timed_out, until=None):
+        return SimpleNamespace(
+            id=1467295225184784488,
+            roles=[SimpleNamespace(id=i) for i in (1, 2, 3)],
+            is_timed_out=lambda: timed_out,
+            timed_out_until=until,
+            _perms=discord.Permissions(view_channel=True),
+        )
+
+    def channel(self):
+        return SimpleNamespace(
+            id=1465928987216711774,
+            permissions_for=lambda m: m._perms,
+        )
+
+    def test_silent_when_the_bot_is_not_timed_out(self):
+        assert timeout_note(self.member(False)) is None
+
+    def test_says_so_when_it_is(self):
+        note = timeout_note(self.member(True))
+        assert "timed out" in note.lower()
+        assert "overrides all roles" in note
+
+    def test_explains_that_grants_cannot_help(self):
+        """The whole point: the channel's settings are correct and irrelevant."""
+        note = timeout_note(self.member(True))
+        assert "has any effect until it is lifted" in note
+
+    def test_never_raises_on_something_that_is_not_a_member(self):
+        assert timeout_note(object()) is None
+        assert timeout_note(None) is None
+
+    def test_the_access_line_leads_with_it(self):
+        """It explains every other value on that line — View Channel yes and
+        everything else no is the mask, not the server's configuration."""
+        out = describe_channel_access(
+            self.channel(), self.member(True), 'view_channel', 'manage_channels')
+        assert out.startswith("TIMED OUT")
+        assert "View Channel: yes" in out and "Manage Channels: no" in out
+
+    def test_the_access_line_is_unchanged_without_a_timeout(self):
+        out = describe_channel_access(
+            self.channel(), self.member(False), 'view_channel', 'manage_channels')
+        assert not out.startswith("TIMED OUT")
