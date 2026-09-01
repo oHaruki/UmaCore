@@ -25,38 +25,62 @@ logger = logging.getLogger(__name__)
 MISSING_ACCESS = 50001
 MISSING_PERMISSIONS = 50013
 
+_GRANT_STEPS = (
+    "Open the channel → **Edit Channel** → **Permissions** → add **my role** "
+    "specifically → allow it there. Check the **category** above the channel too: "
+    "a deny there applies to every channel inside it that doesn't override it."
+)
+
 
 def _forbidden_advice(result: dict, channel) -> str:
-    """What to actually change, based on the code Discord returned."""
+    """What to actually change when Discord refuses.
+
+    Leads with the permission *we* resolve as missing rather than with Discord's
+    error code, because the code is not the reliable signal it looks like. A
+    refused channel edit comes back as 50001 Missing Access whether the bot
+    cannot see the channel or simply lacks Manage Channels on it — observed on
+    2026-09-01, where 50001 arrived with View Channel plainly granted and only
+    Manage Channels missing. Reading that code literally sent the admin to fix
+    visibility, which was never the problem.
+
+    Our own reading is trustworthy here in a way it is not when *granting*: it
+    can only under-report, so a permission it calls missing beside a refusal from
+    Discord is missing twice over.
+    """
+    missing = result.get("missing")
     code = result.get("code")
 
-    if code == MISSING_ACCESS:
+    if missing:
+        names = ", ".join(f"**{m}**" for m in missing)
         return (
-            f"**I can't see {channel.mention} at all** (Missing Access). This is a "
-            f"**View Channel** problem, not Manage Channels — a permission I hold "
-            f"server-wide does nothing on a channel I'm not allowed to view.\n\n"
-            f"Open the channel → **Permissions** → add my role → allow **View "
-            f"Channel** *and* **Manage Channels**. Check the category above it too: "
-            f"a private category denies both to everything inside it unless the "
-            f"channel overrides it."
+            f"{names} {'is' if len(missing) == 1 else 'are'} missing on "
+            f"{channel.mention} itself.\n\n"
+            f"Granting it server-wide is not enough: a **deny** on the channel, or "
+            f"on its category, overrides the server-wide permission — and so does "
+            f"simply never allowing it there. {_GRANT_STEPS}\n\n"
+            f"Two things that catch people: granting it to *your* role rather than "
+            f"mine, and picking *Manage Permissions* or *Manage Roles* instead of "
+            f"**Manage Channels**."
         )
 
-    if code == MISSING_PERMISSIONS:
+    if missing == []:
+        # We resolve every permission as held and Discord still refuses. The two
+        # disagree, so say so plainly instead of sending someone to re-grant a
+        # permission the server already shows as granted.
         return (
-            f"**Manage Channels is denied on {channel.mention} itself** (Missing "
-            f"Permissions). Granting it server-wide doesn't help — a deny on the "
-            f"channel, or on the category above it, overrides the server-wide "
-            f"permission.\n\n"
-            f"Open the channel → **Permissions** → add **my role specifically** → "
-            f"allow **Manage Channels**. Two things that catch people: giving the "
-            f"permission to *your* role instead of mine, and picking *Manage "
-            f"Permissions* or *Manage Roles* instead of **Manage Channels**."
+            f"Odd one: I resolve every permission I need on {channel.mention} as "
+            f"granted, and Discord refused anyway (code `{code}`).\n\n"
+            f"Worth checking whether the channel was moved into a different "
+            f"category, or its permissions changed in the last moment. If it keeps "
+            f"happening, this is worth reporting with the line below."
         )
 
+    # missing is None: the cached member gave no trustworthy reading.
     return (
-        f"Discord returned a refusal I don't have specific advice for. Check my "
-        f"**View Channel** and **Manage Channels** on {channel.mention} and on the "
-        f"category above it, then try `/channel_names club:… refresh:true`."
+        f"Discord refused (code `{code}`), and I can't read my own permissions on "
+        f"{channel.mention} reliably enough to say which one is at fault.\n\n"
+        f"Check that I have both **View Channel** and **Manage Channels** there. "
+        f"{_GRANT_STEPS}"
     )
 
 

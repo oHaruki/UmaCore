@@ -34,7 +34,9 @@ import discord
 from models import ChannelName, Club
 from scrapers.umamoe_api_scraper import CircleMeta, LiveSnapshot
 from services.promotion_calculator import grade_for_rank
-from utils.permissions import can_use_channel, describe_channel_access
+from utils.permissions import (
+    can_use_channel, describe_channel_access, missing_channel_permissions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -303,9 +305,14 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
             # sent people to change a setting that was already correct.
             # getattr twice over: a channel reached from a thin cache may carry
             # no guild, and the error path must not raise its own error.
+            me = getattr(getattr(channel, 'guild', None), 'me', None)
             access = describe_channel_access(
-                channel, getattr(getattr(channel, 'guild', None), 'me', None),
-                'view_channel', 'manage_channels',
+                channel, me, 'view_channel', 'manage_channels',
+            )
+            # What we believe is missing, which turns out to be a better guide
+            # than Discord's error code — see _forbidden_advice.
+            lacking = missing_channel_permissions(
+                channel, me, 'view_channel', 'manage_channels',
             )
             logger.error(
                 f"channel_names: Discord refused the rename of {row.channel_id} for "
@@ -316,6 +323,7 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
             result["code"] = e.code
             result["detail"] = e.text
             result["access"] = access
+            result["missing"] = lacking
         except discord.NotFound:
             # The channel is genuinely gone, so the binding can never work again.
             logger.info(

@@ -381,21 +381,43 @@ class TestForbiddenIsExplained:
 
 
 class TestForbiddenAdvice:
-    """The advice has to name the right setting for the code."""
+    """Advice follows the permission we resolve as missing, not Discord's code.
 
-    def _advice(self, code):
+    Observed 2026-09-01: a refused rename came back as 50001 Missing Access with
+    View Channel plainly granted and only Manage Channels missing. Reading the
+    code literally told the admin to fix visibility, which was never the problem.
+    """
+
+    def _advice(self, **result):
         from bot.commands.settings import _forbidden_advice
-        return _forbidden_advice({"code": code}, SimpleNamespace(mention="#vc"))
+        return _forbidden_advice(result, SimpleNamespace(mention="#vc"))
 
-    def test_missing_access_points_at_view_channel(self):
-        text = self._advice(50001)
-        assert "View Channel" in text
-
-    def test_missing_permissions_points_at_manage_channels(self):
-        text = self._advice(50013)
+    def test_names_the_permission_we_resolved_as_missing(self):
+        text = self._advice(code=50001, missing=["Manage Channels"])
         assert "Manage Channels" in text
-        assert "category" in text
+        assert "View Channel" not in text
 
-    def test_an_unknown_code_still_says_something_useful(self):
-        text = self._advice(0)
+    def test_missing_access_alone_does_not_send_anyone_to_view_channel(self):
+        """The bug this replaced: 50001 was read as 'cannot see the channel'."""
+        text = self._advice(code=50001, missing=["Manage Channels"])
+        assert "can't see" not in text.lower()
+
+    def test_a_genuine_visibility_problem_still_names_view_channel(self):
+        text = self._advice(code=50001, missing=["View Channel", "Manage Channels"])
+        assert "View Channel" in text and "Manage Channels" in text
+
+    def test_always_points_at_the_channel_and_its_category(self):
+        text = self._advice(code=50013, missing=["Manage Channels"])
+        assert "category" in text
+        assert "server-wide" in text
+
+    def test_a_disagreement_is_reported_as_one(self):
+        """Everything resolves as granted and Discord still refuses — do not send
+        someone to re-grant what the server already shows as granted."""
+        text = self._advice(code=50001, missing=[])
+        assert "refused anyway" in text
+
+    def test_an_unreadable_cache_says_so(self):
+        text = self._advice(code=50001, missing=None)
+        assert "reliably" in text
         assert "View Channel" in text and "Manage Channels" in text
