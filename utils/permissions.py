@@ -22,13 +22,40 @@ logger = logging.getLogger(__name__)
 # Human labels for the channel permissions the bot asks about, so a command can
 # name what is missing in the words Discord's own UI uses.
 _PERMISSION_LABELS = {
-    'manage_channels': 'Manage Channels',
+    'manage_channels': 'Manage Channel',
+    'connect': 'Connect',
     'view_channel': 'View Channel',
     'send_messages': 'Send Messages',
     'embed_links': 'Embed Links',
     'manage_messages': 'Manage Messages',
     'read_message_history': 'Read Message History',
 }
+
+
+def rename_requirements(channel) -> tuple:
+    """What the bot needs in order to rename ``channel``.
+
+    Voice and stage channels additionally require **Connect**, which is not
+    obvious and is the single thing that broke this feature in practice:
+    ``VoiceChannel.permissions_for`` ends with
+
+        if not base.connect:
+            denied = Permissions.voice()
+            denied.update(manage_channels=True, manage_roles=True)
+            base.value &= ~denied.value
+
+    — a voice channel cannot be edited by someone who cannot connect to it, and
+    Discord enforces the same rule server-side. The locked display channels this
+    feature exists for are locked precisely by denying Connect to @everyone, so
+    granting the bot View Channel and Manage Channel and nothing else produces a
+    channel it can see, is told it may manage, and is refused on.
+    """
+    kind = getattr(channel, 'type', None)
+    voice = {getattr(discord.ChannelType, 'voice', None),
+             getattr(discord.ChannelType, 'stage_voice', None)}
+    if kind in voice:
+        return ('view_channel', 'connect', 'manage_channels')
+    return ('view_channel', 'manage_channels')
 
 
 def missing_channel_permissions(channel, me, *names: str) -> Optional[List[str]]:

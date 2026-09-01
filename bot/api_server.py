@@ -394,6 +394,8 @@ async def handle_guild_channels(request: web.Request) -> web.StreamResponse:
             # must not claim a permission is missing on that basis.
             'can_rename': channel_names.can_rename(ch, me),
             'can_post': bool(perms and perms.view_channel and perms.send_messages),
+            # Voice channels cannot be renamed by anyone who cannot join them.
+            'needs_connect': kind in ('voice', 'stage'),
         })
 
     channels.sort(key=lambda c: (c['category'] or '', c['position']))

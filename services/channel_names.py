@@ -37,6 +37,7 @@ from services.promotion_calculator import grade_for_rank
 from utils.permissions import (
     can_use_channel, describe_channel_access, describe_channel_overwrites,
     missing_channel_permissions, timeout_note, resolution_fingerprint,
+    rename_requirements,
 )
 
 logger = logging.getLogger(__name__)
@@ -217,11 +218,12 @@ def preview(template: str) -> str:
 def can_rename(channel, me) -> Optional[bool]:
     """Whether the bot can rename ``channel`` — ``None`` when we cannot tell.
 
-    A named wrapper over the shared check, since this is the one permission this
-    module cares about. ``None`` means the cached member gave no trustworthy
-    answer and only Discord can settle it, so no caller may refuse on it.
+    Asks for everything the rename needs, which on a voice channel includes
+    **Connect**: Discord refuses to let anyone edit a voice channel they cannot
+    join. ``None`` means the cached member gave no trustworthy answer and only
+    Discord can settle it, so no caller may refuse on it.
     """
-    return can_use_channel(channel, me, 'manage_channels')
+    return can_use_channel(channel, me, *rename_requirements(channel))
 
 
 # Last time this process renamed each channel, so the floor holds across the
@@ -260,9 +262,10 @@ async def _retry_from_api(bot, channel_id: int, name: str):
         return False, f"couldn't fetch the channel from Discord: {e}"
 
     me = getattr(getattr(fresh, 'guild', None), 'me', None)
+    needs = rename_requirements(fresh)
     fetched = (
-        f"{describe_channel_access(fresh, me, 'view_channel', 'manage_channels')} | "
-        f"{describe_channel_overwrites(fresh, me, 'view_channel', 'manage_channels')}"
+        f"{describe_channel_access(fresh, me, *needs)} | "
+        f"{describe_channel_overwrites(fresh, me, *needs)}"
     )
 
     try:
@@ -366,19 +369,16 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
             # getattr twice over: a channel reached from a thin cache may carry
             # no guild, and the error path must not raise its own error.
             me = getattr(getattr(channel, 'guild', None), 'me', None)
-            access = describe_channel_access(
-                channel, me, 'view_channel', 'manage_channels',
-            )
-            lacking = missing_channel_permissions(
-                channel, me, 'view_channel', 'manage_channels',
-            )
+            needs = rename_requirements(channel)
+            access = describe_channel_access(channel, me, *needs)
+            lacking = missing_channel_permissions(channel, me, *needs)
             logger.error(
                 f"channel_names: Discord refused the rename of {row.channel_id} for "
                 f"{club.club_name} — HTTP {e.status}, code {e.code}: {e.text} · {access}"
             )
             logger.error(
                 f"channel_names: overwrites on {row.channel_id} as I see them — "
-                f"{describe_channel_overwrites(channel, me, 'view_channel', 'manage_channels')}"
+                f"{describe_channel_overwrites(channel, me, *needs)}"
             )
             # How that reading was arrived at. Two of discord.py's paths ignore
             # overwrites entirely and produce a fixed set that looks like a

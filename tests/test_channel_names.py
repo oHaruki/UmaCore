@@ -284,7 +284,10 @@ class FakeMember:
         self.roles = [object()] * roles
 
     def perms(self):
-        return SimpleNamespace(manage_channels=self._manage)
+        # can_rename asks for everything a rename needs, so grant the rest and
+        # let manage_channels be the variable under test.
+        return SimpleNamespace(manage_channels=self._manage,
+                               view_channel=True, connect=True)
 
 
 class PermChannel:

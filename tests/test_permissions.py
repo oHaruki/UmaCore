@@ -169,7 +169,7 @@ class TestChannelPermissions:
     def test_labels_match_discord_s_own_wording(self):
         me = BotMember()
         assert missing_channel_permissions(
-            BotChannel(), me, 'manage_channels') == ['Manage Channels']
+            BotChannel(), me, 'manage_channels') == ['Manage Channel']
 
     def test_unknown_rather_than_missing_on_an_unresolved_role_list(self):
         """The failure that blocked channel-name setup: @everyone alone is not
@@ -181,7 +181,7 @@ class TestChannelPermissions:
 
     def test_a_resolved_member_can_still_be_genuinely_missing_it(self):
         assert missing_channel_permissions(
-            BotChannel(), BotMember(roles=4), 'manage_channels') == ['Manage Channels']
+            BotChannel(), BotMember(roles=4), 'manage_channels') == ['Manage Channel']
 
     def test_unknown_without_a_cached_member(self):
         assert missing_channel_permissions(BotChannel(), None, 'manage_channels') is None
@@ -323,7 +323,7 @@ class TestTimeout:
         out = describe_channel_access(
             self.channel(), self.member(True), 'view_channel', 'manage_channels')
         assert out.startswith("TIMED OUT")
-        assert "View Channel: yes" in out and "Manage Channels: no" in out
+        assert "View Channel: yes" in out and "Manage Channel: no" in out
 
     def test_the_access_line_is_unchanged_without_a_timeout(self):
         out = describe_channel_access(
@@ -384,3 +384,35 @@ class TestResolutionFingerprint:
         assert resolution_fingerprint(self.channel(None), None) == "no cached member"
         broken = SimpleNamespace(permissions_for=lambda m: (_ for _ in ()).throw(RuntimeError()))
         assert "unresolvable" in resolution_fingerprint(broken, self.member())
+
+
+class TestVoiceNeedsConnect:
+    """The rule that actually broke this feature.
+
+    ``VoiceChannel.permissions_for`` ends by stripping manage_channels when the
+    member cannot connect — "voice channels cannot be edited by people who can't
+    connect to them" — and Discord enforces the same rule server-side. The locked
+    display channels this feature exists for are locked by denying Connect to
+    @everyone, so a bot given View Channel and Manage Channel and nothing else
+    can see the channel, believes it may rename it, and is refused.
+    """
+
+    def test_a_voice_channel_also_needs_connect(self):
+        from utils.permissions import rename_requirements
+        needs = rename_requirements(SimpleNamespace(type=discord.ChannelType.voice))
+        assert needs == ('view_channel', 'connect', 'manage_channels')
+
+    def test_a_stage_channel_too(self):
+        from utils.permissions import rename_requirements
+        assert 'connect' in rename_requirements(
+            SimpleNamespace(type=discord.ChannelType.stage_voice))
+
+    def test_a_text_channel_does_not(self):
+        """Which is why the text-channel tests never reproduced this."""
+        from utils.permissions import rename_requirements
+        assert 'connect' not in rename_requirements(
+            SimpleNamespace(type=discord.ChannelType.text))
+
+    def test_an_unknown_channel_shape_falls_back_to_the_text_set(self):
+        from utils.permissions import rename_requirements
+        assert rename_requirements(SimpleNamespace()) == ('view_channel', 'manage_channels')
