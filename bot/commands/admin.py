@@ -24,7 +24,7 @@ from config.settings import (
 from utils.rate_limiter import umamoe_limiter, PRIORITY_INTERACTIVE
 from utils.timezone_helper import resolve_timezone
 from utils.audit import log_audit
-from utils.permissions import ensure_can_manage
+from utils.permissions import ensure_can_manage, missing_channel_permissions
 
 logger = logging.getLogger(__name__)
 
@@ -1166,18 +1166,21 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send(club_obj.get_circle_id_help_message())
             return
 
-        perms = channel.permissions_for(interaction.guild.me)
-        missing = [n for n, ok in (("View Channel", perms.view_channel),
-                                   ("Send Messages", perms.send_messages),
-                                   ("Embed Links", perms.embed_links)) if not ok]
-        if missing:
-            await interaction.followup.send(
-                f"❌ I'm missing these permissions in {channel.mention}: "
-                f"**{', '.join(missing)}**"
-            )
-            return
+        # Advisory only. This reading comes from a cache that can be incomplete,
+        # so refusing on it would block a server whose permissions are correct.
+        # The post below is what actually settles it.
+        missing = missing_channel_permissions(
+            channel, interaction.guild.me,
+            'view_channel', 'send_messages', 'embed_links',
+        )
 
         await club_obj.set_live_board(channel.id)
+
+        # Post the first board now rather than at the next slot. Without the old
+        # gate this is what tells the user whether it works — an hour of silence
+        # is a worse answer than a wrong refusal was.
+        from services.live_board import refresh as refresh_board
+        status, _ = await refresh_board(self.bot, club_obj)
 
         embed = discord.Embed(
             title="✅ Live board enabled",
@@ -1197,7 +1200,36 @@ class AdminCommands(commands.Cog):
                    "daily report is unchanged and still drives quota, bombs and DMs."),
             inline=False,
         )
-        embed.set_footer(text="The first board appears within the hour.")
+
+        if status == "failed":
+            embed.colour = COLOR_BEHIND
+            embed.add_field(
+                name="⚠️ Couldn't post the first board",
+                value=(
+                    f"The setting is saved and it retries every hour.\n\n"
+                    f"Discord refused, so check my permissions on {channel.mention} "
+                    f"itself — **View Channel**, **Send Messages** and **Embed Links**. "
+                    f"A deny on the channel or its category overrides the server-wide "
+                    f"permission, which is the usual cause."
+                ),
+                inline=False,
+            )
+        elif status == "no_data":
+            embed.set_footer(
+                text="Uma.moe has no figures for this competition day yet — "
+                     "the first board appears once it does."
+            )
+        else:
+            embed.set_footer(text="First board posted.")
+
+        if missing and status != "posted":
+            embed.add_field(
+                name="Heads up",
+                value=(f"I may also be missing **{', '.join(missing)}** in "
+                       f"{channel.mention}."),
+                inline=False,
+            )
+
         await interaction.followup.send(embed=embed)
         await log_audit(
             interaction, 'club.update', 'club',

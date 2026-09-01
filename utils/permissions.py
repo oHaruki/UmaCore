@@ -9,7 +9,7 @@ Authorization model:
     auto-bound to the creator's editor roles.
   - Club deletion stays administrator-only regardless of editor roles.
 """
-from typing import List
+from typing import List, Optional
 import logging
 
 import discord
@@ -17,6 +17,76 @@ import discord
 from models import ClubPermission, GuildManagerRole
 
 logger = logging.getLogger(__name__)
+
+
+# Human labels for the channel permissions the bot asks about, so a command can
+# name what is missing in the words Discord's own UI uses.
+_PERMISSION_LABELS = {
+    'manage_channels': 'Manage Channels',
+    'view_channel': 'View Channel',
+    'send_messages': 'Send Messages',
+    'embed_links': 'Embed Links',
+    'manage_messages': 'Manage Messages',
+    'read_message_history': 'Read Message History',
+}
+
+
+def missing_channel_permissions(channel, me, *names: str) -> Optional[List[str]]:
+    """Which of ``names`` the bot lacks on ``channel`` — ``None`` when unknown.
+
+    Three answers, and the third is the point:
+
+    * ``[]``      — the bot holds all of them
+    * ``['...']`` — it is genuinely missing these
+    * ``None``    — the cache gives no trustworthy answer; ask Discord instead
+
+    ``permissions_for`` recomputes permissions locally from the cached guild and
+    member. ``guild.me`` can arrive with an unpopulated role list — most reliably
+    when the bot runs without the members intent, but also on a partial guild —
+    and every role-granted permission then resolves to the ``@everyone`` baseline.
+    A permission the bot actually holds reads False.
+
+    :func:`is_admin` above documents the same trap for administrator, where a
+    real server admin was refused a command while the interaction payload said
+    administrator was True the whole time.
+
+    So callers must treat ``None`` as "unknown", and treat a populated list as a
+    warning rather than a verdict: only the API call itself is authoritative.
+    Refusing to act on this reading is what turns a stale cache into a user who
+    cannot set up a working feature.
+    """
+    if me is None or channel is None:
+        return None
+
+    try:
+        perms = channel.permissions_for(me)
+    except Exception:
+        return None
+
+    missing = [
+        _PERMISSION_LABELS.get(n, n.replace('_', ' ').title())
+        for n in names
+        if not getattr(perms, n, False)
+    ]
+
+    if not missing:
+        return []
+
+    # A member whose roles never resolved carries @everyone alone. That is
+    # indistinguishable from a bot that genuinely holds no roles, and the two
+    # mistakes do not cost the same: a wrong "missing" blocks someone whose setup
+    # is already correct, while a wrong "fine" costs one clear error from Discord.
+    roles = getattr(me, 'roles', None)
+    if not roles or len(roles) <= 1:
+        return None
+
+    return missing
+
+
+def can_use_channel(channel, me, *names: str) -> Optional[bool]:
+    """``missing_channel_permissions`` as a yes/no/unknown."""
+    missing = missing_channel_permissions(channel, me, *names)
+    return None if missing is None else not missing
 
 
 def _member_role_ids(interaction: discord.Interaction) -> List[int]:
