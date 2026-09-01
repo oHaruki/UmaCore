@@ -341,12 +341,10 @@ class SettingsCommands(commands.Cog):
             )
             return
 
-        perms = channel.permissions_for(interaction.guild.me)
-        if not perms.manage_channels:
-            await interaction.followup.send(
-                f"❌ I need **Manage Channels** in {channel.mention} to rename it."
-            )
-            return
+        # Advisory only. The permission is resolved from a cache that can be
+        # incomplete, so a False here is a hint, not a verdict — the rename below
+        # is what actually settles it.
+        allowed = channel_names.can_rename(channel, interaction.guild.me)
 
         if not club_obj.is_circle_id_valid():
             await interaction.followup.send(club_obj.get_circle_id_help_message())
@@ -366,11 +364,26 @@ class SettingsCommands(commands.Cog):
         if result["updated"]:
             row = await ChannelName.get_by_channel(channel.id)
             embed.add_field(name="Now showing", value=f"`{row.last_rendered}`", inline=False)
+        elif result["forbidden"]:
+            embed.colour = discord.Color.orange()
+            embed.add_field(
+                name="⚠️ Discord refused the rename",
+                value=(
+                    f"Saved anyway, and it retries on every update.\n\n"
+                    f"Give me **Manage Channels** on {channel.mention} itself — "
+                    f"open its settings → **Permissions**, add my role, and allow "
+                    f"Manage Channels there. A channel-level or category-level "
+                    f"**deny** overrides the server-wide permission, which is the "
+                    f"usual cause. Note this is *Manage Channels*, not Manage Roles."
+                ),
+                inline=False,
+            )
         elif result["failed"]:
+            embed.colour = discord.Color.orange()
             embed.add_field(
                 name="⚠️ Couldn't rename it yet",
-                value="Saved anyway - check that I still have **Manage Channels** here. "
-                      "It will retry on the next update.",
+                value="Saved anyway - it will retry on the next update. "
+                      "Check the logs for the exact error.",
                 inline=False,
             )
         else:
@@ -378,6 +391,17 @@ class SettingsCommands(commands.Cog):
                 name="⏳ No figures yet",
                 value=f"Uma.moe has nothing to show for **{club}** right now. "
                       f"This is how it will read: `{channel_names.preview(template)}`",
+                inline=False,
+            )
+
+        if allowed is False and not result["updated"] and not result["forbidden"]:
+            embed.add_field(
+                name="Heads up",
+                value=(
+                    f"I don't appear to have **Manage Channels** on {channel.mention}. "
+                    f"I couldn't test it just now, so this may be wrong — if the name "
+                    f"doesn't change on the next update, that's the thing to fix."
+                ),
                 inline=False,
             )
 

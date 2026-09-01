@@ -210,6 +210,42 @@ def preview(template: str) -> str:
     ))
 
 
+def can_rename(channel, me) -> Optional[bool]:
+    """Whether the bot can rename ``channel`` — ``None`` when we cannot tell.
+
+    ``permissions_for`` recomputes permissions locally from the cached guild and
+    member, and the bot runs without the members intent, so ``guild.me`` can
+    arrive with an unpopulated role list. Every role-granted permission then
+    resolves to the ``@everyone`` baseline and Manage Channels reads False while
+    the bot holds it — the same trap ``utils.permissions.is_admin`` documents for
+    administrator, where a real admin was refused a command for exactly this.
+
+    So this answers three ways, and a caller must treat ``None`` as "ask Discord"
+    rather than as a no: only Discord's response to the rename itself is
+    authoritative. A False is worth showing as a warning and never as a block.
+    """
+    if me is None:
+        return None
+
+    try:
+        perms = channel.permissions_for(me)
+    except Exception:
+        return None
+
+    if perms.manage_channels:
+        return True
+
+    # A member whose roles never resolved carries only @everyone. That is
+    # indistinguishable from a bot that genuinely holds no roles, and the cost of
+    # guessing wrong in each direction is not symmetric: a wrong False blocks
+    # someone whose setup is correct.
+    roles = getattr(me, 'roles', None)
+    if not roles or len(roles) <= 1:
+        return None
+
+    return False
+
+
 # Last time this process renamed each channel, so the floor holds across the
 # live tick, the daily scrape and any command that fires in between.
 _last_rename: Dict[int, datetime] = {}
@@ -233,7 +269,7 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
     Never raises: a club's channels failing must not take down the tick that
     called this, nor the daily report it runs beside.
     """
-    result = {"updated": 0, "skipped": 0, "failed": 0, "removed": 0}
+    result = {"updated": 0, "skipped": 0, "failed": 0, "removed": 0, "forbidden": 0}
 
     try:
         rows = await ChannelName.get_enabled_for_club(club.club_id)
@@ -289,6 +325,7 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
                 f"{club.club_name}"
             )
             result["failed"] += 1
+            result["forbidden"] += 1
         except discord.NotFound:
             # The channel is genuinely gone, so the binding can never work again.
             logger.info(
@@ -329,7 +366,8 @@ async def refresh_now(bot, club: Club) -> Dict[str, int]:
     from scrapers.umamoe_api_scraper import UmaMoeAPIScraper
     from utils.rate_limiter import PRIORITY_INTERACTIVE
 
-    empty = {"updated": 0, "skipped": 0, "failed": 0, "removed": 0, "source": None}
+    empty = {"updated": 0, "skipped": 0, "failed": 0, "removed": 0,
+             "forbidden": 0, "source": None}
 
     if not club.is_circle_id_valid():
         logger.warning(
