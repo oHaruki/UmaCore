@@ -34,6 +34,7 @@ import discord
 from models import ChannelName, Club
 from scrapers.umamoe_api_scraper import CircleMeta, LiveSnapshot
 from services.promotion_calculator import grade_for_rank
+from utils.permissions import can_use_channel
 
 logger = logging.getLogger(__name__)
 
@@ -213,37 +214,11 @@ def preview(template: str) -> str:
 def can_rename(channel, me) -> Optional[bool]:
     """Whether the bot can rename ``channel`` — ``None`` when we cannot tell.
 
-    ``permissions_for`` recomputes permissions locally from the cached guild and
-    member, and the bot runs without the members intent, so ``guild.me`` can
-    arrive with an unpopulated role list. Every role-granted permission then
-    resolves to the ``@everyone`` baseline and Manage Channels reads False while
-    the bot holds it — the same trap ``utils.permissions.is_admin`` documents for
-    administrator, where a real admin was refused a command for exactly this.
-
-    So this answers three ways, and a caller must treat ``None`` as "ask Discord"
-    rather than as a no: only Discord's response to the rename itself is
-    authoritative. A False is worth showing as a warning and never as a block.
+    A named wrapper over the shared check, since this is the one permission this
+    module cares about. ``None`` means the cached member gave no trustworthy
+    answer and only Discord can settle it, so no caller may refuse on it.
     """
-    if me is None:
-        return None
-
-    try:
-        perms = channel.permissions_for(me)
-    except Exception:
-        return None
-
-    if perms.manage_channels:
-        return True
-
-    # A member whose roles never resolved carries only @everyone. That is
-    # indistinguishable from a bot that genuinely holds no roles, and the cost of
-    # guessing wrong in each direction is not symmetric: a wrong False blocks
-    # someone whose setup is correct.
-    roles = getattr(me, 'roles', None)
-    if not roles or len(roles) <= 1:
-        return None
-
-    return False
+    return can_use_channel(channel, me, 'manage_channels')
 
 
 # Last time this process renamed each channel, so the floor holds across the
