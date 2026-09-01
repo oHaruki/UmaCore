@@ -426,7 +426,14 @@ class SettingsCommands(commands.Cog):
             return
 
         await ChannelName.upsert(club_obj.club_id, channel.id, template)
-        result = await channel_names.refresh_now(self.bot, club_obj)
+
+        # Only this channel. Renaming the club's other channels here would spend
+        # their rename budget for no reason, and — the bug that hid a refusal for
+        # an hour of debugging — would let one of them succeed and be reported as
+        # if this one had.
+        result = await channel_names.refresh_now(self.bot, club_obj, only=channel.id)
+        outcome = result.get("per_channel", {}).get(channel.id, {})
+        status = outcome.get("status")
 
         embed = discord.Embed(
             title="✅ Channel name tracking enabled",
@@ -436,34 +443,49 @@ class SettingsCommands(commands.Cog):
         )
         embed.add_field(name="Template", value=f"`{template}`", inline=False)
 
-        if result["updated"]:
-            row = await ChannelName.get_by_channel(channel.id)
-            embed.add_field(name="Now showing", value=f"`{row.last_rendered}`", inline=False)
-        elif result["forbidden"]:
+        if status == "updated":
+            embed.add_field(name="Now showing", value=f"`{outcome['name']}`", inline=False)
+
+        elif status == "forbidden":
             embed.colour = discord.Color.orange()
+            embed.title = "⚠️ Saved, but the rename was refused"
             embed.add_field(
-                name="⚠️ Discord refused the rename",
-                value=(f"Saved anyway, and it retries on every update.\n\n"
-                       f"{_forbidden_advice(result, channel)}"),
+                name="Discord refused",
+                value=(f"The setting is saved and retries on every update.\n\n"
+                       f"{_forbidden_advice(outcome, channel)}"),
                 inline=False,
             )
-            # The raw answer, so a report of this comes with the one detail that
-            # separates the possible causes instead of a guess at which it was.
+            # The raw answer, so a report of this carries the detail that
+            # separates the causes instead of a guess at which it was.
             embed.add_field(
                 name="What Discord said",
-                value=(f"`{result.get('code')} {result.get('detail') or 'Forbidden'}`\n"
-                       f"My own reading: `{result.get('access') or 'unavailable'}`"),
+                value=(f"`{outcome.get('code')} {outcome.get('detail') or 'Forbidden'}`\n"
+                       f"My own reading: `{outcome.get('access') or 'unavailable'}`"),
                 inline=False,
             )
-        elif result["failed"]:
+
+        elif status == "not_cached":
             embed.colour = discord.Color.orange()
+            embed.title = "⚠️ Saved, but I can't see that channel"
             embed.add_field(
-                name="⚠️ Couldn't rename it yet",
-                value="Saved anyway - it will retry on the next update. "
-                      "Check the logs for the exact error.",
+                name="Not visible to me",
+                value=(f"Saved, and it retries on every update. I can't currently "
+                       f"resolve {channel.mention} — usually a **View Channel** "
+                       f"permission I'm missing there."),
                 inline=False,
             )
+
+        elif status in ("http_error", "error"):
+            embed.colour = discord.Color.orange()
+            embed.title = "⚠️ Saved, but the rename failed"
+            embed.add_field(
+                name="Error",
+                value=f"`{outcome.get('detail', 'unknown')}`\nIt retries on the next update.",
+                inline=False,
+            )
+
         else:
+            # No attempt was made: uma.moe had nothing to render from.
             embed.add_field(
                 name="⏳ No figures yet",
                 value=f"Uma.moe has nothing to show for **{club}** right now. "
@@ -471,14 +493,12 @@ class SettingsCommands(commands.Cog):
                 inline=False,
             )
 
-        if allowed is False and not result["updated"] and not result["forbidden"]:
+        if allowed is False and status not in ("updated", "forbidden"):
             embed.add_field(
                 name="Heads up",
-                value=(
-                    f"I don't appear to have **Manage Channels** on {channel.mention}. "
-                    f"I couldn't test it just now, so this may be wrong — if the name "
-                    f"doesn't change on the next update, that's the thing to fix."
-                ),
+                value=(f"I don't appear to have **Manage Channels** on "
+                       f"{channel.mention}. I couldn't confirm that just now, so it "
+                       f"may be wrong — but if the name never changes, start there."),
                 inline=False,
             )
 

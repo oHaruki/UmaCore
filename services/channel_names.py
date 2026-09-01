@@ -275,18 +275,32 @@ async def _retry_from_api(bot, channel_id: int, name: str):
 
 
 async def apply_for_club(bot, club: Club, ctx: NameContext, *,
-                         force: bool = False) -> Dict[str, Any]:
-    """Bring every channel bound to this club up to date.
+                         force: bool = False,
+                         only: Optional[int] = None) -> Dict[str, Any]:
+    """Bring this club's tracking channels up to date.
 
     ``force`` skips the per-channel interval floor and the unchanged-name check.
     It is for user-driven moments — a template just saved, a manual refresh —
     where waiting up to an hour to see whether it worked is the whole problem.
 
+    ``only`` restricts the run to a single channel. Setting one template used to
+    rewrite every channel the club owns, which spent other channels' rename
+    budget for no reason and, worse, let one channel's success be reported as
+    another's: configure a channel that Discord refuses, and the reply said it
+    was working because a *different* channel had been renamed in the same pass.
+
+    The totals are kept for callers that just want a tally, but ``per_channel``
+    is what a caller should read when it cares about one specific channel —
+    which is every caller acting on a user's request about that channel.
+
     Never raises: a club's channels failing must not take down the tick that
     called this, nor the daily report it runs beside.
     """
     result: Dict[str, Any] = {"updated": 0, "skipped": 0, "failed": 0,
-                              "removed": 0, "forbidden": 0}
+                              "removed": 0, "forbidden": 0, "per_channel": {}}
+
+    def record(channel_id: int, status: str, **detail) -> None:
+        result["per_channel"][channel_id] = {"status": status, **detail}
 
     try:
         rows = await ChannelName.get_enabled_for_club(club.club_id)
@@ -294,6 +308,9 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
         logger.error(f"channel_names: failed to load rows for {club.club_name}: {e}",
                      exc_info=True)
         return result
+
+    if only is not None:
+        rows = [r for r in rows if r.channel_id == only]
 
     now = datetime.now(timezone.utc)
 
@@ -306,11 +323,13 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
                     f"rendered empty — skipping channel {row.channel_id}"
                 )
                 result["skipped"] += 1
+                record(row.channel_id, "empty_template")
                 continue
 
             if not force:
                 if name == row.last_rendered:
                     result["skipped"] += 1
+                    record(row.channel_id, "unchanged", name=name)
                     continue
                 last = _last_rename.get(row.channel_id)
                 if last and now - last < MIN_UPDATE_INTERVAL:
@@ -319,6 +338,7 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
                     # through would park us in Discord's rename bucket and make
                     # the caller sleep there.
                     result["skipped"] += 1
+                    record(row.channel_id, "too_soon", name=name)
                     continue
 
             channel = bot.get_channel(row.channel_id)
@@ -328,28 +348,27 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
                     f"{club.club_name} — leaving it configured in case it is a cache miss"
                 )
                 result["failed"] += 1
+                record(row.channel_id, "not_cached")
                 continue
 
             await _rename(channel, name)
             await row.mark_rendered(name)
             result["updated"] += 1
+            record(row.channel_id, "updated", name=name)
             logger.info(f"channel_names: {club.club_name} → #{row.channel_id} = {name!r}")
 
         except discord.Forbidden as e:
             # Kept configured: this is a permission to grant, not a setting to lose.
             #
             # Report what Discord actually said. 50001 (Missing Access) and 50013
-            # (Missing Permissions) call for different fixes — View Channel versus
-            # Manage Channels — and this used to log a guess at one of them, which
-            # sent people to change a setting that was already correct.
+            # (Missing Permissions) call for different fixes, and this used to log
+            # a guess at one of them.
             # getattr twice over: a channel reached from a thin cache may carry
             # no guild, and the error path must not raise its own error.
             me = getattr(getattr(channel, 'guild', None), 'me', None)
             access = describe_channel_access(
                 channel, me, 'view_channel', 'manage_channels',
             )
-            # What we believe is missing, which turns out to be a better guide
-            # than Discord's error code — see _forbidden_advice.
             lacking = missing_channel_permissions(
                 channel, me, 'view_channel', 'manage_channels',
             )
@@ -357,8 +376,6 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
                 f"channel_names: Discord refused the rename of {row.channel_id} for "
                 f"{club.club_name} — HTTP {e.status}, code {e.code}: {e.text} · {access}"
             )
-            # Logged separately because it is long, and because it is the line
-            # that settles whether the server's settings ever reached us.
             logger.error(
                 f"channel_names: overwrites on {row.channel_id} as I see them — "
                 f"{describe_channel_overwrites(channel, me, 'view_channel', 'manage_channels')}"
@@ -375,8 +392,8 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
                 )
                 note = "skipped — the bot is timed out in this server"
             else:
-                # Cached state has proven unreliable enough here that it is worth
-                # one authoritative round trip before concluding anything.
+                # A cached refusal is worth one authoritative round trip, since
+                # the gateway cache has been seen disagreeing with itself.
                 recovered, note = await _retry_from_api(bot, row.channel_id, name)
                 logger.error(
                     f"channel_names: retry from the API on {row.channel_id} — {note}"
@@ -385,6 +402,7 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
                 if recovered:
                     await row.mark_rendered(name)
                     result["updated"] += 1
+                    record(row.channel_id, "updated", name=name, recovered=True)
                     logger.info(
                         f"channel_names: {club.club_name} → #{row.channel_id} = {name!r} "
                         f"(recovered after a stale-cache refusal)"
@@ -393,12 +411,9 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
 
             result["failed"] += 1
             result["forbidden"] += 1
-            result["code"] = e.code
-            result["detail"] = e.text
-            result["access"] = access
-            result["missing"] = lacking
-            result["retry"] = note
-            result["timeout"] = timeout_note(me)
+            record(row.channel_id, "forbidden", code=e.code, detail=e.text,
+                   access=access, missing=lacking, retry=note, timeout=timed_out)
+
         except discord.NotFound:
             # The channel is genuinely gone, so the binding can never work again.
             logger.info(
@@ -407,23 +422,27 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
             )
             await ChannelName.remove(row.channel_id)
             result["removed"] += 1
+            record(row.channel_id, "deleted")
         except discord.HTTPException as e:
             logger.warning(
                 f"channel_names: failed to rename {row.channel_id} for "
                 f"{club.club_name}: {e}"
             )
             result["failed"] += 1
+            record(row.channel_id, "http_error", detail=str(e))
         except Exception as e:
             logger.error(
                 f"channel_names: unexpected error on {row.channel_id} for "
                 f"{club.club_name}: {e}", exc_info=True
             )
             result["failed"] += 1
+            record(row.channel_id, "error", detail=str(e))
 
     return result
 
 
-async def refresh_now(bot, club: Club) -> Dict[str, Any]:
+async def refresh_now(bot, club: Club, *,
+                      only: Optional[int] = None) -> Dict[str, Any]:
     """Fetch fresh figures and update this club's channels immediately.
 
     The instant first change after a template is saved, and what ``/channel_name``
@@ -439,8 +458,8 @@ async def refresh_now(bot, club: Club) -> Dict[str, Any]:
     from scrapers.umamoe_api_scraper import UmaMoeAPIScraper
     from utils.rate_limiter import PRIORITY_INTERACTIVE
 
-    empty: Dict[str, Any] = {"updated": 0, "skipped": 0, "failed": 0,
-                             "removed": 0, "forbidden": 0, "source": None}
+    empty: Dict[str, Any] = {"updated": 0, "skipped": 0, "failed": 0, "removed": 0,
+                             "forbidden": 0, "source": None, "per_channel": {}}
 
     if not club.is_circle_id_valid():
         logger.warning(
@@ -467,7 +486,7 @@ async def refresh_now(bot, club: Club) -> Dict[str, Any]:
             return empty
         ctx, source = context_from_meta(club, meta), "daily"
 
-    result = await apply_for_club(bot, club, ctx, force=True)
+    result = await apply_for_club(bot, club, ctx, force=True, only=only)
     result["source"] = source
     return result
 
