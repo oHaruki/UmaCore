@@ -169,7 +169,7 @@ def wired(monkeypatch):
 
     monkeypatch.setattr(cn.ChannelName, "get_enabled_for_club", get_enabled)
     monkeypatch.setattr(cn.ChannelName, "remove", remove)
-    cn._last_rename.clear()
+    cn._rename_times.clear()
     channel = FakeChannel()
     return SimpleNamespace(bot=FakeBot(channel), channel=channel, state=state)
 
@@ -206,8 +206,8 @@ class TestApply:
 
     def test_the_floor_expires(self, wired):
         run(cn.apply_for_club(wired.bot, club(), self._ctx()))
-        cn._last_rename[555] = (datetime.now(timezone.utc)
-                                - cn.MIN_UPDATE_INTERVAL - timedelta(seconds=1))
+        cn._rename_times[555] = [datetime.now(timezone.utc)
+                                 - cn.MIN_UPDATE_INTERVAL - timedelta(seconds=1)]
         wired.state["rows"][0].last_rendered = "stale"
         result = run(cn.apply_for_club(wired.bot, club(), self._ctx()))
         assert result["updated"] == 1
@@ -578,3 +578,57 @@ class TestPerChannelResults:
         bot = SimpleNamespace(get_channel=lambda _: None)
         result = run(cn.apply_for_club(bot, club(), self._ctx()))
         assert result["per_channel"][555]["status"] == "not_cached"
+
+
+class TestRenameBudget:
+    """Discord allows two renames per ten minutes per channel, and does not
+    refuse a third — discord.py sleeps until the bucket clears. Measured
+    2026-09-01 sleeping 351 seconds inside a slash command, which reads as the
+    bot hanging and invites the retry that deepens the hole. So the budget is
+    enforced before the request, forced renames included.
+    """
+
+    def _ctx(self):
+        return cn.context_from_live(club(), snap())
+
+    def test_a_third_rename_in_the_window_is_held_not_attempted(self, wired):
+        now = datetime.now(timezone.utc)
+        cn._rename_times[555] = [now - timedelta(minutes=1), now - timedelta(minutes=2)]
+        result = run(cn.apply_for_club(wired.bot, club(), self._ctx(), force=True))
+        assert wired.channel.edits == []
+        assert result["per_channel"][555]["status"] == "rate_limited"
+
+    def test_force_does_not_bypass_it(self, wired):
+        """force skips the staleness floor; it must not skip Discord's own cap."""
+        now = datetime.now(timezone.utc)
+        cn._rename_times[555] = [now, now]
+        run(cn.apply_for_club(wired.bot, club(), self._ctx(), force=True))
+        assert wired.channel.edits == []
+
+    def test_two_renames_are_allowed(self, wired):
+        cn._rename_times[555] = [datetime.now(timezone.utc) - timedelta(minutes=1)]
+        result = run(cn.apply_for_club(wired.bot, club(), self._ctx(), force=True))
+        assert result["per_channel"][555]["status"] == "updated"
+
+    def test_the_window_expires(self, wired):
+        old = datetime.now(timezone.utc) - cn.RENAME_WINDOW - timedelta(seconds=1)
+        cn._rename_times[555] = [old, old]
+        result = run(cn.apply_for_club(wired.bot, club(), self._ctx(), force=True))
+        assert result["per_channel"][555]["status"] == "updated"
+
+    def test_it_says_how_long_to_wait(self, wired):
+        now = datetime.now(timezone.utc)
+        cn._rename_times[555] = [now - timedelta(minutes=4), now]
+        result = run(cn.apply_for_club(wired.bot, club(), self._ctx(), force=True))
+        wait = result["per_channel"][555]["wait"]
+        assert 350 < wait <= 360, wait
+
+    def test_a_successful_rename_spends_budget(self, wired):
+        run(cn.apply_for_club(wired.bot, club(), self._ctx(), force=True))
+        assert len(cn._rename_times[555]) == 1
+
+    def test_budget_is_per_channel(self, wired):
+        now = datetime.now(timezone.utc)
+        cn._rename_times[999] = [now, now]
+        assert cn.rename_budget_wait(555) is None
+        assert cn.rename_budget_wait(999) is not None

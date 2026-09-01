@@ -440,6 +440,18 @@ class SettingsCommands(commands.Cog):
                 inline=False,
             )
 
+        elif status == "rate_limited":
+            wait = outcome.get("wait") or 0
+            embed.colour = discord.Color.blurple()
+            embed.title = "✅ Saved — the rename is queued"
+            embed.add_field(
+                name="Waiting on Discord",
+                value=(f"Discord allows two renames per ten minutes per channel, and "
+                       f"{channel.mention} has used them.\nIt'll pick this up in about "
+                       f"**{wait / 60:.0f} min**, or on the next update."),
+                inline=False,
+            )
+
         elif status == "not_cached":
             embed.colour = discord.Color.orange()
             embed.title = "⚠️ Saved, but I can't see that channel"

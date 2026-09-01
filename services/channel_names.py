@@ -46,9 +46,19 @@ logger = logging.getLogger(__name__)
 MAX_NAME_LENGTH = 100
 
 # Floor between two scheduled renames of the same channel. Sits comfortably
-# inside Discord's 2-per-10-minutes bucket while leaving room for one user-driven
-# rename in the same window.
+# inside Discord's bucket while leaving room for one user-driven rename in the
+# same window.
 MIN_UPDATE_INTERVAL = timedelta(minutes=5)
+
+# Discord's actual limit on renaming one channel. Exceeding it does not raise —
+# discord.py sleeps until the bucket clears, and it was measured on 2026-09-01
+# sleeping 351 seconds inside a slash command, which simply hangs the command and
+# any tick behind it. So the budget is enforced here, before the request is made,
+# and a forced rename is refused rather than parked. Observed as repeated
+# `429 ... Retrying in 351.81 seconds` after a channel was configured several
+# times in a row while it was failing for an unrelated reason.
+RENAME_LIMIT = 2
+RENAME_WINDOW = timedelta(minutes=10)
 
 # Shown when a figure isn't available — a new competition month serves no live
 # rank for a while, and saying so beats printing a stale or invented number.
@@ -226,15 +236,40 @@ def can_rename(channel, me) -> Optional[bool]:
     return can_use_channel(channel, me, *rename_requirements(channel))
 
 
-# Last time this process renamed each channel, so the floor holds across the
-# live tick, the daily scrape and any command that fires in between.
-_last_rename: Dict[int, datetime] = {}
+# When this process renamed each channel, so both the scheduled floor and the
+# hard budget hold across the live tick, the daily scrape and any command that
+# fires in between.
+_rename_times: Dict[int, List[datetime]] = {}
+
+
+def _recent_renames(channel_id: int, now: datetime) -> List[datetime]:
+    """This channel's renames inside the current window, pruned in place."""
+    times = [t for t in _rename_times.get(channel_id, []) if now - t < RENAME_WINDOW]
+    if times:
+        _rename_times[channel_id] = times
+    else:
+        _rename_times.pop(channel_id, None)
+    return times
+
+
+def rename_budget_wait(channel_id: int, now: Optional[datetime] = None) -> Optional[float]:
+    """Seconds until this channel may be renamed again, or ``None`` if it may now.
+
+    Enforced for forced renames too. Waiting out Discord's bucket inside the
+    request means a slash command that appears to hang for minutes, which reads
+    as the bot being broken and invites exactly the retry that deepens the hole.
+    """
+    now = now or datetime.now(timezone.utc)
+    times = _recent_renames(channel_id, now)
+    if len(times) < RENAME_LIMIT:
+        return None
+    return (min(times) + RENAME_WINDOW - now).total_seconds()
 
 
 async def _rename(channel: discord.abc.GuildChannel, name: str) -> bool:
     """Rename one channel. Returns True if the name is now what we wanted."""
     await channel.edit(name=name, reason="Umamusume club figures update")
-    _last_rename[channel.id] = datetime.now(timezone.utc)
+    _rename_times.setdefault(channel.id, []).append(datetime.now(timezone.utc))
     return True
 
 
@@ -334,15 +369,27 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
                     result["skipped"] += 1
                     record(row.channel_id, "unchanged", name=name)
                     continue
-                last = _last_rename.get(row.channel_id)
-                if last and now - last < MIN_UPDATE_INTERVAL:
+                recent = _recent_renames(row.channel_id, now)
+                if recent and now - max(recent) < MIN_UPDATE_INTERVAL:
                     # Another path renamed this channel moments ago. Leaving it
                     # for the next pass costs a few minutes of staleness; pushing
-                    # through would park us in Discord's rename bucket and make
-                    # the caller sleep there.
+                    # through would spend budget a user-driven rename may want.
                     result["skipped"] += 1
                     record(row.channel_id, "too_soon", name=name)
                     continue
+
+            # Applies to forced renames as well: Discord does not refuse an
+            # over-budget rename, it makes us wait minutes inside the request.
+            wait = rename_budget_wait(row.channel_id, now)
+            if wait is not None:
+                logger.info(
+                    f"channel_names: {club.club_name} → #{row.channel_id} held for "
+                    f"{wait:.0f}s — Discord allows {RENAME_LIMIT} renames per "
+                    f"{RENAME_WINDOW.total_seconds() / 60:.0f} minutes per channel"
+                )
+                result["skipped"] += 1
+                record(row.channel_id, "rate_limited", name=name, wait=wait)
+                continue
 
             channel = bot.get_channel(row.channel_id)
             if channel is None:
@@ -420,6 +467,14 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
             result["forbidden"] += 1
             record(row.channel_id, "forbidden", code=e.code, detail=e.text,
                    access=access, missing=lacking, retry=note, timeout=timed_out)
+
+        except discord.RateLimited as e:
+            logger.warning(
+                f"channel_names: rate limited renaming {row.channel_id} for "
+                f"{club.club_name}; {e.retry_after:.0f}s to wait"
+            )
+            result["skipped"] += 1
+            record(row.channel_id, "rate_limited", name=name, wait=e.retry_after)
 
         except discord.NotFound:
             # The channel is genuinely gone, so the binding can never work again.
