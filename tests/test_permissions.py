@@ -16,6 +16,7 @@ from utils import permissions
 from utils.permissions import (
     is_admin, is_full_manager, missing_channel_permissions, can_use_channel,
     describe_channel_overwrites, timeout_note, describe_channel_access,
+    resolution_fingerprint,
 )
 
 GUILD = 1426560692932317186
@@ -328,3 +329,58 @@ class TestTimeout:
         out = describe_channel_access(
             self.channel(), self.member(False), 'view_channel', 'manage_channels')
         assert not out.startswith("TIMED OUT")
+
+
+class TestResolutionFingerprint:
+    """Says how a permission set was arrived at, not just what it says.
+
+    Two of discord.py's paths return a fixed set and never consult the channel's
+    overwrites: the timeout mask, and the user-installed-app set returned when
+    the guild's @everyone role cannot be resolved. Both read as "View Channel:
+    yes, everything else: no", which is indistinguishable from a locked-down
+    channel by symptom alone — and that ambiguity survived four rounds of
+    diagnosis on 2026-09-01.
+    """
+
+    def channel(self, perms, default_role=object(), roles=(1, 2)):
+        return SimpleNamespace(
+            permissions_for=lambda m: perms,
+            guild=SimpleNamespace(id=99, default_role=default_role, roles=list(roles)),
+        )
+
+    def member(self, timed_out=False):
+        return SimpleNamespace(id=7, is_timed_out=lambda: timed_out)
+
+    def test_names_the_user_installed_set_exactly(self):
+        ui = discord.Permissions._user_installed_permissions(in_guild=True)
+        out = resolution_fingerprint(self.channel(ui, default_role=None), self.member())
+        assert "user-installed-app permission set" in out
+        assert "never applied any overwrite" in out
+
+    def test_a_normal_denial_is_not_mistaken_for_it(self):
+        """A channel that genuinely denies the permission must not be labelled."""
+        out = resolution_fingerprint(
+            self.channel(discord.Permissions(view_channel=True)), self.member())
+        assert "user-installed" not in out
+
+    def test_reports_a_timeout(self):
+        out = resolution_fingerprint(
+            self.channel(discord.Permissions(view_channel=True)),
+            self.member(timed_out=True))
+        assert "timed out" in out
+
+    def test_reports_an_unpopulated_role_cache(self):
+        out = resolution_fingerprint(
+            self.channel(discord.Permissions(view_channel=True), default_role=None),
+            self.member())
+        assert "role cache is not populated" in out
+
+    def test_always_carries_the_raw_value_for_a_report(self):
+        out = resolution_fingerprint(
+            self.channel(discord.Permissions(view_channel=True)), self.member())
+        assert "value=" in out
+
+    def test_never_raises(self):
+        assert resolution_fingerprint(self.channel(None), None) == "no cached member"
+        broken = SimpleNamespace(permissions_for=lambda m: (_ for _ in ()).throw(RuntimeError()))
+        assert "unresolvable" in resolution_fingerprint(broken, self.member())

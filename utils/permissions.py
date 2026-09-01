@@ -119,6 +119,61 @@ def describe_channel_access(channel, me, *names: str) -> str:
     return " · ".join(parts)
 
 
+def resolution_fingerprint(channel, me) -> str:
+    """Identify *how* a permission set was arrived at, not just what it says.
+
+    Two of discord.py's paths return a fixed set of permissions and never look at
+    the channel's overwrites at all:
+
+    * the timeout mask, which leaves View Channel and Read Message History;
+    * ``_user_installed_permissions``, returned for the bot itself when the
+      guild's ``@everyone`` role cannot be resolved — an app present only as a
+      user-install, or a guild whose role cache never populated.
+
+    Both produce "View Channel: yes, everything else: no" out of overwrites that
+    plainly grant more, which is exactly the reading that survived four rounds of
+    diagnosis by looking like a misconfigured channel. Comparing the resolved
+    value against those constants tells the two apart from a genuine denial, so
+    the answer stops depending on someone inferring it from a symptom.
+    """
+    if me is None:
+        return "no cached member"
+
+    try:
+        perms = channel.permissions_for(me)
+    except Exception as e:
+        return f"unresolvable ({e.__class__.__name__})"
+
+    guild = getattr(channel, 'guild', None)
+    notes = [f"value={perms.value}"]
+
+    try:
+        if perms.value == discord.Permissions._user_installed_permissions(in_guild=True).value:
+            notes.append(
+                "EXACTLY the user-installed-app permission set — discord.py could not "
+                "resolve this guild's @everyone role, so it never applied any overwrite. "
+                "The app is not a guild member here in the way a bot invite makes it one"
+            )
+    except Exception:
+        pass
+
+    try:
+        if me.is_timed_out():
+            notes.append("member is timed out (mask applied last, overrides overwrites)")
+    except Exception:
+        pass
+
+    default_role = getattr(guild, 'default_role', None)
+    if default_role is None:
+        notes.append("guild.default_role is None — the role cache is not populated")
+
+    notes.append(
+        f"guild={getattr(guild, 'id', '?')} me={getattr(me, 'id', '?')} "
+        f"roles_known={len(getattr(guild, 'roles', None) or [])}"
+    )
+    return " · ".join(notes)
+
+
 def timeout_note(me) -> Optional[str]:
     """Say so if the bot itself is timed out in this guild.
 
