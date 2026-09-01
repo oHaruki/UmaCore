@@ -236,6 +236,44 @@ async def _rename(channel: discord.abc.GuildChannel, name: str) -> bool:
     return True
 
 
+async def _retry_from_api(bot, channel_id: int, name: str):
+    """Fetch the channel from Discord and try once more against that object.
+
+    ``bot.get_channel`` serves the gateway cache, and on 2026-09-01 that cache
+    was demonstrably not self-consistent: the overwrites it held granted Manage
+    Channels to two targets that both applied to the bot, while
+    ``permissions_for`` computed from those same overwrites said the permission
+    was absent. Both cannot be true, so cached state stopped being worth
+    reasoning about for this path.
+
+    A fetch is authoritative. If the retry succeeds the cache was the whole
+    problem and nobody has to be told to reconfigure anything; if it fails the
+    same way, the refusal is real and the fetched overwrites are evidence rather
+    than another guess.
+
+    Returns ``(succeeded, note)``. Never raises — this runs inside a failure
+    handler, which must not produce a second failure.
+    """
+    try:
+        fresh = await bot.fetch_channel(channel_id)
+    except Exception as e:
+        return False, f"couldn't fetch the channel from Discord: {e}"
+
+    me = getattr(getattr(fresh, 'guild', None), 'me', None)
+    fetched = (
+        f"{describe_channel_access(fresh, me, 'view_channel', 'manage_channels')} | "
+        f"{describe_channel_overwrites(fresh, me, 'view_channel', 'manage_channels')}"
+    )
+
+    try:
+        await _rename(fresh, name)
+        return True, f"succeeded on a freshly fetched channel — the cache was stale. {fetched}"
+    except discord.Forbidden as e:
+        return False, f"refused again on a fresh fetch (code {e.code}): {e.text} · {fetched}"
+    except Exception as e:
+        return False, f"failed again on a fresh fetch: {e} · {fetched}"
+
+
 async def apply_for_club(bot, club: Club, ctx: NameContext, *,
                          force: bool = False) -> Dict[str, Any]:
     """Bring every channel bound to this club up to date.
@@ -325,12 +363,28 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
                 f"channel_names: overwrites on {row.channel_id} as I see them — "
                 f"{describe_channel_overwrites(channel, me, 'view_channel', 'manage_channels')}"
             )
+
+            # Cached state has proven unreliable enough here that it is worth one
+            # authoritative round trip before concluding anything.
+            recovered, note = await _retry_from_api(bot, row.channel_id, name)
+            logger.error(f"channel_names: retry from the API on {row.channel_id} — {note}")
+
+            if recovered:
+                await row.mark_rendered(name)
+                result["updated"] += 1
+                logger.info(
+                    f"channel_names: {club.club_name} → #{row.channel_id} = {name!r} "
+                    f"(recovered after a stale-cache refusal)"
+                )
+                continue
+
             result["failed"] += 1
             result["forbidden"] += 1
             result["code"] = e.code
             result["detail"] = e.text
             result["access"] = access
             result["missing"] = lacking
+            result["retry"] = note
         except discord.NotFound:
             # The channel is genuinely gone, so the binding can never work again.
             logger.info(
