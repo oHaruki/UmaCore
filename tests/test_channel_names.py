@@ -353,14 +353,14 @@ class TestForbiddenIsExplained:
         wired.channel._raises = self._forbidden(50013, "Missing Permissions")
         result = run(cn.apply_for_club(wired.bot, club(),
                                        cn.context_from_live(club(), snap())))
-        assert result["code"] == 50013
-        assert result["detail"] == "Missing Permissions"
+        assert result["per_channel"][555]["code"] == 50013
+        assert result["per_channel"][555]["detail"] == "Missing Permissions"
 
     def test_missing_access_is_kept_apart_from_missing_permissions(self, wired):
         wired.channel._raises = self._forbidden(50001, "Missing Access")
         result = run(cn.apply_for_club(wired.bot, club(),
                                        cn.context_from_live(club(), snap())))
-        assert result["code"] == 50001
+        assert result["per_channel"][555]["code"] == 50001
 
     def test_our_own_reading_is_recorded_beside_it(self, wired):
         """When the cache says the permission is held and Discord still refuses,
@@ -368,7 +368,8 @@ class TestForbiddenIsExplained:
         wired.channel._raises = self._forbidden(50013)
         result = run(cn.apply_for_club(wired.bot, club(),
                                        cn.context_from_live(club(), snap())))
-        assert isinstance(result["access"], str) and result["access"]
+        entry = result["per_channel"][555]
+        assert isinstance(entry["access"], str) and entry["access"]
 
     def test_a_channel_with_no_guild_does_not_break_the_error_path(self, wired):
         """A thin cache can hand back a channel carrying no guild; the handler
@@ -467,7 +468,7 @@ class TestRetryFromTheApi:
         result = run(cn.apply_for_club(self._bot(cached, fresh), club(),
                                        cn.context_from_live(club(), snap())))
         assert result["forbidden"] == 1
-        assert "refused again" in result["retry"]
+        assert "refused again" in result["per_channel"][555]["retry"]
 
     def test_a_failed_fetch_is_not_mistaken_for_a_recovery(self, wired):
         cached = FakeChannel(raises=self._forbidden())
@@ -475,7 +476,7 @@ class TestRetryFromTheApi:
             self._bot(cached, fetch_raises=RuntimeError("network")), club(),
             cn.context_from_live(club(), snap())))
         assert result["forbidden"] == 1
-        assert "couldn't fetch" in result["retry"]
+        assert "couldn't fetch" in result["per_channel"][555]["retry"]
 
     def test_the_retry_never_raises_out_of_the_failure_handler(self, wired):
         """One failure must not produce a second."""
@@ -485,3 +486,74 @@ class TestRetryFromTheApi:
                 SimpleNamespace(status=500, reason="x"), "boom")), club(),
             cn.context_from_live(club(), snap())))
         assert result["forbidden"] == 1
+
+
+class TestPerChannelResults:
+    """One channel's outcome must never be reported as another's.
+
+    Observed 2026-09-01: configuring a channel Discord refused reported success,
+    because the same pass had renamed a different channel belonging to the club
+    and the caller only read the totals.
+    """
+
+    def _ctx(self):
+        return cn.context_from_live(club(), snap())
+
+    def _forbidden(self):
+        return discord.Forbidden(
+            SimpleNamespace(status=403, reason="Forbidden"),
+            {"code": 50013, "message": "Missing Permissions"},
+        )
+
+    def _two(self, wired):
+        good = FakeChannel(cid=111)
+        bad = FakeChannel(cid=222, raises=self._forbidden())
+        wired.state["rows"] = [FakeRow(channel_id=111), FakeRow(channel_id=222)]
+        bot = SimpleNamespace(
+            get_channel=lambda cid: {111: good, 222: bad}[cid],
+            fetch_channel=lambda cid: (_ for _ in ()).throw(RuntimeError("no")),
+        )
+        return bot, good, bad
+
+    def test_each_channel_carries_its_own_outcome(self, wired):
+        bot, _, _ = self._two(wired)
+        result = run(cn.apply_for_club(bot, club(), self._ctx()))
+        assert result["per_channel"][111]["status"] == "updated"
+        assert result["per_channel"][222]["status"] == "forbidden"
+
+    def test_a_neighbours_success_is_not_this_channels_success(self, wired):
+        """The reported bug, stated as a test."""
+        bot, _, _ = self._two(wired)
+        result = run(cn.apply_for_club(bot, club(), self._ctx()))
+        assert result["updated"] == 1                       # totals still say one worked
+        assert result["per_channel"][222]["status"] != "updated"
+
+    def test_only_restricts_the_run_to_one_channel(self, wired):
+        """Setting one template must not spend every other channel's rename
+        budget, nor touch channels the user did not ask about."""
+        bot, good, bad = self._two(wired)
+        result = run(cn.apply_for_club(bot, club(), self._ctx(), only=222))
+        assert good.edits == []
+        assert set(result["per_channel"]) == {222}
+
+    def test_only_a_channel_that_is_not_bound_yields_nothing(self, wired):
+        bot, _, _ = self._two(wired)
+        result = run(cn.apply_for_club(bot, club(), self._ctx(), only=999))
+        assert result["per_channel"] == {}
+        assert result["updated"] == 0
+
+    def test_an_unchanged_name_is_recorded_as_such_not_as_a_failure(self, wired):
+        wired.state["rows"] = [FakeRow(last_rendered="Rank #87")]
+        result = run(cn.apply_for_club(wired.bot, club(), self._ctx()))
+        assert result["per_channel"][555]["status"] == "unchanged"
+
+    def test_a_deleted_channel_is_recorded(self, wired):
+        wired.channel._raises = discord.NotFound(
+            SimpleNamespace(status=404, reason="x"), "gone")
+        result = run(cn.apply_for_club(wired.bot, club(), self._ctx()))
+        assert result["per_channel"][555]["status"] == "deleted"
+
+    def test_an_uncached_channel_is_recorded(self, wired):
+        bot = SimpleNamespace(get_channel=lambda _: None)
+        result = run(cn.apply_for_club(bot, club(), self._ctx()))
+        assert result["per_channel"][555]["status"] == "not_cached"

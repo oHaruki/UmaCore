@@ -431,11 +431,24 @@ async def handle_refresh_channel_names(request: web.Request) -> web.StreamRespon
 
     from services import channel_names
 
+    # Optional: restrict to the channel the caller just configured, so one
+    # channel's success is never reported as another's.
+    only_raw = body.get('channel_id')
     try:
-        result = await channel_names.refresh_now(bot, club)
+        only = int(only_raw) if only_raw else None
+    except (TypeError, ValueError):
+        return await _send_json(request, {'error': 'Invalid channel_id'}, status=400)
+
+    try:
+        result = await channel_names.refresh_now(bot, club, only=only)
     except Exception as e:
         logger.error(f"Channel name refresh failed for {club.club_name}: {e}", exc_info=True)
         return await _send_json(request, {'error': str(e)}, status=500)
+
+    # per_channel is keyed by int; JSON object keys must be strings.
+    result['per_channel'] = {
+        str(cid): entry for cid, entry in (result.get('per_channel') or {}).items()
+    }
 
     rows = await ChannelName.get_for_club(club_id)
     result['channels'] = [
