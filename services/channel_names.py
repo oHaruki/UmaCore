@@ -36,7 +36,7 @@ from scrapers.umamoe_api_scraper import CircleMeta, LiveSnapshot
 from services.promotion_calculator import grade_for_rank
 from utils.permissions import (
     can_use_channel, describe_channel_access, describe_channel_overwrites,
-    missing_channel_permissions, timeout_note,
+    missing_channel_permissions, timeout_note, resolution_fingerprint,
 )
 
 logger = logging.getLogger(__name__)
@@ -379,6 +379,13 @@ async def apply_for_club(bot, club: Club, ctx: NameContext, *,
             logger.error(
                 f"channel_names: overwrites on {row.channel_id} as I see them — "
                 f"{describe_channel_overwrites(channel, me, 'view_channel', 'manage_channels')}"
+            )
+            # How that reading was arrived at. Two of discord.py's paths ignore
+            # overwrites entirely and produce a fixed set that looks like a
+            # misconfigured channel; this says which one we are on.
+            logger.error(
+                f"channel_names: how {row.channel_id} resolved — "
+                f"{resolution_fingerprint(channel, me)}"
             )
 
             timed_out = timeout_note(me)
