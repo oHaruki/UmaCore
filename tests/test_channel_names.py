@@ -270,3 +270,68 @@ class TestApply:
         run(cn.apply_for_club(bot, club(), self._ctx()))
         assert a.edits == ["Rank #87"]
         assert b.edits == ["Fans 1.84B"]
+
+
+# --------------------------------------------------------------------------- #
+# the permission pre-check
+# --------------------------------------------------------------------------- #
+
+class FakeMember:
+    """A cached bot member. An empty role list is the failure being guarded."""
+    def __init__(self, manage: bool, roles: int = 2):
+        self._manage = manage
+        self.roles = [object()] * roles
+
+    def perms(self):
+        return SimpleNamespace(manage_channels=self._manage)
+
+
+class PermChannel:
+    def __init__(self, member_perms=None, raises=False):
+        self._perms, self._raises = member_perms, raises
+
+    def permissions_for(self, member):
+        if self._raises:
+            raise RuntimeError("partial guild")
+        return member.perms()
+
+
+class TestCanRename:
+    def test_true_when_the_permission_resolves(self):
+        assert cn.can_rename(PermChannel(), FakeMember(manage=True)) is True
+
+    def test_false_only_when_roles_actually_resolved(self):
+        assert cn.can_rename(PermChannel(), FakeMember(manage=False, roles=3)) is False
+
+    def test_unknown_when_the_bot_member_is_not_cached(self):
+        """guild.me is None on a partial guild — never report that as a refusal."""
+        assert cn.can_rename(PermChannel(), None) is None
+
+    def test_unknown_when_the_role_cache_looks_empty(self):
+        """Without the members intent the bot can resolve to @everyone alone, which
+        reads as no permission while it holds one. utils.permissions.is_admin
+        documents the same trap for administrator."""
+        assert cn.can_rename(PermChannel(), FakeMember(manage=False, roles=1)) is None
+        assert cn.can_rename(PermChannel(), FakeMember(manage=False, roles=0)) is None
+
+    def test_unknown_when_resolving_raises(self):
+        assert cn.can_rename(PermChannel(raises=True), FakeMember(manage=False)) is None
+
+
+class TestForbiddenIsReportedSeparately:
+    def test_a_refusal_is_counted_apart_from_other_failures(self, wired):
+        """The command says different things for 'grant this permission' and
+        'something else went wrong'."""
+        wired.channel._raises = discord.Forbidden(
+            SimpleNamespace(status=403, reason="x"), "nope")
+        result = run(cn.apply_for_club(wired.bot, club(),
+                                       cn.context_from_live(club(), snap())))
+        assert result["forbidden"] == 1
+        assert result["failed"] == 1
+
+    def test_an_uncached_channel_is_not_a_permission_problem(self, wired):
+        wired.bot = SimpleNamespace(get_channel=lambda _: None)
+        result = run(cn.apply_for_club(wired.bot, club(),
+                                       cn.context_from_live(club(), snap())))
+        assert result["forbidden"] == 0
+        assert result["failed"] == 1

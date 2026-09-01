@@ -375,6 +375,8 @@ async def handle_guild_channels(request: web.Request) -> web.StreamResponse:
         _discord.ChannelType.forum: 'forum',
     }
 
+    from services import channel_names
+
     me = guild.me
     channels = []
     for ch in guild.channels:
@@ -388,7 +390,9 @@ async def handle_guild_channels(request: web.Request) -> web.StreamResponse:
             'type': kind,
             'position': ch.position,
             'category': ch.category.name if ch.category else None,
-            'can_rename': bool(perms and perms.manage_channels),
+            # null when the cached member gives no trustworthy answer — the UI
+            # must not claim a permission is missing on that basis.
+            'can_rename': channel_names.can_rename(ch, me),
             'can_post': bool(perms and perms.view_channel and perms.send_messages),
         })
 
