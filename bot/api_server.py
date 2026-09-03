@@ -492,7 +492,37 @@ async def handle_bot_guilds(request: web.Request) -> web.StreamResponse:
 
 
 async def handle_health(request: web.Request) -> web.StreamResponse:
-    return await _send_json(request, {'status': 'ok'})
+    """Component health as JSON, for a prober running somewhere that isn't here.
+
+    This is the half of monitoring the bot cannot do for itself. A crashed
+    process posts no Discord message and answers no request either — but the
+    absent answer is something an outside watcher can see, and the silence in
+    chat is not.
+
+    Always returns 200, with the verdict in the body. A degraded 5xx would read
+    as "the API is broken" to every other caller — the web dashboard included —
+    when the honest meaning is "the API is fine and is telling you something is
+    not". Point the prober at ``[BODY].status == ok``, or at an individual
+    component when you want to alert on them separately.
+
+    ``status`` stays ``"ok"`` on a healthy bot exactly as it did when this
+    returned a constant, so anything already watching this route keeps working.
+    """
+    from services.health_monitor import health
+
+    payload = health.snapshot()
+
+    bot = request.app.get('bot')
+    if bot is not None:
+        latency = bot.latency
+        payload['discord'] = {
+            'ready': bot.is_ready(),
+            # NaN before the first heartbeat, and NaN is not valid JSON.
+            'latency_ms': round(latency * 1000) if latency == latency else None,
+            'guilds': len(bot.guilds),
+        }
+
+    return await _send_json(request, payload)
 
 
 async def handle_logs(request: web.Request) -> web.StreamResponse:

@@ -23,6 +23,17 @@ async def record_api_call(
     context: Optional[str] = None,
 ) -> None:
     """Insert one api_usage row. Swallows all errors (metrics must not break calls)."""
+    # Every outbound call already passes through here with the two facts the
+    # health monitor needs, so provider health costs one line rather than a hook
+    # in each scraper. Imported lazily and guarded separately from the insert
+    # below: the monitor must still hear about a failure when the database is
+    # the thing that is failing.
+    try:
+        from services.health_monitor import health
+        health.note_api_call(provider, ok, status_code)
+    except Exception as e:  # pragma: no cover - monitoring must not break calls
+        logger.debug(f"Failed to record health signal ({provider}): {e}")
+
     try:
         from config.database import db
         if not getattr(db, "pool", None):

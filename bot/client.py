@@ -8,6 +8,7 @@ import logging
 
 from config.settings import DISCORD_TOKEN
 from config.database import db
+from services.health_monitor import health
 from .tasks import BotTasks
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,9 @@ class UmamusumeBot(commands.Bot):
         
         # Start scheduled tasks
         if not self.tasks_manager:
+            # Before the loops, so their first heartbeat lands on seeded state
+            # rather than being the thing that creates it.
+            health.start(self)
             self.tasks_manager = BotTasks(self)
             self.tasks_manager.start_tasks()
             logger.info("Scheduled tasks started")
