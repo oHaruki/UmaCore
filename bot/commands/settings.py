@@ -14,7 +14,11 @@ from models import Club, ChannelName
 from services import MonthlyInfoService, channel_names
 from utils.timezone_helper import resolve_timezone
 from utils.audit import log_audit
-from utils.permissions import ensure_can_manage
+from utils.permissions import (
+    ensure_can_manage, post_requirements, missing_channel_permissions,
+    timeout_note, describe_channel_access, describe_channel_overwrites,
+    resolution_fingerprint, post_forbidden_advice, ADD_ME,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +28,6 @@ logger = logging.getLogger(__name__)
 # never the problem.
 MISSING_ACCESS = 50001
 MISSING_PERMISSIONS = 50013
-
-# The fix in almost every case. Channel permissions are applied on top of the
-# server-wide ones, so a private channel — one that denies @everyone — removes
-# them again for anyone not named on the channel itself. Granting the bot
-# Manage Channels server-wide therefore does nothing on the locked voice
-# channels this feature is built for. Administrator hides this entirely, since
-# it bypasses overwrites, which is why it only shows up on a normal setup.
-ADD_ME = "**Edit Channel → Permissions → add UmaCore →** allow "
 
 
 def _forbidden_advice(result: dict, channel) -> str:
@@ -73,6 +69,112 @@ def _forbidden_advice(result: dict, channel) -> str:
             f"there.\n{ADD_ME}**View Channel** and **Manage Channel**.")
 
 
+async def _verify_posting(channel, club_name: str, what: str) -> dict:
+    """Actually post into ``channel``, and report what Discord said.
+
+    :func:`missing_channel_permissions` documents why a cached reading is a hint
+    rather than a verdict, so a check that only consults the cache can refuse a
+    working channel and bless a broken one in equal measure. Sending a real
+    message is the only authoritative answer, and it is the very call the
+    scheduled report will make.
+
+    Posting the confirmation *into the target channel* rather than only into the
+    command reply is the point: it makes the reply's promise true by
+    construction. This command used to save the channel id and answer "✅ Report
+    Channel Updated" without ever checking, so a bot that could not speak there
+    reported success and then failed silently at every scheduled run — which is
+    exactly how club 980179020 came to be debugged over Discord instead.
+    """
+    embed = discord.Embed(
+        title=f"✅ {what} enabled - {club_name}",
+        description=f"{what} for **{club_name}** will appear in this channel.",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow(),
+    )
+    me = getattr(getattr(channel, 'guild', None), 'me', None)
+    needs = post_requirements(channel)
+
+    try:
+        await channel.send(embed=embed)
+        return {"status": "posted"}
+
+    except discord.Forbidden as e:
+        try:
+            lacking = missing_channel_permissions(channel, me, *needs)
+        except Exception:
+            lacking = None
+        timed_out = timeout_note(me)
+
+        if timed_out or lacking:
+            logger.error(
+                f"Can't post to #{channel.id} for {club_name} — "
+                + ("the bot is timed out in this server"
+                   if timed_out else f"missing {', '.join(lacking)}")
+            )
+        else:
+            # Nothing we can name. Same reasoning as the rename path: this is the
+            # refusal that earns the full kit, and resolution_fingerprint is what
+            # separates a user-installed app from a locked-down channel.
+            # Guarded: this is a failure handler and must not fail. A raising
+            # diagnostic would turn a refusal we can still explain to the user
+            # into a bare "❌ Error:" reply from the command's outer except.
+            try:
+                logger.error(
+                    f"Unexplained refusal posting to #{channel.id} for {club_name} — "
+                    f"HTTP {e.status}, code {e.code}: {e.text} · "
+                    f"{describe_channel_access(channel, me, *needs)}"
+                )
+                logger.error(f"   overwrites — {describe_channel_overwrites(channel, me, *needs)}")
+                logger.error(f"   resolution — {resolution_fingerprint(channel, me)}")
+            except Exception as diag_err:
+                logger.error(f"   diagnostics failed for #{channel.id}: {diag_err}")
+
+        return {"status": "forbidden", "code": e.code, "detail": e.text,
+                "missing": lacking, "timeout": timed_out}
+
+    except discord.HTTPException as e:
+        logger.error(f"HTTP error posting to #{channel.id} for {club_name}: {e}")
+        return {"status": "http_error", "code": e.code, "detail": e.text}
+
+
+def _describe_posting(embed: discord.Embed, outcome: dict, channel, what: str) -> None:
+    """Fold the posting test's result into the reply embed.
+
+    Mirrors the shape ``set_channel_name`` uses for a refused rename: a success
+    needs no words, and a failure is told in terms of what to click rather than
+    what Discord returned. The setting stays saved either way — it is a
+    permission to grant, not a setting to lose.
+    """
+    status = outcome.get("status")
+    if status == "posted":
+        return
+
+    embed.colour = discord.Color.orange()
+    embed.title = "⚠️ Saved, but I can't post there"
+    embed.description = (
+        f"The setting is stored, so {what} will start arriving the moment this is "
+        f"fixed — nothing needs setting up again."
+    )
+
+    if status == "forbidden":
+        embed.add_field(
+            name="How to fix it",
+            value=post_forbidden_advice(outcome, channel, what=what),
+            inline=False)
+        # Only when we could not name a cause. Otherwise the advice above is the
+        # whole answer and a raw error code just adds doubt to it.
+        if not outcome.get("missing") and not outcome.get("timeout"):
+            embed.add_field(
+                name="Details",
+                value=f"`{outcome.get('code')} {outcome.get('detail') or 'Forbidden'}`",
+                inline=False)
+    else:
+        embed.add_field(
+            name="Details",
+            value=f"`{outcome.get('code')} {outcome.get('detail') or status}`",
+            inline=False)
+
+
 class SettingsCommands(commands.Cog):
     """Channel and bot configuration commands"""
     
@@ -112,14 +214,18 @@ class SettingsCommands(commands.Cog):
                 return
 
             await club_obj.set_channels(report_channel_id=channel.id)
-            
+
+            # Prove it before promising it — see _verify_posting.
+            outcome = await _verify_posting(channel, club, "Daily reports")
+
             embed = discord.Embed(
                 title=f"✅ Report Channel Updated - {club}",
                 description=f"Daily reports will now be posted to {channel.mention}",
                 color=discord.Color.green(),
                 timestamp=discord.utils.utcnow()
             )
-            
+            _describe_posting(embed, outcome, channel, "daily reports")
+
             await interaction.followup.send(embed=embed)
             await log_audit(
                 interaction, 'club.update', 'club',
@@ -151,14 +257,19 @@ class SettingsCommands(commands.Cog):
                 return
 
             await club_obj.set_channels(alert_channel_id=channel.id)
-            
+
+            # Same gap as the report channel, same fix.
+            outcome = await _verify_posting(channel, club, "Alerts")
+
             embed = discord.Embed(
                 title=f"✅ Alert Channel Updated - {club}",
-                description=f"Alerts (bomb warnings, kick notifications) will now be posted to {channel.mention}",
+                description=(f"Alerts (bomb warnings, kick notifications) will now "
+                             f"be posted to {channel.mention}"),
                 color=discord.Color.green(),
                 timestamp=discord.utils.utcnow()
             )
-            
+            _describe_posting(embed, outcome, channel, "alerts")
+
             await interaction.followup.send(embed=embed)
             await log_audit(
                 interaction, 'club.update', 'club',

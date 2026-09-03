@@ -10,6 +10,20 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
 
+# Where the bot announces its own component outages (see services/health_monitor).
+# One channel in the operator's own support server, not a per-guild setting, so
+# it belongs to the deployment rather than to the database. 0 disables the
+# announcements entirely; /health keeps working either way.
+STATUS_CHANNEL_ID = int(os.getenv("STATUS_CHANNEL_ID", "0"))
+
+# Outbound liveness ping, hit once a minute while the bot is running. The one
+# check that survives the bot dying: a monitor elsewhere alerts when the pings
+# stop, which is something no code in this process could ever report about
+# itself. Any heartbeat service works — the contract is only that a request
+# arrives. Empty disables it.
+HEARTBEAT_URL = os.getenv("HEARTBEAT_URL", "").strip()
+HEARTBEAT_TIMEOUT_SEC = int(os.getenv("HEARTBEAT_TIMEOUT_SEC", "10"))
+
 # Database Configuration
 DATABASE_URL = os.getenv("DATABASE_URL")
 

@@ -15,13 +15,17 @@ one club costs 24 API calls a day and enabling it for none costs nothing.
 """
 import logging
 from datetime import date, datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import discord
 
 from models import Club
 from scrapers.umamoe_api_scraper import LiveSnapshot, MemberGain, UmaMoeAPIScraper
 from utils.jst_calendar import competition_day, resolve_live
+from utils.permissions import (
+    post_requirements, missing_channel_permissions, timeout_note,
+    describe_channel_access, describe_channel_overwrites, resolution_fingerprint,
+)
 from config.settings import COLOR_INFO, COLOR_ON_TRACK, COLOR_BEHIND
 
 logger = logging.getLogger(__name__)
@@ -213,43 +217,133 @@ async def _resolve_channel(bot, club: Club) -> Optional[discord.abc.Messageable]
     return channel
 
 
-async def _post_new(bot, club: Club, snap: LiveSnapshot) -> bool:
+def _refused(channel, club: Club, action: str,
+             e: discord.Forbidden, outcome: Optional[Dict[str, Any]]) -> None:
+    """Name the missing permission, in the log and in ``outcome``.
+
+    Both readings come from the same place on purpose. "No permission to post
+    the live board" was true and useless: it is the sentence someone already has
+    in front of them, and it left the admin to guess which of View Channel, Send
+    Messages and Embed Links was the one — a guess that landed on Send Messages,
+    because a working ``/my_status`` looks like proof the bot can talk. It was
+    Embed Links, and finding that out took two evenings in a support thread.
+
+    ``outcome`` is how that answer reaches the person who asked for the board
+    rather than only the host's log file. :func:`post_forbidden_advice` turns
+    what is recorded here into the line they act on.
+
+    Never raises. This runs inside a failure handler, and a diagnostic that
+    fails must not become the failure.
+    """
+    me = getattr(getattr(channel, 'guild', None), 'me', None)
+    needs = post_requirements(channel)
+    try:
+        lacking = missing_channel_permissions(channel, me, *needs)
+    except Exception:
+        lacking = None
+    timed_out = timeout_note(me)
+
+    if outcome is not None:
+        outcome.update(status="forbidden", code=e.code, detail=e.text,
+                       missing=lacking, timeout=timed_out, channel=channel)
+
+    where = f"{club.club_name} in channel {club.live_board_channel_id}"
+
+    if timed_out:
+        logger.error(
+            f"❌ Can't {action} the live board for {where} — the bot is timed out "
+            f"in this server, which masks every permission until it is lifted"
+        )
+        return
+
+    if lacking:
+        logger.error(
+            f"❌ Can't {action} the live board for {where} — missing "
+            f"{', '.join(lacking)}. Edit Channel → Permissions → add the bot → "
+            f"allow {', '.join(lacking)}"
+        )
+        return
+
+    # Everything the board needs reads as granted and Discord refused anyway.
+    # Nothing about that is inferable from the symptom, so this is the case that
+    # earns the full kit — including how the permission set was resolved, which
+    # is what tells a user-installed app apart from a locked-down channel.
+    try:
+        logger.error(
+            f"❌ Unexplained refusal to {action} the live board for {where} — "
+            f"HTTP {e.status}, code {e.code}: {e.text} · "
+            f"{describe_channel_access(channel, me, *needs)}"
+        )
+        logger.error(f"   overwrites — {describe_channel_overwrites(channel, me, *needs)}")
+        logger.error(f"   resolution — {resolution_fingerprint(channel, me)}")
+    except Exception as diag_err:
+        logger.error(
+            f"❌ Refused to {action} the live board for {where} "
+            f"(HTTP {e.status}, code {e.code}) and the diagnostics failed too: {diag_err}"
+        )
+
+
+async def _post_new(bot, club: Club, snap: LiveSnapshot, *,
+                    outcome: Optional[Dict[str, Any]] = None) -> bool:
     channel = await _resolve_channel(bot, club)
     if channel is None:
+        if outcome is not None:
+            outcome.update(status="not_cached")
         return False
     try:
         msg = await channel.send(embeds=build_embeds(club, snap))
         await club.set_live_board_message(msg.id, snap.jst_day)
         logger.info(f"Live board opened for {club.club_name} (JST {snap.jst_day})")
+        if outcome is not None:
+            outcome.update(status="posted", channel=channel)
         return True
-    except discord.Forbidden:
-        logger.error(
-            f"No permission to post the live board for {club.club_name} in "
-            f"channel {club.live_board_channel_id}"
-        )
+    except discord.Forbidden as e:
+        _refused(channel, club, "post", e, outcome)
     except discord.HTTPException as e:
         logger.warning(f"Failed to post live board for {club.club_name}: {e}")
+        if outcome is not None:
+            outcome.update(status="http_error", code=e.code, detail=e.text,
+                           channel=channel)
     return False
 
 
-async def _edit_existing(bot, club: Club, snap: LiveSnapshot, *, closed: bool) -> bool:
-    """Edit the tracked message. Returns False if it is gone and must be reposted."""
+async def _edit_existing(bot, club: Club, snap: LiveSnapshot, *, closed: bool,
+                         outcome: Optional[Dict[str, Any]] = None) -> str:
+    """Edit the tracked message. Says which of three things happened.
+
+    ``"edited"`` the message now shows the current figures
+    ``"gone"``   it was deleted, so the caller should post a new one
+    ``"failed"`` Discord refused or errored; the caller must NOT repost
+
+    Three answers rather than the old "repost?" boolean, because "don't repost"
+    was being read as "edited". A refused edit and a cache miss both returned
+    True, so :func:`refresh` reported ``"edited"`` for a board that had not
+    changed since yesterday and ``/live_refresh`` replied "Board edited in
+    place." — the bot's most confident sentence for its least true one.
+    """
     channel = await _resolve_channel(bot, club)
     if channel is None:
-        return True                      # cache miss: don't repost, just skip
+        if outcome is not None:
+            outcome.update(status="not_cached")
+        return "failed"                  # cache miss: don't repost over the old one
     try:
         msg = await channel.fetch_message(club.live_board_message_id)
         await msg.edit(embeds=build_embeds(club, snap, closed=closed))
-        return True
+        if outcome is not None:
+            outcome.update(status="edited", channel=channel)
+        return "edited"
     except discord.NotFound:
         logger.info(f"Live board message for {club.club_name} was deleted — reposting")
-        return False
-    except discord.Forbidden:
-        logger.error(f"No permission to edit the live board for {club.club_name}")
-        return True
+        return "gone"
+    except discord.Forbidden as e:
+        _refused(channel, club, "edit", e, outcome)
+        return "failed"
     except discord.HTTPException as e:
         logger.warning(f"Failed to edit live board for {club.club_name}: {e}")
-        return True
+        if outcome is not None:
+            outcome.update(status="http_error", code=e.code, detail=e.text,
+                           channel=channel)
+        return "failed"
 
 
 async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) -> str:
@@ -259,7 +353,9 @@ async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) ->
 
 
 async def refresh(bot, club: Club, *,
-                  now_utc: Optional[datetime] = None) -> Tuple[str, Optional[LiveSnapshot]]:
+                  now_utc: Optional[datetime] = None,
+                  outcome: Optional[Dict[str, Any]] = None,
+                  ) -> Tuple[str, Optional[LiveSnapshot]]:
     """Bring one club's board up to date.
 
     Handles the three cases: no board yet, same day (edit), and the day having
@@ -278,6 +374,13 @@ async def refresh(bot, club: Club, *,
     Paired with the snapshot it read, so a caller wanting the same figures for
     something else — the channel-name updater does — reuses this fetch instead of
     making a second identical call a moment later.
+
+    Pass ``outcome`` — an empty dict — to learn *why* a ``"failed"`` failed:
+    Discord's code and detail, and which permission is missing where we can name
+    one. The hourly tick has no use for that and passes nothing; a command run by
+    a person does, because "check the logs" is not an answer they can act on and
+    the permission is nearly always the whole story. Feed it to
+    :func:`~utils.permissions.post_forbidden_advice` to render.
     """
     target = resolve_live(now_utc)
 
@@ -286,7 +389,7 @@ async def refresh(bot, club: Club, *,
     # record and never sits there claiming to still be updating.
     if (club.live_board_message_id and club.live_board_day
             and club.live_board_day != target.jst_day):
-        if not await _close_out(bot, club):
+        if not await _close_out(bot, club, outcome=outcome):
             # Couldn't reach that day's final numbers. Leave the board exactly as
             # it is and retry next cycle rather than abandoning it half-finished.
             return "no_data", None
@@ -296,11 +399,18 @@ async def refresh(bot, club: Club, *,
         return "no_data", None
 
     if not club.live_board_message_id or not club.live_board_day:
-        return ("posted" if await _post_new(bot, club, snap) else "failed"), snap
+        return ("posted" if await _post_new(bot, club, snap, outcome=outcome)
+                else "failed"), snap
 
-    if await _edit_existing(bot, club, snap, closed=False):
+    edited = await _edit_existing(bot, club, snap, closed=False, outcome=outcome)
+    if edited == "edited":
         return "edited", snap
-    return ("posted" if await _post_new(bot, club, snap) else "failed"), snap
+    if edited == "failed":
+        # Refused, errored, or the channel isn't cached. Reposting would either
+        # be refused in turn or leave two boards for the same day.
+        return "failed", snap
+    return ("posted" if await _post_new(bot, club, snap, outcome=outcome)
+            else "failed"), snap
 
 
 def _midday_utc(jst_day: date) -> datetime:
@@ -312,7 +422,8 @@ def _midday_utc(jst_day: date) -> datetime:
     return datetime(jst_day.year, jst_day.month, jst_day.day, 3, 0, tzinfo=timezone.utc)
 
 
-async def _close_out(bot, club: Club) -> bool:
+async def _close_out(bot, club: Club, *,
+                     outcome: Optional[Dict[str, Any]] = None) -> bool:
     """Finalise the tracked board and release it, so the next run opens a new one.
 
     Fetches the closing day's *own* slot rather than reusing the current one: the
@@ -345,7 +456,7 @@ async def _close_out(bot, club: Club) -> bool:
         monthly_rank=finished.monthly_rank,
         gains=finished.gains,
     )
-    await _edit_existing(bot, club, closing, closed=True)
+    await _edit_existing(bot, club, closing, closed=True, outcome=outcome)
     logger.info(
         f"Live board closed for {club.club_name} "
         f"(JST {closing_day}, {len(finished.gains)} members recorded)"

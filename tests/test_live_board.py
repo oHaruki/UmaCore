@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+import discord
 import pytest
 
 from scrapers.umamoe_api_scraper import LiveSnapshot, MemberGain, UmaMoeAPIScraper
@@ -640,3 +641,139 @@ class TestRankAvailability:
         s = self._summary(live_rank=None, monthly_rank=477)
         rank = next(f for f in s.fields if f.name == "Rank")
         assert "477" not in rank.value, "showed an untrustworthy monthly_rank"
+
+
+# --------------------------------------------------------------------------- #
+# refusals
+# --------------------------------------------------------------------------- #
+
+class RefusedChannel:
+    """A channel that takes the request and gets a 403 back.
+
+    Carries a resolvable ``guild.me`` — several roles, not timed out — because a
+    member whose role list never resolved reads as *unknown* rather than
+    missing. That is the correct answer for a thin cache and the wrong one for
+    this test, which is about a permission that is genuinely absent.
+    """
+
+    def __init__(self, *, on="send", code=50013, **perms):
+        self.on = on
+        self.code = code
+        self.posted = []
+        self._perms = discord.Permissions(**perms)
+        self.guild = SimpleNamespace(me=SimpleNamespace(
+            id=7,
+            roles=[SimpleNamespace(id=i) for i in range(4)],
+            is_timed_out=lambda: False,
+        ))
+
+    def permissions_for(self, member):
+        return self._perms
+
+    def _forbidden(self):
+        return discord.Forbidden(
+            SimpleNamespace(status=403, reason="Forbidden"),
+            {"code": self.code, "message": "Missing Permissions"},
+        )
+
+    async def send(self, **kw):
+        if self.on == "send":
+            raise self._forbidden()
+        self.posted.append(kw.get("embeds"))
+        return FakeMessage(1001)
+
+    async def fetch_message(self, mid):
+        if self.on != "edit":
+            return FakeMessage(mid)
+
+        async def refuse(**kw):
+            raise self._forbidden()
+        return SimpleNamespace(id=mid, edit=refuse)
+
+
+class BlindBot:
+    """A bot that cannot resolve the channel at all."""
+    def get_channel(self, _):
+        return None
+
+
+NOW = datetime(2026, 7, 25, 12, tzinfo=UTC)
+
+
+class TestRefusalNamesThePermission:
+    """The board's half of the 2026-09-02 support thread.
+
+    ``refresh`` reported one word — ``"failed"`` — and the log said "No
+    permission to post the live board". Three permissions produce exactly that
+    and only one was missing, so the answer had to be guessed at over Discord.
+    """
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def _refresh(self, bot, c):
+        outcome = {}
+        status, _ = self._run(live_board.refresh(bot, c, now_utc=NOW,
+                                                 outcome=outcome))
+        return status, outcome
+
+    def test_a_refused_post_carries_the_missing_permission_out(self, wired, monkeypatch):
+        channel = RefusedChannel(view_channel=True, send_messages=True)
+        monkeypatch.setattr(wired.bot, "_c", channel)
+        status, outcome = self._refresh(wired.bot, attach_persistence(club(), wired.state))
+
+        assert status == "failed"
+        assert outcome["missing"] == ["Embed Links"]
+        assert outcome["code"] == 50013
+        assert outcome["channel"] is channel
+
+    def test_that_outcome_renders_as_advice(self, wired, monkeypatch):
+        """End to end: what the club is told is what Discord actually refused."""
+        from utils.permissions import post_forbidden_advice
+        monkeypatch.setattr(wired.bot, "_c",
+                            RefusedChannel(view_channel=True, send_messages=True))
+        _, outcome = self._refresh(wired.bot, attach_persistence(club(), wired.state))
+        assert "**Embed Links**" in post_forbidden_advice(
+            outcome, outcome.get("channel"), what="the board")
+
+    def test_a_refused_edit_is_not_reported_as_edited(self, wired, monkeypatch):
+        """The bug behind "Board edited in place." on a board that had not
+        changed since yesterday: ``_edit_existing`` returned True for "don't
+        repost", and the caller read True as "edited"."""
+        monkeypatch.setattr(wired.bot, "_c", RefusedChannel(on="edit",
+                                                            view_channel=True))
+        c = attach_persistence(
+            club(live_board_message_id=1001, live_board_day=date(2026, 7, 25)),
+            wired.state)
+        status, outcome = self._refresh(wired.bot, c)
+
+        assert status == "failed"
+        assert outcome["status"] == "forbidden"
+
+    def test_a_refused_edit_does_not_leave_a_second_board(self, wired, monkeypatch):
+        """Reposting after a refusal would either be refused in turn or leave two
+        boards for the same day."""
+        channel = RefusedChannel(on="edit", view_channel=True)
+        monkeypatch.setattr(wired.bot, "_c", channel)
+        c = attach_persistence(
+            club(live_board_message_id=1001, live_board_day=date(2026, 7, 25)),
+            wired.state)
+        self._refresh(wired.bot, c)
+        assert channel.posted == []
+
+    def test_an_uncached_channel_says_so_rather_than_claiming_success(self, wired):
+        c = attach_persistence(
+            club(live_board_message_id=1001, live_board_day=date(2026, 7, 25)),
+            wired.state)
+        status, outcome = self._refresh(BlindBot(), c)
+
+        assert status == "failed"
+        assert outcome["status"] == "not_cached"
+
+    def test_the_hourly_tick_still_needs_no_outcome(self, wired, monkeypatch):
+        """Nothing reads the diagnosis on the scheduled path, and a refusal there
+        must stay a logged line rather than an exception."""
+        monkeypatch.setattr(wired.bot, "_c", RefusedChannel(view_channel=True))
+        c = attach_persistence(club(), wired.state)
+        assert self._run(live_board.update_club(wired.bot, c, now_utc=NOW)) == "failed"

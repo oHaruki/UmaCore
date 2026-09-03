@@ -20,8 +20,14 @@ from services import (
 from services.tally_renderer import generate_tally_image
 from utils.timezone_helper import resolve_timezone
 from utils.jst_calendar import ROLLOVER_UTC_HOUR
+from utils.permissions import (
+    post_requirements, missing_channel_permissions, timeout_note,
+    describe_channel_access, describe_channel_overwrites,
+    resolution_fingerprint,
+)
 from services.backup_service import create_backup, find_pg_dump
 from services.live_board import refresh as refresh_live_board
+from services.health_monitor import health
 from services import channel_names
 from config.settings import (
     USE_UMAMOE_API, SCRAPE_ROLLOVER_GRACE_SEC, SCRAPE_MAX_FRESHNESS_RETRIES,
@@ -31,6 +37,93 @@ from config.settings import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _send(channel, club_name: str, purpose: str, *,
+                files: bool = False, **kwargs) -> bool:
+    """Post into a club's channel, treating a refusal as a diagnosis, not a crash.
+
+    Every send in the daily check used to go out bare. A channel the bot could
+    not post in therefore raised ``Forbidden`` out of the report step into a
+    handler whose own first move was to send an error embed *to the same
+    channel* — which raised again, into the outer handler, which sent a third
+    time. A permission problem consequently surfaced as ``Fatal error in daily
+    check`` with a traceback naming neither the channel nor the permission, and
+    the cause had to be guessed at from Discord instead of read from the log.
+
+    Returns True when the message went out. Callers that were only reporting an
+    error can ignore that; the point is that they no longer bury it.
+    """
+    if channel is None:
+        return False
+    try:
+        await channel.send(**kwargs)
+        return True
+    except discord.Forbidden as e:
+        _log_forbidden(channel, club_name, purpose, e, files=files)
+        return False
+    except discord.HTTPException as e:
+        logger.error(
+            f"❌ Could not post {purpose} for {club_name} in "
+            f"#{getattr(channel, 'id', '?')} — HTTP {e.status}, code {e.code}: {e.text}"
+        )
+        return False
+
+
+def _log_forbidden(channel, club_name: str, purpose: str,
+                   e: discord.Forbidden, *, files: bool = False) -> None:
+    """Name the missing permission in one line where it can be named.
+
+    Mirrors the channel-rename path: a cause we can identify is the whole story
+    and gets a single line, and only a refusal we cannot account for is worth the
+    full kit. Printing the deep diagnostics for the ordinary case buries the
+    answer in four lines of noise.
+    """
+    cid = getattr(channel, 'id', '?')
+    me = getattr(getattr(channel, 'guild', None), 'me', None)
+    needs = post_requirements(channel, files=files)
+    try:
+        lacking = missing_channel_permissions(channel, me, *needs)
+    except Exception:
+        lacking = None
+
+    if timeout_note(me):
+        logger.error(
+            f"❌ Can't post {purpose} for {club_name} in #{cid} — the bot is timed "
+            f"out in this server, which masks every permission until it is lifted"
+        )
+        return
+
+    if lacking:
+        logger.error(
+            f"❌ Can't post {purpose} for {club_name} in #{cid} — missing "
+            f"{', '.join(lacking)}. Edit Channel → Permissions → add the bot → "
+            f"allow {', '.join(lacking)}"
+        )
+        return
+
+    # Everything we need reads as granted and Discord refused anyway. Nothing
+    # here is inferable from the symptom, so this is the case that earns the
+    # whole kit — including how the permission set was resolved, which is what
+    # tells a user-installed app apart from a misconfigured channel.
+    #
+    # Guarded as a whole: this runs inside a failure handler, so it must not
+    # produce a second failure. A diagnostic that raises would put the caller
+    # right back where it started — a Forbidden escaping the report step — which
+    # is the bug this function exists to end.
+    try:
+        logger.error(
+            f"❌ Unexplained refusal posting {purpose} for {club_name} in #{cid} — "
+            f"HTTP {e.status}, code {e.code}: {e.text} · "
+            f"{describe_channel_access(channel, me, *needs)}"
+        )
+        logger.error(f"   overwrites on {cid} — {describe_channel_overwrites(channel, me, *needs)}")
+        logger.error(f"   how {cid} resolved — {resolution_fingerprint(channel, me)}")
+    except Exception as diag_err:
+        logger.error(
+            f"❌ Refused posting {purpose} for {club_name} in #{cid} "
+            f"(HTTP {e.status}, code {e.code}) and the diagnostics failed too: {diag_err}"
+        )
 
 
 class BotTasks:
@@ -70,6 +163,7 @@ class BotTasks:
         self.scheduler.start()
         self.scrape_tick.start()
         self.live_board_tick.start()
+        self.health_tick.start()
         if DB_BACKUP_ENABLED:
             self.daily_backup.change_interval(time=self._backup_time)
             self.daily_backup.start()
@@ -95,6 +189,7 @@ class BotTasks:
         """Stop all scheduled tasks"""
         self.scrape_tick.cancel()
         self.live_board_tick.cancel()
+        self.health_tick.cancel()
         if self.daily_backup.is_running():
             self.daily_backup.cancel()
         self.scheduler.stop()
@@ -114,11 +209,36 @@ class BotTasks:
             keep=DB_BACKUP_KEEP,
             timeout_sec=DB_BACKUP_TIMEOUT_SEC,
         )
+        health.record("backup", result.ok)
         if not result.ok:
             logger.error(f"❌ Daily DB backup failed: {result.error}")
 
     @daily_backup.before_loop
     async def before_daily_backup(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=1)
+    async def health_tick(self):
+        """Re-evaluate component health and announce anything that changed.
+
+        Deliberately its own loop rather than a step inside the others: the
+        thing it most needs to detect is one of those loops having stopped, and
+        a check that rides along with them stops when they do.
+
+        Nothing here can catch this loop dying, or the process exiting. That is
+        the external prober's half of the job — see ``/health``.
+        """
+        try:
+            await health.sweep()
+        except Exception as e:
+            logger.error(f"health_tick failed: {e}", exc_info=True)
+
+        # After the sweep and outside its try: a sweep that failed is all the
+        # more reason to let the outside world know this process is still here.
+        await health.ping()
+
+    @health_tick.before_loop
+    async def before_health_tick(self):
         await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=1)
@@ -136,6 +256,7 @@ class BotTasks:
         fetch. A club that only wants renamed channels is polled here too — it
         needs the live data just as much, it simply has no message to post.
         """
+        health.beat("live_board_tick")
         now_utc = datetime.now(timezone.utc)
 
         try:
@@ -206,6 +327,7 @@ class BotTasks:
         Enqueueing (not running) lets the scheduler release clubs in rank order
         and stagger the 17:00 default clump across the rollout window.
         """
+        health.beat("scrape_tick")
         now_utc = datetime.now(timezone.utc)
 
         try:
@@ -357,7 +479,8 @@ class BotTasks:
                             f"2. Search for **{club.club_name}**\n"
                             f"3. Copy the number from the URL"
                         )
-                        await report_channel.send(embed=error_embed)
+                        await _send(report_channel, club.club_name,
+                                    "the missing-circle-ID notice", embed=error_embed)
                         return "failed"
 
                     if not club.is_circle_id_valid():
@@ -366,7 +489,8 @@ class BotTasks:
                             club.club_name,
                             club.get_circle_id_help_message()
                         )
-                        await report_channel.send(embed=error_embed)
+                        await _send(report_channel, club.club_name,
+                                    "the invalid-circle-ID notice", embed=error_embed)
                         return "failed"
 
                     scraper = UmaMoeAPIScraper(club.circle_id)
@@ -420,7 +544,8 @@ class BotTasks:
                             "after several retries. This is usually temporary.\n\n"
                             f"Run `/force_check club:{club.club_name}` in a bit to retry manually."
                         )
-                        await report_channel.send(embed=error_embed)
+                        await _send(report_channel, club.club_name,
+                                    "the data-not-ready notice", embed=error_embed)
                     return "stale"
 
                 # STEP 3: Handle scraping failure
@@ -442,10 +567,14 @@ class BotTasks:
                     logger.error(f"Scraping failed for {club.club_name}: {error_msg}")
 
                     error_embed = self.report_generator.create_error_report(club.club_name, error_msg)
-                    await report_channel.send(embed=error_embed)
-                    await report_channel.send(
-                        f"⚠️ **Manual intervention required for {club.club_name}!**\n"
-                        f"Administrators can run `/force_check club:{club.club_name}` to retry manually."
+                    await _send(report_channel, club.club_name,
+                                "the scrape-failure notice", embed=error_embed)
+                    await _send(
+                        report_channel, club.club_name, "the manual-intervention notice",
+                        content=(
+                            f"⚠️ **Manual intervention required for {club.club_name}!**\n"
+                            f"Administrators can run `/force_check club:{club.club_name}` to retry manually."
+                        ),
                     )
                     return "failed"
 
@@ -524,7 +653,8 @@ class BotTasks:
                         club.club_name,
                         f"Data processing failed: {str(e)}"
                     )
-                    await report_channel.send(embed=error_embed)
+                    await _send(report_channel, club.club_name,
+                                "the data-processing error", embed=error_embed)
                     return "failed"
 
                 # STEP 5: Bomb management
@@ -601,25 +731,39 @@ class BotTasks:
                     if club.image_report_enabled:
                         monthly_rank = rank_data.get("monthly_rank") if rank_data else None
                         img_path = None
+                        sent = False
                         try:
                             img_path = await generate_tally_image(
                                 club.club_id, club.club_name, current_date,
                                 daily_quota=effective_quota, monthly_rank=monthly_rank,
                             )
-                            await report_channel.send(file=discord.File(str(img_path), filename="quota_report.png"))
-                            logger.info(f"✅ Tally image report sent for {club.club_name}")
+                            sent = await _send(
+                                report_channel, club.club_name, "the tally image report",
+                                files=True,
+                                file=discord.File(str(img_path), filename="quota_report.png"),
+                            )
+                            if sent:
+                                logger.info(f"✅ Tally image report sent for {club.club_name}")
                         except Exception as img_err:
-                            logger.error(f"❌ Tally image failed for {club.club_name}, falling back to embeds: {img_err}", exc_info=True)
+                            logger.error(f"❌ Tally image failed for {club.club_name}: {img_err}", exc_info=True)
+                        finally:
+                            if img_path and img_path.exists():
+                                os.unlink(img_path)
+
+                        # Falls back for a failed render and a refused upload
+                        # alike. Attach Files can be missing on a channel that
+                        # takes embeds perfectly well, and that reads as a broken
+                        # report rather than as one missing permission.
+                        if not sent:
+                            logger.info(f"Falling back to embed report for {club.club_name}")
                             daily_reports = self.report_generator.create_daily_report(
                                 club.club_name, effective_quota, status_summary, bombs_data, current_date,
                                 rank_data=rank_data, quota_period=club.quota_period,
                                 club_timezone=club.timezone,
                             )
                             for embed in daily_reports:
-                                await report_channel.send(embed=embed)
-                        finally:
-                            if img_path and img_path.exists():
-                                os.unlink(img_path)
+                                await _send(report_channel, club.club_name,
+                                            "the daily report", embed=embed)
                     else:
                         daily_reports = self.report_generator.create_daily_report(
                             club.club_name, effective_quota, status_summary, bombs_data, current_date,
@@ -627,7 +771,8 @@ class BotTasks:
                             club_timezone=club.timezone,
                         )
                         for embed in daily_reports:
-                            await report_channel.send(embed=embed)
+                            await _send(report_channel, club.club_name,
+                                        "the daily report", embed=embed)
                         logger.info(f"✅ Daily report sent for {club.club_name} ({len(daily_reports)} embed(s))")
 
                     if deactivated_bombs:
@@ -635,7 +780,8 @@ class BotTasks:
                             club.club_name, deactivated_bombs
                         )
                         for embed in deactivation_embeds:
-                            await report_channel.send(embed=embed)
+                            await _send(report_channel, club.club_name,
+                                        "the bomb deactivation report", embed=embed)
                         logger.info(f"✅ Bomb deactivation report sent for {club.club_name} ({len(deactivated_bombs)} member(s))")
 
                 except Exception as e:
@@ -644,7 +790,8 @@ class BotTasks:
                         club.club_name,
                         f"Failed to generate daily report: {str(e)}"
                     )
-                    await report_channel.send(embed=error_embed)
+                    await _send(report_channel, club.club_name,
+                                "the report-failure notice", embed=error_embed)
 
                 # STEP 8: Send alerts to alert channel
                 try:
@@ -655,12 +802,14 @@ class BotTasks:
                             bomb_data.append({'bomb': bomb, 'member': member})
 
                         for embed in self.report_generator.create_bomb_activation_alert(club.club_name, bomb_data):
-                            await alert_channel.send(embed=embed)
+                            await _send(alert_channel, club.club_name,
+                                        "the bomb activation alert", embed=embed)
                         logger.info(f"💣 Sent bomb activation alert for {club.club_name} ({len(bomb_data)} member(s))")
 
                     if members_to_kick:
                         for embed in self.report_generator.create_kick_alert(club.club_name, members_to_kick):
-                            await alert_channel.send(embed=embed)
+                            await _send(alert_channel, club.club_name,
+                                        "the kick alert", embed=embed)
                         logger.info(f"🚨 Sent kick alert for {club.club_name} ({len(members_to_kick)} member(s))")
 
                 except Exception as e:
@@ -688,7 +837,8 @@ class BotTasks:
                         club.club_name,
                         f"Fatal error during daily check: {str(e)}"
                     )
-                    await report_channel.send(embed=error_embed)
+                    await _send(report_channel, club.club_name,
+                                "the fatal-error notice", embed=error_embed)
             except Exception:
                 pass
 
