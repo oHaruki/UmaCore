@@ -27,6 +27,7 @@ _PERMISSION_LABELS = {
     'view_channel': 'View Channel',
     'send_messages': 'Send Messages',
     'embed_links': 'Embed Links',
+    'attach_files': 'Attach Files',
     'manage_messages': 'Manage Messages',
     'read_message_history': 'Read Message History',
 }
@@ -56,6 +57,111 @@ def rename_requirements(channel) -> tuple:
     if kind in voice:
         return ('view_channel', 'connect', 'manage_channels')
     return ('view_channel', 'manage_channels')
+
+
+def post_requirements(channel, *, files: bool = False) -> tuple:
+    """What the bot needs in order to post a report into ``channel``.
+
+    **Embed Links** belongs here rather than being discovered at send time. The
+    daily report and the live board are entirely embeds, and without that
+    permission Discord refuses the message outright — a refusal indistinguishable
+    from not being able to speak in the channel at all, which is how it gets
+    misdiagnosed.
+
+    ``files=True`` adds **Attach Files**, which a club on the image report needs
+    and a club on the embed report does not.
+
+    Note what is *not* required: none of this is needed to answer a slash command.
+    An interaction is replied to with its own token rather than as a message in
+    the channel, so ``/my_status`` works in a channel where the bot holds nothing
+    at all — which makes a working command no evidence that a report can be
+    posted. Measured 2026-09-02 on channel 1542974943682232380, where exactly
+    that reading sent the diagnosis down the wrong path twice.
+    """
+    needs = ['view_channel', 'send_messages', 'embed_links']
+    if files:
+        needs.append('attach_files')
+    return tuple(needs)
+
+
+# The fix in almost every case, in the words of the buttons someone has to
+# click. Channel permissions are applied on top of the server-wide ones, so a
+# private channel — one that denies @everyone — removes them again for anyone
+# not named on the channel itself. Granting the bot a permission server-wide
+# therefore does nothing there. Administrator hides this entirely, since it
+# bypasses overwrites, which is why it only shows up on a normal setup.
+ADD_ME = "**Edit Channel → Permissions → add UmaCore →** allow "
+
+
+def post_forbidden_advice(result: dict, channel=None, *,
+                          what: str = "the report") -> str:
+    """One or two lines saying what to click, for a refused *post*.
+
+    Lives here rather than in one command module because every surface that
+    posts on a club's behalf fails the same way and has to say the same thing:
+    the report channel, the alert channel and the live board are three commands
+    across two files, and three separate phrasings of this would drift apart as
+    fast as they were written.
+
+    Leads with the permission we resolve as missing rather than with Discord's
+    error code. A refused post comes back as ``50013`` whether the bot cannot
+    speak in the channel or merely cannot embed in it, so the code names the
+    wrong thing about as often as the right one — and the message this replaced
+    named nothing at all, which cost a club two evenings on **Embed Links**
+    while everyone reasoned about Send Messages instead.
+
+    ``result`` is the outcome dict a refused send returns:
+
+    ``missing``  what we resolve as absent, ``[]`` for nothing, or ``None`` when
+                 the cache gave no trustworthy answer (see
+                 :func:`missing_channel_permissions`). The three cases need
+                 three different things said; collapsing them is how "everything
+                 looks granted" gets printed over a cache that was never read.
+    ``timeout``  set when the bot itself is timed out, which counterfeits a
+                 permission problem exactly and so is ruled out first.
+    ``code``     Discord's error code, kept for the case we cannot explain.
+
+    ``what`` names the thing that could not be posted, so the Embed Links line
+    reads as the reason this particular feature is silent. Callers pass it
+    singular or plural — "the board", "daily reports" — so the sentences here
+    take it as an object and never as a subject needing a verb agreed with it.
+    """
+    where = getattr(channel, 'mention', None) or "that channel"
+
+    if result.get("timeout"):
+        return ("I'm **timed out** in this server, so nothing I'm granted works "
+                "until that's lifted. Remove it from me in the member list.")
+
+    missing = result.get("missing")
+
+    if missing and "View Channel" in missing:
+        return (f"I can't see {where} at all.\n"
+                f"Server-wide permissions don't reach a private channel — I have "
+                f"to be added to the channel itself.\n"
+                f"{ADD_ME}**View Channel**, **Send Messages** and **Embed Links**.")
+
+    if missing == ["Embed Links"]:
+        return (f"I can talk in {where} but I'm not allowed to post **embeds** "
+                f"there — and I send {what} as embeds, so Discord rejects the "
+                f"whole message.\n"
+                f"{ADD_ME}**Embed Links**.\n"
+                f"It's a separate permission from Send Messages, which is why my "
+                f"slash commands still answer in there.")
+
+    if missing:
+        return (f"I can see {where} but can't post {what} there.\n"
+                f"{ADD_ME}**{'**, **'.join(missing)}**.")
+
+    if missing is None:
+        return (f"Discord refused (code `{result.get('code')}`) and I can't read my "
+                f"own permissions in {where} to say which one is missing.\n"
+                f"{ADD_ME}**View Channel**, **Send Messages** and **Embed Links**.")
+
+    return (f"Discord refused (code `{result.get('code')}`) and everything I need "
+            f"in {where} looks granted.\n"
+            f"If I'm here as a **user-installed app** rather than invited as a bot, "
+            f"my slash commands work but I can't post on my own — re-invite me with "
+            f"the bot scope. The log has the full breakdown.")
 
 
 def missing_channel_permissions(channel, me, *names: str) -> Optional[List[str]]:

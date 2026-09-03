@@ -24,9 +24,42 @@ from config.settings import (
 from utils.rate_limiter import umamoe_limiter, PRIORITY_INTERACTIVE
 from utils.timezone_helper import resolve_timezone
 from utils.audit import log_audit
-from utils.permissions import ensure_can_manage, missing_channel_permissions
+from utils.permissions import (
+    ensure_can_manage, missing_channel_permissions, post_requirements,
+    post_forbidden_advice, ADD_ME,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _board_failure_advice(outcome: dict, channel) -> str:
+    """Why the live board couldn't be posted, in terms of what to change.
+
+    ``live_board.refresh`` reports one word, ``"failed"``, for four different
+    situations, and the reply used to guess between them out loud: "most likely
+    the bot lacks permission … check the logs for the exact error." Nobody
+    setting up a Discord bot has the host's logs, so that sentence ends the
+    conversation in the one place it should have started it. The outcome dict now
+    carries the exact error; this turns it back into a sentence.
+    """
+    status = outcome.get("status")
+
+    if status == "forbidden":
+        return post_forbidden_advice(outcome, channel, what="the board")
+
+    if status == "not_cached":
+        where = getattr(channel, 'mention', None) or "that channel"
+        return (f"I can't see {where} at all — it isn't in my cache, which usually "
+                f"means I was never added to it.\n"
+                f"{ADD_ME}**View Channel**, **Send Messages** and **Embed Links**.")
+
+    if status == "http_error":
+        return (f"Discord returned an error: "
+                f"`{outcome.get('code')} {outcome.get('detail') or 'unknown'}`.\n"
+                f"It retries every hour.")
+
+    return ("Uma.moe returned data, so this is a Discord-side problem. It retries "
+            "every hour.")
 
 
 class AdminCommands(commands.Cog):
@@ -1170,8 +1203,7 @@ class AdminCommands(commands.Cog):
         # so refusing on it would block a server whose permissions are correct.
         # The post below is what actually settles it.
         missing = missing_channel_permissions(
-            channel, interaction.guild.me,
-            'view_channel', 'send_messages', 'embed_links',
+            channel, interaction.guild.me, *post_requirements(channel),
         )
 
         await club_obj.set_live_board(channel.id)
@@ -1180,7 +1212,8 @@ class AdminCommands(commands.Cog):
         # gate this is what tells the user whether it works — an hour of silence
         # is a worse answer than a wrong refusal was.
         from services.live_board import refresh as refresh_board
-        status, _ = await refresh_board(self.bot, club_obj)
+        outcome: dict = {}
+        status, _ = await refresh_board(self.bot, club_obj, outcome=outcome)
 
         embed = discord.Embed(
             title="✅ Live board enabled",
@@ -1203,16 +1236,10 @@ class AdminCommands(commands.Cog):
 
         if status == "failed":
             embed.colour = COLOR_BEHIND
+            embed.title = "⚠️ Saved, but I couldn't post the first board"
             embed.add_field(
-                name="⚠️ Couldn't post the first board",
-                value=(
-                    f"Saved, and it retries every hour.\n"
-                    f"I need **View Channel**, **Send Messages** and **Embed Links** "
-                    f"on {channel.mention}.\n"
-                    f"**Edit Channel → Permissions → add UmaCore →** allow them there "
-                    f"— server-wide permissions don't reach a channel that denies "
-                    f"@everyone."
-                ),
+                name="How to fix it",
+                value=_board_failure_advice(outcome, channel),
                 inline=False,
             )
         elif status == "no_data":
@@ -1223,7 +1250,7 @@ class AdminCommands(commands.Cog):
         else:
             embed.set_footer(text="First board posted.")
 
-        if missing and status != "posted":
+        if missing and status not in ("posted", "failed"):
             embed.add_field(
                 name="Heads up",
                 value=(f"I may also be missing **{', '.join(missing)}** in "
@@ -1269,11 +1296,12 @@ class AdminCommands(commands.Cog):
             )
             return
 
-        from services.live_board import update_club as refresh_board
+        from services.live_board import refresh as refresh_board
         from utils.jst_calendar import resolve_live
 
         target = resolve_live()
-        status = await refresh_board(self.bot, club_obj)
+        outcome: dict = {}
+        status, _ = await refresh_board(self.bot, club_obj, outcome=outcome)
 
         if status == "no_data":
             embed = discord.Embed(
@@ -1292,12 +1320,22 @@ class AdminCommands(commands.Cog):
             return
 
         if status == "failed":
-            await interaction.followup.send(
-                f"❌ Couldn't post or edit the board for **{club}**. Uma.moe returned "
-                f"data, so this is a Discord-side problem — most likely the bot lacks "
-                f"permission in <#{club_obj.live_board_channel_id}>. Check the logs "
-                f"for the exact error."
+            # The channel the send was actually attempted on, so the advice names
+            # the one Discord refused rather than one looked up again here.
+            board_channel = (outcome.get("channel")
+                             or self.bot.get_channel(club_obj.live_board_channel_id))
+            embed = discord.Embed(
+                title=f"⚠️ Couldn't update the board - {club}",
+                description=("Uma.moe returned data, so the numbers are fine — "
+                             "Discord wouldn't take the message."),
+                colour=COLOR_BEHIND,
             )
+            embed.add_field(
+                name="How to fix it",
+                value=_board_failure_advice(outcome, board_channel),
+                inline=False,
+            )
+            await interaction.followup.send(embed=embed)
             return
 
         action = "Board edited in place." if status == "edited" else "Posted a new board."

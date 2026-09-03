@@ -16,7 +16,7 @@ from utils import permissions
 from utils.permissions import (
     is_admin, is_full_manager, missing_channel_permissions, can_use_channel,
     describe_channel_overwrites, timeout_note, describe_channel_access,
-    resolution_fingerprint,
+    resolution_fingerprint, post_requirements, post_forbidden_advice,
 )
 
 GUILD = 1426560692932317186
@@ -416,3 +416,99 @@ class TestVoiceNeedsConnect:
     def test_an_unknown_channel_shape_falls_back_to_the_text_set(self):
         from utils.permissions import rename_requirements
         assert rename_requirements(SimpleNamespace()) == ('view_channel', 'manage_channels')
+
+
+class TestPostRequirements:
+    """What a post needs, as opposed to what a rename needs."""
+
+    def test_embed_links_is_required_up_front(self):
+        """Not discovered at send time. The reports are entirely embeds, so
+        without it Discord refuses the whole message — and the refusal is
+        indistinguishable from not being able to speak in the channel."""
+        assert 'embed_links' in post_requirements(SimpleNamespace())
+
+    def test_attach_files_only_for_the_image_report(self):
+        plain = SimpleNamespace()
+        assert 'attach_files' not in post_requirements(plain)
+        assert 'attach_files' in post_requirements(plain, files=True)
+
+    def test_does_not_ask_for_manage_channel(self):
+        """The rename permission. Naming it here would send someone to grant a
+        permission that has nothing to do with why the report is silent."""
+        assert 'manage_channels' not in post_requirements(SimpleNamespace())
+
+
+class TestPostForbiddenAdvice:
+    """The message a club reads when its report never arrives.
+
+    2026-09-02, channel 1542974943682232380: a club's daily report was silent for
+    two evenings. ``/my_status`` answered normally in the same channel — an
+    interaction is replied to on its own token and needs no channel permission at
+    all — so a working command was taken as proof the bot could post, and the
+    diagnosis went to Send Messages, then to View Channel. It was **Embed Links**.
+    The bot's own error named none of the three.
+    """
+
+    def channel(self):
+        return SimpleNamespace(mention="<#1542974943682232380>")
+
+    def test_names_embed_links_and_says_where_to_click(self):
+        out = post_forbidden_advice({"missing": ["Embed Links"], "code": 50013},
+                                    self.channel())
+        assert "**Embed Links**" in out
+        assert permissions.ADD_ME in out
+
+    def test_explains_why_a_working_slash_command_proved_nothing(self):
+        """The reason the wrong answer was believed twice."""
+        out = post_forbidden_advice({"missing": ["Embed Links"], "code": 50013},
+                                    self.channel())
+        assert "separate permission" in out
+        assert "slash commands" in out
+
+    def test_names_the_feature_that_is_silent(self):
+        """And reads for a plural one too: three commands pass three phrasings."""
+        assert "I send the board as embeds" in post_forbidden_advice(
+            {"missing": ["Embed Links"]}, self.channel(), what="the board")
+        assert "I send daily reports as embeds" in post_forbidden_advice(
+            {"missing": ["Embed Links"]}, self.channel(), what="daily reports")
+
+    def test_an_invisible_channel_is_told_apart_from_a_mute_one(self):
+        out = post_forbidden_advice(
+            {"missing": ["View Channel", "Send Messages", "Embed Links"]},
+            self.channel())
+        assert "can't see" in out
+        assert "private channel" in out
+
+    def test_lists_every_missing_permission_when_there_are_several(self):
+        out = post_forbidden_advice(
+            {"missing": ["Send Messages", "Embed Links"]}, self.channel())
+        assert "**Send Messages**, **Embed Links**" in out
+
+    def test_a_timeout_is_ruled_out_before_any_permission(self):
+        """A timed-out bot keeps only View Channel and Read Message History, so
+        every other permission reads as missing no matter what is granted.
+        Advising a channel edit here sends someone to fix correct settings."""
+        out = post_forbidden_advice(
+            {"missing": ["Send Messages", "Embed Links"], "timeout": "timed out"},
+            self.channel())
+        assert "timed out" in out
+        assert permissions.ADD_ME not in out
+
+    def test_an_unreadable_cache_is_not_reported_as_all_granted(self):
+        """``None`` means we could not tell, which is a different sentence from
+        ``[]``. Collapsing them prints "everything looks granted" over a cache
+        that was never successfully read."""
+        out = post_forbidden_advice({"missing": None, "code": 50013}, self.channel())
+        assert "looks granted" not in out
+        assert "can't read my own permissions" in out
+
+    def test_everything_granted_points_at_the_install_instead(self):
+        """A user-installed app answers slash commands and cannot post at all,
+        which is the one refusal no channel edit fixes."""
+        out = post_forbidden_advice({"missing": [], "code": 50013}, self.channel())
+        assert "user-installed app" in out
+
+    def test_reads_without_a_channel_object(self):
+        """``/live_refresh`` may only hold an id whose channel isn't cached."""
+        out = post_forbidden_advice({"missing": ["Embed Links"]}, None)
+        assert "that channel" in out
