@@ -102,7 +102,10 @@ async def _backfill_month(club: Club, scraped_data: dict, fetched_year: int, fet
 
         consecutive_behind = 0
 
-        for i in range(join_day, len(fans)):
+        # ``max(1, ...)`` because join_day is JOINED_BEFORE_MONTH (0) for a
+        # member who predates the month, and index 0 is the previous month's
+        # baseline rather than a competition day of this one.
+        for i in range(max(1, join_day), len(fans)):
             comp_fans = fans[i]
             if comp_fans == 0:
                 consecutive_behind = 0

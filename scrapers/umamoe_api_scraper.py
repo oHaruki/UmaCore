@@ -31,6 +31,11 @@ from utils.jst_calendar import (
 
 logger = logging.getLogger(__name__)
 
+# ``join_day`` sentinel: the member was already in the circle when this month
+# opened, so they did not join during it and no day of it is their join day.
+# Distinct from day 1 — see :meth:`UmaMoeAPIScraper._detect_baseline`.
+JOINED_BEFORE_MONTH = 0
+
 
 @dataclass
 class CircleMeta:
@@ -568,12 +573,10 @@ class UmaMoeAPIScraper(BaseScraper):
     def _detect_baseline(lifetime_fans: List[int], slot: int) -> Tuple[int, int]:
         """Return ``(join_day, starting_lifetime_fans)`` for a member.
 
-        Transferred members carry their pre-existing career total into the array,
-        so it can be flat and positive from day 1 rather than starting at 0 — the
-        first positive day is just their old total, not when they joined. If that
-        value never changes across the whole window, there's no evidence of
-        progress since then (an active member would show growth), so treat them as
-        having joined today rather than back-charging quota for unconfirmed days.
+        ``join_day`` is a competition day of the month being read, or
+        :data:`JOINED_BEFORE_MONTH` when the member predates the month entirely.
+        Callers must treat that sentinel as "no join day in this month" rather
+        than as day 0 or day 1.
         """
         window = lifetime_fans[:slot + 1]
         baseline_idx = next((i for i, f in enumerate(window) if f > 0), None)
@@ -582,12 +585,32 @@ class UmaMoeAPIScraper(BaseScraper):
             return max(1, slot), 0
 
         baseline = window[baseline_idx]
-        fully_flat = all(f == baseline for f in window[baseline_idx:])
+
+        # Slot 0 holds the total at the *previous* month's close, so a positive
+        # value there is proof the member was already in the circle before this
+        # month began. Report that, rather than folding it into day 1: the two
+        # need opposite quota treatment. A day-1 joiner's baseline sits on day 1
+        # and their gain that day is 0, so the day is rightly exempt; a
+        # continuing member's baseline sits on slot 0 and day 1 is an ordinary
+        # earning day. Collapsing them under ``max(1, baseline_idx)`` waived a
+        # real day of quota for every established member, and let /recalculate
+        # stamp them all with the 1st as a join date.
+        if baseline_idx == 0:
+            return JOINED_BEFORE_MONTH, baseline
+
+        # Arrived mid-month. Transferred members carry their pre-existing career
+        # total into the array, so it can be positive from their first slot — that
+        # value is their old total, not a gain. If it never changes across the
+        # window there is no evidence of progress since (an active member would
+        # show growth), so treat them as having joined today rather than
+        # back-charging quota for unconfirmed days. This cannot apply to a
+        # continuing member: the branch above already returned.
+        if all(f == baseline for f in window[baseline_idx:]):
+            return slot, baseline
+
         # The slot index IS the competition day, so a member first seen at slot D
-        # joined on day D. Slot 0 is the month's baseline rather than a raceable
-        # day, so anyone present there counts as joining on day 1.
-        join_day = slot if fully_flat else max(1, baseline_idx)
-        return join_day, baseline
+        # joined on day D.
+        return baseline_idx, baseline
 
     # --------------------------------------------------------------- getters
 

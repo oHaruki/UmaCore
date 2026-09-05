@@ -10,6 +10,7 @@ import math
 
 from models import Member, QuotaHistory, QuotaRequirement, Bomb, Club
 from models.quota_requirement import QuotaSchedule
+from scrapers.umamoe_api_scraper import JOINED_BEFORE_MONTH
 from config.database import db
 
 logger = logging.getLogger(__name__)
@@ -213,8 +214,15 @@ class QuotaCalculator:
                 # detected_join_day is the day number in the scraped month (data_date.month)
                 # Check if it's a valid day in that month
                 last_day_of_month = calendar.monthrange(data_date.year, data_date.month)[1]
-                
-                if 1 <= detected_join_day <= last_day_of_month:
+
+                if detected_join_day == JOINED_BEFORE_MONTH:
+                    # Already in the circle when this month opened, so no day of it
+                    # is their join day. We know they predate it but not by how
+                    # much; the last day of the previous month is exactly what the
+                    # evidence (a populated slot 0) supports, and it keeps the date
+                    # outside this month, which is all the quota path asks.
+                    join_date = date(data_date.year, data_date.month, 1) - timedelta(days=1)
+                elif 1 <= detected_join_day <= last_day_of_month:
                     # Join day is within the current month being processed
                     join_date = date(data_date.year, data_date.month, detected_join_day)
                 else:
