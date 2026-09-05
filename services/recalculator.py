@@ -21,13 +21,13 @@ What it does, in order:
 import calendar
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from config.database import db
 from models import Bomb, Club, Member
 from models.quota_requirement import QuotaSchedule
-from scrapers.umamoe_api_scraper import UmaMoeAPIScraper
+from scrapers.umamoe_api_scraper import JOINED_BEFORE_MONTH, UmaMoeAPIScraper
 from services.bomb_manager import BombManager
 from services.quota_calculator import QuotaCalculator
 from utils.rate_limiter import PRIORITY_INTERACTIVE
@@ -64,6 +64,24 @@ def _resolve_join_date(join_day: int, ref: date) -> date:
     return date(ref.year, ref.month - 1, join_day)
 
 
+async def _join_date_before(member: Member, month_start: date) -> date:
+    """A defensible join date for a member proven to predate ``month_start``.
+
+    Slot 0 says they were in the circle at the previous month's close, not when
+    they actually joined — and nothing in the quota path needs finer than that,
+    since every consumer only asks whether the date falls inside the current
+    month. ``members.created_at`` is the closest record of first contact we hold
+    and, unlike ``quota_history``, it survives ``/reset_month``. Fall back to the
+    last day of the previous month, which is precisely what slot 0 evidences.
+    """
+    fallback = month_start - timedelta(days=1)
+    created = await db.fetchval(
+        "SELECT created_at::date FROM members WHERE member_id = $1",
+        member.member_id,
+    )
+    return min(created, fallback) if created else fallback
+
+
 async def recalculate_club(club: Club, current_date: date) -> RecalcResult:
     """Repair a club's current-month history from uma.moe. See module docstring."""
     result = RecalcResult()
@@ -97,6 +115,7 @@ async def recalculate_club(club: Club, current_date: date) -> RecalcResult:
     schedule = await QuotaSchedule.load(club.club_id)
     members = await Member.get_all_active(club.club_id)
     by_trainer = {str(m.trainer_id): m for m in members if m.trainer_id}
+    month_start = ref.replace(day=1)
 
     for trainer_id, data in scraped.items():
         member = by_trainer.get(str(trainer_id))
@@ -104,8 +123,26 @@ async def recalculate_club(club: Club, current_date: date) -> RecalcResult:
             continue                       # new to us; a normal scrape will add them
 
         # --- join date -------------------------------------------------------
+        # Only move a join date on evidence. This used to overwrite it
+        # unconditionally from the detected day, and since every established
+        # member reported day 1, one run stamped a whole club with the 1st —
+        # which then waived each of them a real day of quota for the rest of the
+        # month, and re-running the command could not undo it because the
+        # detection kept agreeing with the date it had written.
         join_day = data.get("join_day")
-        if join_day:
+        if join_day == JOINED_BEFORE_MONTH:
+            # They were in the circle before this month opened, so nothing in it
+            # is their join day. Step in only where the stored date claims
+            # otherwise — that claim is the damage.
+            if member.join_date >= month_start:
+                restored = await _join_date_before(member, month_start)
+                logger.info(
+                    f"recalculate: {member.trainer_name} was already in the circle "
+                    f"before {month_start}, join_date {member.join_date} → {restored}"
+                )
+                await member.update_join_date(restored)
+                result.join_dates_fixed += 1
+        elif join_day:
             detected = _resolve_join_date(join_day, ref)
             if detected != member.join_date:
                 logger.info(

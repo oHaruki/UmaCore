@@ -614,6 +614,86 @@ class TestRecalculateRepairs:
 
         assert run_db(prepared_db, go).join_dates_fixed > 0
 
+    def test_unstamps_a_continuing_member_stamped_with_the_first(self, prepared_db,
+                                                                 monkeypatch):
+        """Recalculate must undo the month-start stamp, not re-apply it.
+
+        'Steady' has been in the circle since June, so nothing in July is their
+        join day. Recalculate used to overwrite every join date from the detected
+        day, and because an established member reported day 1 it stamped the whole
+        club with the 1st — which handed each of them the join-day quota exemption
+        they had not earned, one full day light for the rest of the month. Worse,
+        the stamp was self-confirming: a second run re-detected day 1, saw the
+        stored date already matched, and reported nothing to fix.
+        """
+        async def go(db):
+            from datetime import datetime, timezone as tz
+            from services.quota_calculator import QuotaCalculator
+            from services.recalculator import recalculate_club
+            from tests.fake_umamoe import FakeUmaMoe, default_roster
+            from tests.test_month_simulation import make_scraper
+
+            backend = FakeUmaMoe(members=default_roster())
+            now = datetime(2026, 7, 20, 17, tzinfo=tz.utc)
+            self._patched(monkeypatch, backend, now)
+
+            club = await _make_club(daily_quota=2_000_000)
+            scraper = make_scraper(backend, now)
+            parsed = await scraper.scrape()
+            await QuotaCalculator().process_scraped_data(
+                club.club_id, parsed, scraper.get_data_date(), scraper.get_current_day())
+
+            # Reproduce the damage exactly as the old code left it.
+            await db.execute(
+                "UPDATE members SET join_date = $2 WHERE club_id = $1 AND trainer_id = $3",
+                club.club_id, date(2026, 7, 1), "1001")
+
+            result = await recalculate_club(club, date(2026, 7, 20))
+            join_date = await db.fetchval(
+                "SELECT join_date FROM members WHERE club_id = $1 AND trainer_id = $2",
+                club.club_id, "1001")
+            expected = await db.fetchval(
+                "SELECT qh.expected_fans FROM quota_history qh JOIN members m "
+                "ON m.member_id = qh.member_id WHERE m.trainer_id = $1 AND qh.date = $2",
+                "1001", date(2026, 7, 19))
+            return result, join_date, expected
+
+        result, join_date, expected = run_db(prepared_db, go)
+        assert result.join_dates_fixed > 0, "the bad stamp was left in place"
+        assert join_date < date(2026, 7, 1),             f"join_date {join_date} still claims they joined during July"
+        # July 1..19 inclusive, every day charged, nothing waived.
+        assert expected == 19 * 2_000_000,             f"expected_fans {expected:,} is not 19 full days"
+
+    def test_leaves_a_correct_join_date_alone(self, prepared_db, monkeypatch):
+        """The other half of "only move a join date on evidence".
+
+        'LateJoin' really did join on July competition day 8, so that date is
+        right and a repair pass must not drag it anywhere.
+        """
+        async def go(db):
+            from datetime import datetime, timezone as tz
+            from services.quota_calculator import QuotaCalculator
+            from services.recalculator import recalculate_club
+            from tests.fake_umamoe import FakeUmaMoe, default_roster
+            from tests.test_month_simulation import make_scraper
+
+            backend = FakeUmaMoe(members=default_roster())
+            now = datetime(2026, 7, 20, 17, tzinfo=tz.utc)
+            self._patched(monkeypatch, backend, now)
+
+            club = await _make_club(daily_quota=2_000_000)
+            scraper = make_scraper(backend, now)
+            parsed = await scraper.scrape()
+            await QuotaCalculator().process_scraped_data(
+                club.club_id, parsed, scraper.get_data_date(), scraper.get_current_day())
+
+            await recalculate_club(club, date(2026, 7, 20))
+            return await db.fetchval(
+                "SELECT join_date FROM members WHERE club_id = $1 AND trainer_id = $2",
+                club.club_id, "1004")
+
+        assert run_db(prepared_db, go) == date(2026, 7, 8)
+
     def test_survives_uma_moe_being_unreachable(self, prepared_db, monkeypatch):
         """Must still recompute deficits and bombs, and say it was partial."""
         async def go(db):

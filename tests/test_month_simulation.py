@@ -12,8 +12,8 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from scrapers.base_scraper import StaleDataError
-from scrapers.umamoe_api_scraper import UmaMoeAPIScraper
-from tests.fake_umamoe import FakeUmaMoe, default_roster, jst_day_of
+from scrapers.umamoe_api_scraper import JOINED_BEFORE_MONTH, UmaMoeAPIScraper
+from tests.fake_umamoe import FakeMember, FakeUmaMoe, default_roster, jst_day_of
 
 UTC = timezone.utc
 
@@ -249,6 +249,45 @@ class TestRosterEdgeCases:
         """
         parsed, _ = self._run(backend, at(2026, 7, 20, 17))
         assert parsed["1004"]["join_day"] == 8
+
+    def test_continuing_member_reports_no_join_day(self, backend):
+        """'Steady' joined June 1, so July is not a month they joined in.
+
+        Their total sits in slot 0 — the June-close baseline — which is proof they
+        predate July. Reporting day 1 here (the old ``max(1, baseline_idx)``) made
+        them indistinguishable from a genuine day-1 joiner, and the quota
+        calculator's join-day exemption then waived a day they had really earned.
+        """
+        parsed, _ = self._run(backend, at(2026, 7, 20, 17))
+        assert parsed["1001"]["join_day"] == JOINED_BEFORE_MONTH
+
+    def test_day_one_joiner_still_reports_day_one(self):
+        """The counterpart: a genuine day-1 joiner keeps its exemption.
+
+        August competition day 1 is JST August *2* — JST August 1 is July's last
+        day, which is why 'BoundaryJoin' (joined JST Aug 1) reads as predating
+        August rather than opening it. This member first races on JST Aug 2, so
+        August's slot 0 is empty for them, and that emptiness is the whole
+        difference from a continuing member. Their gain on day 1 is 0, so waiving
+        its quota costs nothing — which is what the exemption is for.
+        """
+        backend = FakeUmaMoe(members=[
+            FakeMember(2001, "DayOne", 200_000_000, 2_500_000, joined=date(2026, 8, 2)),
+        ])
+        parsed, _ = self._run(backend, at(2026, 8, 5, 17))
+        assert parsed["2001"]["join_day"] == 1
+        assert parsed["2001"]["fans"][1] == 0
+
+    def test_boundary_joiner_predates_the_month_it_appears_in(self, backend):
+        """'BoundaryJoin' first races JST Aug 1 — that is July competition day 31.
+
+        So by the time August's own days begin they are already an established
+        member, their total sits in August's slot 0, and August day 1 is an
+        ordinary earning day for them.
+        """
+        parsed, _ = self._run(backend, at(2026, 8, 3, 17))
+        assert parsed["1007"]["join_day"] == JOINED_BEFORE_MONTH
+        assert parsed["1007"]["fans"][1] > 0
 
     def test_boundary_joiner_appears_in_august(self, backend):
         """'BoundaryJoin' starts Aug 1 — absent in July, present once August is read."""
