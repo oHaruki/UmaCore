@@ -19,7 +19,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from models import Club, TransferRequest
+from models import Club, Member, TransferRequest, UserLink
 from services import transfers as transfer_service
 from utils.audit import log_audit
 from utils.permissions import can_manage_club
@@ -306,15 +306,18 @@ class TransferCommands(commands.Cog):
     )
     @app_commands.describe(
         club="The club you want to transfer into",
-        trainer_name="Your in-game trainer name",
-        trainer_id="Your in-game trainer ID",
-        from_club="The club you're leaving (optional)",
         note="Anything the club leaders should know (optional)",
     )
     async def transfer_request(self, interaction: discord.Interaction, club: str,
-                               trainer_name: str, trainer_id: str,
-                               from_club: Optional[str] = None,
                                note: Optional[str] = None):
+        """Queue for a spot, using the trainer already linked to this account.
+
+        Nothing about the trainer is typed here. A retyped ID is the one thing in
+        this flow nobody can check — a leader sending an invite to a wrong digit
+        gets silence, and no part of the queue can tell that apart from someone
+        ignoring it. The link is already the answer to who you are, so it is the
+        only accepted answer.
+        """
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -329,28 +332,45 @@ class TransferCommands(commands.Cog):
                 )
                 return
 
-            from_club_id = None
-            from_club_name = from_club
-            if from_club:
-                origin = await Club.get_by_name(from_club)
-                if origin:
-                    if origin.club_id == target.club_id:
-                        await interaction.followup.send(
-                            "❌ You're already asking to transfer into the club you're in.",
-                            ephemeral=True,
-                        )
-                        return
-                    from_club_id = origin.club_id
-                    from_club_name = origin.club_name
+            link = await UserLink.get_by_discord_id(interaction.user.id)
+            if link is None:
+                await interaction.followup.send(
+                    "❌ Link your trainer first: `/link_trainer`.\n"
+                    "Transfer requests take your name and ID from that link, so you "
+                    "never have to type them — and a leader can trust the ID they're "
+                    "sending an invite to.",
+                    ephemeral=True,
+                )
+                return
+
+            member = await Member.get_by_id(link.member_id)
+            if member is None:
+                await interaction.followup.send(
+                    "❌ Your trainer link points at a member record that no longer exists. "
+                    "Run `/link_trainer` again to re-link, then retry.",
+                    ephemeral=True,
+                )
+                return
+
+            origin = await Club.get_by_id(member.club_id)
+
+            # Only an *active* membership blocks it: someone whose old record sits
+            # in the target club because they left it is rejoining, which is the
+            # ordinary case rather than a mistake.
+            if member.club_id == target.club_id and member.is_active:
+                await interaction.followup.send(
+                    f"❌ You're already in **{target.club_name}**.", ephemeral=True
+                )
+                return
 
             request = await TransferRequest.submit(
                 to_club_id=target.club_id,
                 discord_user_id=interaction.user.id,
                 discord_name=interaction.user.display_name,
-                trainer_name=trainer_name,
-                trainer_id=trainer_id,
-                from_club_id=from_club_id,
-                from_club_name=from_club_name,
+                trainer_name=member.trainer_name,
+                trainer_id=member.trainer_id,
+                from_club_id=member.club_id,
+                from_club_name=origin.club_name if origin else None,
                 note=note,
             )
             position = await request.position()
@@ -364,10 +384,13 @@ class TransferCommands(commands.Cog):
                 color=discord.Color.green(),
                 timestamp=discord.utils.utcnow(),
             )
-            embed.add_field(name="Trainer", value=f"{trainer_name}\n`{trainer_id}`", inline=True)
+            trainer = member.trainer_name
+            if member.trainer_id:
+                trainer += f"\n`{member.trainer_id}`"
+            embed.add_field(name="Trainer", value=trainer, inline=True)
             embed.add_field(name="Queue position", value=f"#{position}", inline=True)
-            if from_club_name:
-                embed.add_field(name="Coming from", value=from_club_name, inline=True)
+            if request.from_club_name:
+                embed.add_field(name="Coming from", value=request.from_club_name, inline=True)
             embed.add_field(
                 name="What happens next",
                 value=("You'll get a DM as soon as a leader approves or declines it.\n"
@@ -453,5 +476,4 @@ class TransferCommands(commands.Cog):
             await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
 
     transfer_request.autocomplete('club')(club_autocomplete)
-    transfer_request.autocomplete('from_club')(club_autocomplete)
     transfer_queue.autocomplete('club')(club_autocomplete)

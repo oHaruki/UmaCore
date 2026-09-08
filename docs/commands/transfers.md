@@ -8,17 +8,18 @@ A request is on the waiting list for exactly as long as nobody has decided it. A
 
 ## /transfer_request
 
-Queue for a spot in another club.
+Queue for a spot in another club. **Requires a linked trainer** — run `/link_trainer` once first.
 
 | Parameter | Required | Description |
 |---|---|---|
 | `club` | Yes | The club you want to transfer into |
-| `trainer_name` | Yes | Your in-game trainer name |
-| `trainer_id` | Yes | Your in-game trainer ID |
-| `from_club` | No | The club you're leaving |
 | `note` | No | Anything the club's leaders should know |
 
-The reply is private and shows your position in the queue. Running the command again for the same club edits the request you already have rather than putting you in the queue twice — correcting a typo does not cost you your place.
+Your trainer name, trainer ID and current club all come from your link, so there is nothing to type and nothing to get wrong. A retyped ID is the one thing in this flow nobody can check: a leader who sends an invite to a wrong digit gets silence back, which looks exactly like the person ignoring it.
+
+The reply is private and shows your position in the queue. Running the command again for the same club edits the request you already have rather than putting you in the queue twice, and does not cost you your place.
+
+You cannot queue for a club you are already an active member of. Rejoining a club you previously left is fine.
 
 ---
 
@@ -66,7 +67,9 @@ Announcements carry no approve/decline buttons on purpose. A club taking a dozen
 | Approved | Their request was approved, and to check their in-game notifications for the new invite |
 | Declined | Their request was not accepted, with the reason if one was given |
 
-DMs are sent to the Discord account that ran `/transfer_request` — no `/link_trainer` needed, since someone transferring in from outside has no member record yet. A member with DMs closed simply is not reached; the decision still stands and the queue still updates.
+DMs are sent to the Discord account that ran `/transfer_request`, which is the same account the trainer link belongs to. A member with DMs closed simply is not reached; the decision still stands and the queue still updates.
+
+Because the queue reads from `/link_trainer`, it only covers trainers UmaCore already tracks. Someone joining from a club the bot does not watch has no member record to link to and cannot queue — add them with `/add_member` first, or handle that arrival by hand.
 
 ---
 

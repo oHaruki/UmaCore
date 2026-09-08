@@ -29,7 +29,7 @@ All commands are Discord slash commands (`/`).
 | `/force_check` | Admin | Manually trigger daily check |
 | `/recalculate` | Admin | Recalculate bombs without clearing data |
 | `/reset_month` | Admin | Manually trigger monthly reset |
-| `/transfer_request` | Member | Queue for a spot in another club |
+| `/transfer_request` | Member | Queue for a spot in another club (needs `/link_trainer`) |
 | `/my_transfers` | Member | View or withdraw your own transfer requests |
 | `/transfer_queue` | Anyone | See a club's waiting list (leaders approve here) |
 | `/set_transfer_channel` | Admin | Announce new transfer requests in a channel |
