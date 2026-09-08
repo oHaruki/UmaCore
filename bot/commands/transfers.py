@@ -22,7 +22,10 @@ from discord.ext import commands
 from models import Club, Member, TransferRequest, UserLink
 from services import transfers as transfer_service
 from utils.audit import log_audit
-from utils.permissions import can_manage_club
+from utils.permissions import (
+    can_manage_club, is_full_manager, missing_channel_permissions,
+    post_forbidden_advice, post_requirements,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,56 @@ def _queue_embed(club: Club, queue: List[TransferRequest], *, can_review: bool) 
     else:
         embed.set_footer(text=f"{len(queue)} waiting")
 
+    return embed
+
+
+def _guide_embed(clubs: List[Club]) -> discord.Embed:
+    """The pinnable how-to for a transfer channel.
+
+    Written for someone who has never run either command, because the two are
+    easy to get in the wrong order: ``/transfer_request`` is refused until a
+    trainer is linked, and the refusal is the first thing most people would
+    otherwise see.
+    """
+    embed = discord.Embed(
+        title="📥 How to request a transfer",
+        color=discord.Color.blurple(),
+    )
+
+    embed.add_field(
+        name="1 · Link your trainer — once",
+        value=("`/link_trainer trainer_name:<your in-game name> club:<your current club>`\n"
+               "Everything else is read from this, so you never type your trainer ID."),
+        inline=False,
+    )
+    embed.add_field(
+        name="2 · Ask for a spot",
+        value=("`/transfer_request club:<club you want>`\n"
+               "Add `note:` if there's something the leaders should know."),
+        inline=False,
+    )
+    embed.add_field(
+        name="3 · Wait for your DM",
+        value=("You'll be messaged the moment a leader approves or declines.\n"
+               "If you're approved, check your **in-game notifications** for the invite."),
+        inline=False,
+    )
+    embed.add_field(
+        name="Checking on it",
+        value="`/my_transfers` — see your place in the queue, or withdraw your request.",
+        inline=False,
+    )
+
+    if clubs:
+        embed.add_field(
+            name="Clubs you can request",
+            value=" · ".join(f"**{c.club_name}**" for c in clubs),
+            inline=False,
+        )
+
+    embed.set_footer(
+        text="Queue position is order of arrival — leaders can accept out of order."
+    )
     return embed
 
 
@@ -433,6 +486,63 @@ class TransferCommands(commands.Cog):
         except Exception as e:
             logger.error(f"Error in transfer_queue: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+
+    @app_commands.command(
+        name="post_transfer_info",
+        description="Post the how-to-request guide in a channel, ready to pin",
+    )
+    @app_commands.describe(channel="Where to post it (defaults to this channel)")
+    async def post_transfer_info(self, interaction: discord.Interaction,
+                                 channel: Optional[discord.TextChannel] = None):
+        """Post the transfer guide. Not pinned automatically — pin it yourself.
+
+        Pinning needs Manage Messages, a permission this bot otherwise never
+        requires, and a guide that silently failed to pin would be worse than one
+        you pin by hand.
+        """
+        await interaction.response.defer()
+
+        try:
+            if not await is_full_manager(interaction):
+                await interaction.followup.send(
+                    "❌ You need Discord administrator or a server manager role to post this."
+                )
+                return
+
+            target = channel or interaction.channel
+            clubs = [
+                c for c in await Club.get_all_for_guild(interaction.guild_id)
+                if c.is_active
+            ]
+            embed = _guide_embed(clubs)
+
+            try:
+                await target.send(embed=embed)
+            except discord.Forbidden as e:
+                me = interaction.guild.me if interaction.guild else None
+                outcome = {
+                    'missing': missing_channel_permissions(
+                        target, me, *post_requirements(target)
+                    ),
+                    'code': getattr(e, 'code', None),
+                }
+                await interaction.followup.send(
+                    post_forbidden_advice(outcome, target, what="the transfer guide")
+                )
+                return
+
+            await interaction.followup.send(
+                f"✅ Posted in {target.mention} — right-click the message and **Pin** it.\n"
+                f"Requests will be announced here too once a club's transfer channel is set "
+                f"with `/set_transfer_channel`."
+            )
+            logger.info(
+                f"Transfer guide posted in {target.id} by {interaction.user}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error in post_transfer_info: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
 
     @app_commands.command(
         name="my_transfers",

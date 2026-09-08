@@ -45,6 +45,22 @@ Positions are order of arrival, not a rule — you can approve anyone on the lis
 
 ---
 
+## /post_transfer_info
+
+Post the how-to-request guide in a channel, ready to pin. Admin or server manager role only.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `channel` | No | Where to post it (defaults to the channel you run it in) |
+
+The guide walks through linking, requesting and waiting for the DM, in that order — `/transfer_request` is refused until a trainer is linked, so a guide that led with it would teach the failing order. It also lists the clubs in the server that can be requested.
+
+It is **not** pinned automatically. Pinning needs Manage Messages, which the bot otherwise never asks for, and a guide that quietly failed to pin would be worse than one you pin by hand — so right-click the message and pin it yourself.
+
+The guide is a snapshot, not a live board. Run the command again to post an up-to-date one if your club list changes.
+
+---
+
 ## /set_transfer_channel
 
 Announce new transfer requests in a channel. Admin or club editor only.
@@ -54,7 +70,7 @@ Announce new transfer requests in a channel. Admin or club editor only.
 | `channel` | Yes | Channel for the announcements |
 | `club` | Yes | The club |
 
-Optional. Without it the queue still works — it is just reviewed on demand rather than announced.
+Optional, but this is what makes requests visible: with no transfer channel set, nothing is posted when someone queues up, and the queue is only seen by whoever runs `/transfer_queue` or opens the dashboard.
 
 Announcements carry no approve/decline buttons on purpose. A club taking a dozen requests a week would otherwise end up with a dozen live control panels in one channel, where the one that gets clicked is whichever scrolled past most recently rather than whichever is next. Each announcement is rewritten to show the outcome once a decision is made.
 

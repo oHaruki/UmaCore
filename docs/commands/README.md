@@ -33,6 +33,7 @@ All commands are Discord slash commands (`/`).
 | `/my_transfers` | Member | View or withdraw your own transfer requests |
 | `/transfer_queue` | Anyone | See a club's waiting list (leaders approve here) |
 | `/set_transfer_channel` | Admin | Announce new transfer requests in a channel |
+| `/post_transfer_info` | Admin | Post the how-to-request guide, ready to pin |
 | `/set_report_channel` | Admin | Set daily report channel |
 | `/set_alert_channel` | Admin | Set alert channel |
 | `/channel_settings` | Admin | View channel config |

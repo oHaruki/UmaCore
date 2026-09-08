@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from bot.commands.transfers import QueuePanel, _queue_embed
+from bot.commands.transfers import QueuePanel, _guide_embed, _queue_embed
 
 UTC = timezone.utc
 
@@ -60,6 +60,36 @@ class TestQueueEmbed:
         embed = _queue_embed(club(), queue, can_review=True)
         assert "`#26`" not in embed.description
         assert "30 waiting" in embed.footer.text
+
+
+class TestGuideEmbed:
+    """The pinned guide is the only instructions most members will ever read."""
+
+    def test_puts_linking_before_requesting(self):
+        """`/transfer_request` is refused until a trainer is linked, so a guide
+        that introduced it first would teach people the failing order."""
+        fields = _guide_embed([club()]).fields
+        body = " ".join(f"{f.name} {f.value}" for f in fields)
+        assert body.index("/link_trainer") < body.index("/transfer_request")
+
+    def test_never_tells_anyone_to_type_a_trainer_id(self):
+        body = " ".join(f"{f.name} {f.value}" for f in _guide_embed([club()]).fields)
+        assert "trainer_id:" not in body
+
+    def test_lists_the_clubs_that_can_be_requested(self):
+        clubs = [club(club_name="Horsecore"), club(club_name="Turfcore")]
+        body = " ".join(f.value for f in _guide_embed(clubs).fields)
+        assert "Horsecore" in body and "Turfcore" in body
+
+    def test_survives_a_guild_with_no_clubs(self):
+        """Posted during setup, before any club exists — must not render an
+        empty field, which Discord rejects outright."""
+        embed = _guide_embed([])
+        assert all(f.value for f in embed.fields)
+        assert "/transfer_request" in " ".join(f.value for f in embed.fields)
+
+    def test_says_position_is_not_binding(self):
+        assert "out of order" in _guide_embed([club()]).footer.text
 
 
 class TestQueuePanel:
