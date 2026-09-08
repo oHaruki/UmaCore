@@ -282,6 +282,62 @@ class SettingsCommands(commands.Cog):
             logger.error(f"Error in set_alert_channel: {e}", exc_info=True)
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
+    @app_commands.command(name="set_transfer_channel",
+                          description="Set the channel where new transfer requests are announced")
+    async def set_transfer_channel(self, interaction: discord.Interaction,
+                                   channel: discord.TextChannel, club: str):
+        """Announce incoming transfer requests in a channel.
+
+        The announcement carries no approve/decline buttons — decisions are taken
+        in ``/transfer_queue`` or on the dashboard, so a busy club does not end up
+        with a channel full of half-live control panels. This is purely the
+        heads-up that someone is waiting.
+        """
+        await interaction.response.defer()
+
+        try:
+            club_obj = await Club.get_by_name(club)
+            if not club_obj:
+                await interaction.followup.send(f"❌ Club '{club}' not found")
+                return
+
+            if not club_obj.belongs_to_guild(interaction.guild_id):
+                await interaction.followup.send(f"❌ Club '{club}' is not registered in this server.")
+                return
+
+            if not await ensure_can_manage(interaction, club_obj):
+                return
+
+            await club_obj.update_settings(transfer_channel_id=channel.id)
+
+            outcome = await _verify_posting(channel, club, "Transfer requests")
+
+            embed = discord.Embed(
+                title=f"✅ Transfer Channel Updated - {club}",
+                description=f"New transfer requests will be announced in {channel.mention}",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.add_field(
+                name="Reviewing requests",
+                value=(f"Use `/transfer_queue club:{club}` to approve or decline. "
+                       f"Members queue up with `/transfer_request`."),
+                inline=False,
+            )
+            _describe_posting(embed, outcome, channel, "transfer requests")
+
+            await interaction.followup.send(embed=embed)
+            await log_audit(
+                interaction, 'club.update', 'club',
+                entity_id=club_obj.club_id, club_id=club_obj.club_id,
+                details={'changes': {'transfer_channel_id': str(channel.id)}},
+            )
+            logger.info(f"Transfer channel for {club} set to {channel.name} ({channel.id}) by {interaction.user}")
+
+        except Exception as e:
+            logger.error(f"Error in set_transfer_channel: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}")
+
     @app_commands.command(name="channel_settings", description="View current channel configuration")
     async def channel_settings(self, interaction: discord.Interaction, club: str):
         """View current channel settings"""
@@ -350,6 +406,23 @@ class SettingsCommands(commands.Cog):
                     inline=False
                 )
             
+            # Transfer requests channel
+            if club_obj.transfer_channel_id:
+                transfer_channel = self.bot.get_channel(club_obj.transfer_channel_id)
+                embed.add_field(
+                    name="📥 Transfer Requests Channel",
+                    value=(f"{transfer_channel.mention} (ID: {club_obj.transfer_channel_id})"
+                           if transfer_channel
+                           else f"⚠️ Channel not found (ID: {club_obj.transfer_channel_id})"),
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="📥 Transfer Requests Channel",
+                    value="❌ Not configured (queue still works — review with `/transfer_queue`)",
+                    inline=False
+                )
+
             # Monthly info board
             channel_id, message_id = await club_obj.get_monthly_info_location()
             if channel_id and message_id:
@@ -687,6 +760,7 @@ class SettingsCommands(commands.Cog):
     # Apply autocomplete
     set_report_channel.autocomplete('club')(club_autocomplete)
     set_alert_channel.autocomplete('club')(club_autocomplete)
+    set_transfer_channel.autocomplete('club')(club_autocomplete)
     channel_settings.autocomplete('club')(club_autocomplete)
     set_channel_name.autocomplete('club')(club_autocomplete)
     channel_names_cmd.autocomplete('club')(club_autocomplete)
