@@ -463,6 +463,58 @@ class Database:
             END IF;
         END $$;
 
+        -- Migration: Add transfer_channel_id column if it doesn't exist.
+        -- Where new transfer requests are announced. NULL means no announcement —
+        -- the queue is still readable with /transfer_queue and on the dashboard.
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='clubs' AND column_name='transfer_channel_id'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN transfer_channel_id BIGINT;
+                RAISE NOTICE 'Added transfer_channel_id column to clubs';
+            END IF;
+        END $$;
+
+        -- Transfer requests: someone queues for a spot in another club and a
+        -- club leader approves or rejects it. Replaces the hand-run flow where
+        -- people posted their trainer ID in a channel and pinged a mod, which
+        -- left no record of who was still waiting once the messages scrolled off.
+        --
+        -- from_club_id is NULL for anyone arriving from outside the tracked
+        -- clubs; from_club_name then carries whatever they typed instead.
+        CREATE TABLE IF NOT EXISTS transfer_requests (
+            request_id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+            to_club_id          UUID        NOT NULL REFERENCES clubs(club_id) ON DELETE CASCADE,
+            from_club_id        UUID        REFERENCES clubs(club_id) ON DELETE SET NULL,
+            from_club_name      TEXT,
+            discord_user_id     BIGINT      NOT NULL,
+            discord_name        TEXT        NOT NULL,
+            trainer_name        TEXT        NOT NULL,
+            trainer_id          TEXT,
+            note                TEXT,
+            status              TEXT        NOT NULL DEFAULT 'pending',
+            decided_by_name     TEXT,
+            decided_at          TIMESTAMPTZ,
+            decision_note       TEXT,
+            announce_channel_id BIGINT,
+            announce_message_id BIGINT,
+            created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        -- One open request per person per club. Running the command again edits
+        -- the request that exists rather than taking a second place in the same
+        -- queue, and a decided request never blocks a later re-application.
+        CREATE UNIQUE INDEX IF NOT EXISTS transfer_requests_one_pending
+            ON transfer_requests(to_club_id, discord_user_id) WHERE status = 'pending';
+
+        CREATE INDEX IF NOT EXISTS idx_transfer_requests_queue
+            ON transfer_requests(to_club_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_transfer_requests_user
+            ON transfer_requests(discord_user_id, status);
+
         -- Audit log table (web dashboard actions)
         CREATE TABLE IF NOT EXISTS audit_logs (
             id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),

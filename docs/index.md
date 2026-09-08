@@ -9,6 +9,7 @@ UmaCore is a Discord bot for tracking and managing Umamusume club member quotas.
 - Bomb warning system (3-strike countdown for members falling behind)
 - Progress charts showing fan progression throughout the month
 - Member auto-detection (adds new members, deactivates those who leave)
+- Transfer queue — members request a spot in another club, leaders approve or decline, requesters get told
 - Monthly reset handling
 - Discord account linking for personal DM notifications
 - Supports both Uma.moe API and ChronoGenesis scraping

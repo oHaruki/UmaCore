@@ -10,6 +10,7 @@ from .scrape_lock_manager import ScrapeLockManager, ScrapeContext
 from .scrape_scheduler import ScrapeScheduler
 from .health_monitor import health, HealthMonitor
 from . import channel_names
+from . import transfers
 
 __all__ = [
     'QuotaCalculator',
@@ -23,4 +24,5 @@ __all__ = [
     'health',
     'HealthMonitor',
     'channel_names',
+    'transfers',
 ]

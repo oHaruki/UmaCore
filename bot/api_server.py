@@ -494,6 +494,54 @@ async def handle_bot_guilds(request: web.Request) -> web.StreamResponse:
     return await _send_json(request, {'guilds': guilds})
 
 
+async def handle_transfer_decision(request: web.Request) -> web.StreamResponse:
+    """Approve or decline a transfer request on behalf of the dashboard.
+
+    The whole decision runs here rather than the web writing the row and then
+    asking for a DM. ``TransferRequest.decide`` only settles a request that is
+    still pending, and keeping that guard and the notification in one call is
+    what stops a leader approving on the dashboard while another approves in
+    Discord from sending the requester two different answers.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return await _send_json(request, {'error': 'Invalid JSON body'}, status=400)
+
+    request_id_str = body.get('request_id')
+    status = body.get('status')
+    decided_by = body.get('decided_by') or 'Dashboard'
+    reason = body.get('reason')
+
+    if not request_id_str:
+        return await _send_json(request, {'error': 'request_id required'}, status=400)
+    if status not in ('approved', 'rejected'):
+        return await _send_json(request, {'error': "status must be 'approved' or 'rejected'"}, status=400)
+
+    try:
+        request_id = UUID(request_id_str)
+    except ValueError:
+        return await _send_json(request, {'error': 'Invalid request_id'}, status=400)
+
+    bot = request.app.get('bot')
+    if bot is None:
+        return await _send_json(request, {'error': 'Bot unavailable'}, status=503)
+
+    from services import transfers as transfer_service
+
+    try:
+        result = await transfer_service.apply_decision(bot, request_id, status, decided_by, reason)
+    except Exception as e:
+        logger.error(f"Transfer decision failed for {request_id}: {e}", exc_info=True)
+        return await _send_json(request, {'error': str(e)}, status=500)
+
+    if not result.get('ok'):
+        # Already settled elsewhere — the caller's view is simply stale.
+        return await _send_json(request, {'error': result.get('error', 'Not pending')}, status=409)
+
+    return await _send_json(request, result)
+
+
 async def handle_health(request: web.Request) -> web.StreamResponse:
     """Component health as JSON, for a prober running somewhere that isn't here.
 
@@ -553,6 +601,7 @@ def create_app(bot=None) -> web.Application:
     app.router.add_get('/guild_channels', handle_guild_channels)
     app.router.add_get('/channel_names/preview', handle_preview_channel_name)
     app.router.add_post('/channel_names/refresh', handle_refresh_channel_names)
+    app.router.add_post('/transfer_decision', handle_transfer_decision)
     app.router.add_get('/bot_guilds', handle_bot_guilds)
     app.router.add_get('/health', handle_health)
     app.router.add_get('/logs', handle_logs)
