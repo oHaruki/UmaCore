@@ -61,6 +61,14 @@ After inviting, use `/add_club` to register your club and `/set_report_channel` 
 | `/channel_settings` | View current channel configuration |
 | `/post_monthly_info` | Post the monthly info board |
 
+### Event Feed
+| Command | Description |
+|---|---|
+| `/set_events_channel` | Announce new Uma Musume banners and events as they go live |
+| `/disable_events_channel` | Stop event announcements |
+| `/events` | View current banners, mission events and story events |
+| `/events_status` | Event feed health and last check |
+
 ### Quota Management
 | Command | Description |
 |---|---|

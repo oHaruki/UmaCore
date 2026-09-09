@@ -44,6 +44,7 @@ nav:
       - Member Management: commands/member-management.md
       - User Commands: commands/user-commands.md
       - Charts & Stats: commands/charts.md
+      - Event Feed: commands/events.md
 
   - Legal:
       - Terms of Service: terms-of-service.md

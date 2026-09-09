@@ -11,6 +11,7 @@ All commands are Discord slash commands (`/`).
 - [User Commands](user-commands.md) — Self-service commands for members
 - [Transfers](transfers.md) — Queue for a spot in another club and review the waiting list
 - [Charts & Stats](charts.md) — Progress charts and bot statistics
+- [Event Feed](events.md) — Announce new Uma Musume banners and events as they go live
 
 ---
 
@@ -38,6 +39,11 @@ All commands are Discord slash commands (`/`).
 | `/set_alert_channel` | Admin | Set alert channel |
 | `/channel_settings` | Admin | View channel config |
 | `/post_monthly_info` | Admin | Post monthly info board |
+| `/set_events_channel` | Admin | Announce new Uma Musume events in a channel |
+| `/disable_events_channel` | Admin | Stop event announcements |
+| `/events` | Anyone | Current banners, missions and events |
+| `/events_status` | Admin | Event feed health |
+| `/events_preview` | Admin | Preview an announcement embed |
 | `/update_monthly_info` | Admin | Refresh monthly info board |
 | `/add_member` | Admin | Manually add a member |
 | `/deactivate_member` | Admin | Deactivate a member |

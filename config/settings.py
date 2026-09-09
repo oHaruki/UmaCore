@@ -62,12 +62,9 @@ UMAMOE_CHECKSUM_MIN_ABS = int(os.getenv("UMAMOE_CHECKSUM_MIN_ABS", "25000000"))
 # Grace period after the 15:00 UTC daily finalize before we trust a fetch.
 # A club scheduled in the minutes right after rollover can beat uma.moe's write
 # for its circle, so those are held this long. Anything scheduled later (or
-# before rollover, reading the previous JST day) fires on time.
-#
-# This replaced a rank-based delay model that assumed a ~20 circles/s rollout.
-# Measured 2026-07-25: the top 100 circles all finalized within ~3s, and the
-# scraper now detects staleness exactly via circle.last_updated, so predicting
-# readiness from rank is neither accurate nor necessary.
+# before rollover, reading the previous JST day) fires on time. The scraper
+# also detects staleness directly via circle.last_updated, so this only needs
+# to cover the first pass rather than predict exact readiness.
 SCRAPE_ROLLOVER_GRACE_SEC = int(os.getenv("SCRAPE_ROLLOVER_GRACE_SEC", "120"))
 
 # Freshness re-queue: if a club's target day still isn't finalized on fetch,
@@ -105,6 +102,18 @@ DB_BACKUP_KEEP = _int_env("DB_BACKUP_KEEP", 7)          # how many dumps to keep
 DB_BACKUP_UTC_TIME = os.getenv("DB_BACKUP_UTC_TIME", "03:30")   # HH:MM UTC, quiet hour
 DB_BACKUP_TIMEOUT_SEC = _int_env("DB_BACKUP_TIMEOUT_SEC", 600)
 
+# Uma Musume event feed (events/ package). Announces new gacha banners, mission
+# events and story events from GameTora as they go live.
+#
+# The poll is cheap — one manifest read plus six small JSON files — but GameTora
+# is somebody else's static host, so it stays on a slow cycle.
+EVENTS_POLL_MINUTES = _int_env("EVENTS_POLL_MINUTES", 15)
+
+# An entry that appears in the feed already this far past its start is a data
+# edit on GameTora's side rather than something that just went live, and is
+# recorded silently instead of announced.
+EVENTS_MAX_BACKFILL_SEC = _int_env("EVENTS_MAX_BACKFILL_SEC", 3 * 24 * 3600)
+
 # Timezone Configuration
 TIMEZONE = "Europe/Amsterdam"  # CEST
 DAILY_REPORT_TIME = "16:00"
@@ -118,10 +127,10 @@ BOMB_COUNTDOWN_DAYS = 7
 # still inside that grade, so a club qualifies for the grade whose bound is the
 # smallest one >= its rank: #1483 -> B+, #507 -> A, #100 -> S.
 #
-# These bands are what /promotion climbs between. They used to be a hand-picked
-# list with nothing between 500 and 3000, so every club from #501 to #2999 was
-# told to climb to Top 500 — a B+ club at #1483 was pointed four grades up
-# instead of at the A band right above it.
+# These bands are what /promotion climbs between — keep them dense enough that
+# no club is more than one grade from its target (a wide gap, e.g. nothing
+# between 500 and 3000, points every club in that range at the same distant
+# milestone instead of the next grade up).
 CLUB_RANK_GRADES = [
     (10,     "SS"),
     (30,     "S+"),
