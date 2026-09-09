@@ -51,12 +51,9 @@ MAX_NAME_LENGTH = 100
 MIN_UPDATE_INTERVAL = timedelta(minutes=5)
 
 # Discord's actual limit on renaming one channel. Exceeding it does not raise —
-# discord.py sleeps until the bucket clears, and it was measured on 2026-09-01
-# sleeping 351 seconds inside a slash command, which simply hangs the command and
-# any tick behind it. So the budget is enforced here, before the request is made,
-# and a forced rename is refused rather than parked. Observed as repeated
-# `429 ... Retrying in 351.81 seconds` after a channel was configured several
-# times in a row while it was failing for an unrelated reason.
+# discord.py sleeps until the bucket clears (observed up to ~6 minutes), which
+# hangs the command and any tick behind it. So the budget is enforced here,
+# before the request is made, and a forced rename is refused rather than parked.
 RENAME_LIMIT = 2
 RENAME_WINDOW = timedelta(minutes=10)
 
@@ -276,12 +273,11 @@ async def _rename(channel: discord.abc.GuildChannel, name: str) -> bool:
 async def _retry_from_api(bot, channel_id: int, name: str):
     """Fetch the channel from Discord and try once more against that object.
 
-    ``bot.get_channel`` serves the gateway cache, and on 2026-09-01 that cache
-    was demonstrably not self-consistent: the overwrites it held granted Manage
-    Channels to two targets that both applied to the bot, while
-    ``permissions_for`` computed from those same overwrites said the permission
-    was absent. Both cannot be true, so cached state stopped being worth
-    reasoning about for this path.
+    ``bot.get_channel`` serves the gateway cache, which can be internally
+    inconsistent: overwrites granting Manage Channels to two targets that both
+    apply to the bot, while ``permissions_for`` computed from those same
+    overwrites says the permission is absent. Both can't be true, so cached
+    state isn't trusted for this path.
 
     A fetch is authoritative. If the retry succeeds the cache was the whole
     problem and nobody has to be told to reconfigure anything; if it fails the

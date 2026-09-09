@@ -603,6 +603,32 @@ class Database:
 
         CREATE INDEX IF NOT EXISTS idx_club_channel_names_club
             ON club_channel_names(club_id);
+
+        -- Where the Uma Musume event feed is announced. One channel per guild;
+        -- the feed is game-wide news, not per-club, so it is keyed by guild
+        -- rather than hanging off clubs.
+        CREATE TABLE IF NOT EXISTS event_feed_channels (
+            guild_id     BIGINT      PRIMARY KEY,
+            channel_id   BIGINT      NOT NULL,
+            ping_role_id BIGINT,
+            created_at   TIMESTAMPTZ DEFAULT NOW(),
+            updated_at   TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        -- Every event key already posted. GameTora publishes schedules ahead of
+        -- time and re-serves the same entries on every poll, so "is this new"
+        -- can only be answered against our own record of what went out.
+        --
+        -- Rows are never deleted: an expired event that reappears in the feed
+        -- must not be announced a second time.
+        CREATE TABLE IF NOT EXISTS announced_events (
+            event_key    VARCHAR(64) PRIMARY KEY,
+            kind         VARCHAR(32) NOT NULL,
+            name         TEXT        NOT NULL,
+            start_ts     BIGINT      NOT NULL,
+            end_ts       BIGINT,
+            announced_at TIMESTAMPTZ DEFAULT NOW()
+        );
         """
         
         try:

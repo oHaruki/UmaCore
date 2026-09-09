@@ -1,22 +1,20 @@
 """The daily report must fire once per club per day, whatever the club's timezone.
 
-Two production bugs live here, both of them the same mistake — the "already
-reported" marker being less durable than the report it guards.
+The "already reported" marker must be at least as durable as the report it
+guards, in two ways:
 
-1. The marker was an in-memory dict swept against UTC dates. Any club whose local
-   date ran ahead of UTC — JST is a day ahead from 15:00 UTC onward, and the live
-   board pins such clubs to exactly that moment — had its key evicted on the same
-   tick that wrote it, so it re-reported every minute of its trigger hour.
-   Observed 2026-08-04: two clubs at 00:00 JST posted 59 and 36 daily reports
-   between 15:00 and 15:59 UTC, and one at 01:05 Australia/Sydney alongside them.
+1. It must not be keyed to UTC date alone. A club whose local date runs ahead
+   of UTC — JST is a day ahead from 15:00 UTC onward, and the live board pins
+   such clubs to exactly that moment — can have its trigger hour span a UTC
+   date boundary, so a marker swept on "today" (UTC) gets evicted mid-hour and
+   the club re-reports on every remaining tick of that hour.
+2. It must survive a restart. A club counts as due for its whole trigger hour,
+   so a bot restarted mid-hour must not re-run the check and re-post the report
+   and its kick alerts.
 
-2. The dict didn't survive a restart at all. A club counts as due for its whole
-   trigger hour, so a bot restarted mid-hour re-ran the check and re-posted the
-   report and its kick alerts. Observed 2026-08-13 after a deploy.
-
-The marker now lives in `clubs.last_report_date`, claimed atomically by
+The marker lives in `clubs.last_report_date`, claimed atomically by
 `Club.claim_report_day`. `FakeClaims` below is the in-memory stand-in for that
-UPDATE; `TestSurvivesRestarts` is the regression test for (2).
+UPDATE; `TestSurvivesRestarts` covers (2).
 
 The middle of this file is the control: every timezone that was *not* affected by
 (1), including the `clubs.timezone` column default, must keep reporting once a day.
@@ -141,7 +139,7 @@ def fires(monkeypatch, club, **kw):
 
 
 class TestEasternClubsReportOnce:
-    """The regression: a local date ahead of UTC must not evict the run key."""
+    """A local date ahead of UTC must not evict the run key."""
 
     @pytest.mark.parametrize("tz", ["Asia/Tokyo", "JST", "Asia/tokyo", "Asia/Seoul"])
     def test_midnight_jst_does_not_repeat(self, monkeypatch, tz):
@@ -164,10 +162,9 @@ class TestEasternClubsReportOnce:
         assert len(fires(monkeypatch, club)) == EXPECTED_PER_48H
 
     def test_live_board_pins_an_eastern_club_to_local_midnight(self, monkeypatch):
-        """The live board forces 15:00 UTC, which is 00:00 JST — the worst case.
-
-        This is the path that makes the bug reachable for *any* eastern club,
-        whatever scrape time its admin configured.
+        """The live board forces 15:00 UTC, which is 00:00 JST — the worst case,
+        and one that applies to any eastern club regardless of its configured
+        scrape time.
         """
         club = make_club("Asia/Tokyo", scrape_time=time(16, 0), live_board=True)
         assert club.live_board_enabled
@@ -251,11 +248,11 @@ class TestOtherZonesStillReportOnce:
 
 
 class TestSurvivesRestarts:
-    """The 2026-08-13 regression: restarting must not re-post the report.
+    """Restarting mid-trigger-hour must not re-post the report.
 
-    A club is due for its whole trigger hour, so with the marker held in process
-    memory every restart inside that hour ran the check again — duplicate report,
-    duplicate kick alerts, duplicate DMs.
+    A club is due for its whole trigger hour, so a marker held only in process
+    memory would let every restart inside that hour run the check again —
+    duplicate report, duplicate kick alerts, duplicate DMs.
     """
 
     def test_restart_inside_the_trigger_hour_does_not_repeat(self, monkeypatch):

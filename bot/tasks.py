@@ -108,9 +108,8 @@ def _log_forbidden(channel, club_name: str, purpose: str,
     # tells a user-installed app apart from a misconfigured channel.
     #
     # Guarded as a whole: this runs inside a failure handler, so it must not
-    # produce a second failure. A diagnostic that raises would put the caller
-    # right back where it started — a Forbidden escaping the report step — which
-    # is the bug this function exists to end.
+    # produce a second failure — a diagnostic that raises would let a Forbidden
+    # escape the report step instead of being logged.
     try:
         logger.error(
             f"❌ Unexplained refusal posting {purpose} for {club_name} in #{cid} — "
@@ -400,12 +399,9 @@ class BotTasks:
         the minutes right after that can beat uma.moe's write for this particular
         circle. Hold those until a short grace period has passed.
 
-        This used to estimate readiness from the club's rank against an assumed
-        ~20 circles/s rollout. That guess is no longer needed: the scraper now
-        reads ``circle.last_updated`` and raises StaleDataError when the target day
-        genuinely hasn't finalized, so the scheduler re-queues on fact rather than
-        prediction. (Measured 2026-07-25: the top 100 circles all finalized within
-        ~3s of each other, so the rank model was also mis-calibrated.)
+        The scraper reads ``circle.last_updated`` and raises StaleDataError when
+        the target day genuinely hasn't finalized, so the scheduler re-queues on
+        fact rather than a rank-based readiness guess.
         """
         club_tz = resolve_timezone(club.timezone)
         effective = self._effective_scrape_time(club, now_utc)

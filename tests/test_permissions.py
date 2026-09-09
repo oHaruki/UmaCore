@@ -1,10 +1,9 @@
 """Tests for the manager permission checks.
 
-Built around one production incident: on 2026-08-05 a server administrator was
-refused ``/remove_club`` on guild 1426560692792317186 while Discord's own payload
-said he held administrator. ``is_admin`` was recomputing permissions from the
-cached member object, which resolves to base permissions whenever the cached
-guild is thin — silently turning an admin into a nobody.
+``is_admin`` reads ``interaction.permissions`` — what Discord actually computed
+and sent — rather than recomputing from the cached member object, which
+resolves to base permissions whenever the cached guild is thin, silently
+turning an admin into a nobody.
 """
 import asyncio
 from types import SimpleNamespace
@@ -56,7 +55,7 @@ def no_manager_roles(monkeypatch):
 
 class TestIsAdmin:
     def test_trusts_the_permissions_discord_sent(self):
-        """The regression: cache says no, payload says yes. Payload wins."""
+        """Cache says no, payload says yes — payload wins."""
         assert is_admin(interaction(payload_admin=True, member_admin=False)) is True
 
     def test_still_accepts_a_cached_member_object(self):
@@ -277,12 +276,10 @@ class TestOverwriteDiagnostic:
 
 
 class TestTimeout:
-    """The thing that counterfeits a permission problem exactly.
-
-    A timed-out member keeps only View Channel and Read Message History, and
+    """A timed-out member keeps only View Channel and Read Message History, and
     discord.py applies that mask last as a conclusive override of every role and
-    overwrite. Discord's API does the same. Diagnosed 2026-09-01 after three
-    wrong guesses at a refusal whose channel overwrites plainly allowed it.
+    overwrite. Discord's API does the same — this counterfeits a permission
+    problem exactly, since the channel's own overwrites can be entirely correct.
     """
 
     def member(self, timed_out, until=None):
@@ -338,8 +335,7 @@ class TestResolutionFingerprint:
     overwrites: the timeout mask, and the user-installed-app set returned when
     the guild's @everyone role cannot be resolved. Both read as "View Channel:
     yes, everything else: no", which is indistinguishable from a locked-down
-    channel by symptom alone — and that ambiguity survived four rounds of
-    diagnosis on 2026-09-01.
+    channel by symptom alone.
     """
 
     def channel(self, perms, default_role=object(), roles=(1, 2)):
@@ -441,12 +437,11 @@ class TestPostRequirements:
 class TestPostForbiddenAdvice:
     """The message a club reads when its report never arrives.
 
-    2026-09-02, channel 1542974943682232380: a club's daily report was silent for
-    two evenings. ``/my_status`` answered normally in the same channel — an
-    interaction is replied to on its own token and needs no channel permission at
-    all — so a working command was taken as proof the bot could post, and the
-    diagnosis went to Send Messages, then to View Channel. It was **Embed Links**.
-    The bot's own error named none of the three.
+    An interaction is replied to on its own token and needs no channel
+    permission at all, so a working slash command in the same channel is no
+    evidence the bot can post a report there. Send Messages, View Channel and
+    Embed Links can each cause the same silent failure, and Discord's own error
+    names none of them.
     """
 
     def channel(self):

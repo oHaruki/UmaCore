@@ -38,9 +38,9 @@ class ReportGenerator:
         reported as ``report_date`` actually spans ``report_date 15:00 UTC`` to the
         following day at the same time.
 
-        This used to be hardcoded as "16:00 CEST" for every club regardless of its
-        configured timezone — wrong hour in summer, wrong label in winter, and
-        wrong entirely for any club outside central Europe.
+        A fixed offset like "16:00 CEST" is wrong here — the wrong hour once DST
+        shifts, and wrong entirely for a club outside central Europe — so the
+        window is always computed from the club's own timezone.
         """
         start_utc = datetime(report_date.year, report_date.month, report_date.day,
                              ROLLOVER_UTC_HOUR, 0, tzinfo=timezone.utc)

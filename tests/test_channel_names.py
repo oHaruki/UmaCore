@@ -450,10 +450,10 @@ class TestForbiddenAdvice:
 class TestRetryFromTheApi:
     """A refusal gets one authoritative round trip before it is believed.
 
-    Cached state proved not self-consistent on 2026-09-01: the overwrites the
-    gateway held granted Manage Channels to two targets that both applied to the
-    bot, while permissions_for computed from those same overwrites said it was
-    absent. Both cannot be true, so the cache stopped being worth trusting here.
+    The cache can be internally inconsistent: overwrites granting Manage
+    Channels to two targets that both apply to the bot, while permissions_for
+    computed from those same overwrites says it's absent. Both can't be true,
+    so a cached refusal isn't trusted without a live check.
     """
 
     def _forbidden(self):
@@ -512,12 +512,9 @@ class TestRetryFromTheApi:
 
 
 class TestPerChannelResults:
-    """One channel's outcome must never be reported as another's.
-
-    Observed 2026-09-01: configuring a channel Discord refused reported success,
-    because the same pass had renamed a different channel belonging to the club
-    and the caller only read the totals.
-    """
+    """One channel's outcome must never be reported as another's — reading only
+    the pass's totals can report success for a channel Discord refused, if a
+    different channel in the same pass renamed successfully."""
 
     def _ctx(self):
         return cn.context_from_live(club(), snap())
@@ -584,10 +581,10 @@ class TestPerChannelResults:
 
 class TestRenameBudget:
     """Discord allows two renames per ten minutes per channel, and does not
-    refuse a third — discord.py sleeps until the bucket clears. Measured
-    2026-09-01 sleeping 351 seconds inside a slash command, which reads as the
-    bot hanging and invites the retry that deepens the hole. So the budget is
-    enforced before the request, forced renames included.
+    refuse a third — discord.py sleeps until the bucket clears instead, which
+    reads as the bot hanging inside a slash command and invites a retry that
+    deepens the hole. So the budget is enforced before the request, forced
+    renames included.
     """
 
     def _ctx(self):

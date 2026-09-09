@@ -1,9 +1,9 @@
-"""A fake uma.moe circle API, modelled on responses captured 2026-07-25.
+"""A fake uma.moe circle API, modelled on real responses.
 
 Exists so the JST slot logic can be driven across a whole month — including the
 month boundary, which is otherwise only reachable by waiting for one.
 
-Semantics reproduced from the live API (circles 452414222 / 883951941):
+Semantics reproduced from the live API:
 
 * ``daily_fans`` is always **32 slots**, whatever the month's length
 * slot 0 is the baseline (the total at the end of the previous month) and slots
