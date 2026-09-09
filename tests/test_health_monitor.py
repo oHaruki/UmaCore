@@ -213,8 +213,8 @@ class TestDependencies:
         assert "Database" in ch.sent[0].title
 
     def test_it_does_not_then_announce_a_recovery_it_never_announced(self):
-        """The bug this ordering exists to prevent: latching a suppressed
-        component leaves it owing a '🟢 is back' for an outage nobody heard."""
+        """Latching a suppressed component as down would leave it owing a
+        '🟢 is back' for an outage nobody was ever told about."""
         ch = FakeChannel()
         m = self._pair(ch)
         m.record("database", False)

@@ -222,11 +222,9 @@ def _refused(channel, club: Club, action: str,
     """Name the missing permission, in the log and in ``outcome``.
 
     Both readings come from the same place on purpose. "No permission to post
-    the live board" was true and useless: it is the sentence someone already has
-    in front of them, and it left the admin to guess which of View Channel, Send
-    Messages and Embed Links was the one — a guess that landed on Send Messages,
-    because a working ``/my_status`` looks like proof the bot can talk. It was
-    Embed Links, and finding that out took two evenings in a support thread.
+    the live board" is true and useless: View Channel, Send Messages and Embed
+    Links can all produce it, and a working ``/my_status`` in the same channel
+    looks like proof the bot can talk but proves nothing about any of the three.
 
     ``outcome`` is how that answer reaches the person who asked for the board
     rather than only the host's log file. :func:`post_forbidden_advice` turns

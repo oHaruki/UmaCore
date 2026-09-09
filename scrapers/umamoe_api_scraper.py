@@ -260,12 +260,12 @@ class UmaMoeAPIScraper(BaseScraper):
             parsed = self._parse_members(members, target.slot) if members else {}
             gains = self._member_gains(members, target.slot)
 
-            # A newly opened competition month exists before uma.moe publishes any
-            # member rows for it — observed 2026-08-01 17:23 UTC, where August
-            # returned HTTP 200 with an empty member list, null live fields and
-            # July's monthly_point still attached. There is nothing to show yet, so
-            # report no snapshot rather than an empty one; the caller then leaves
-            # the previous board alone instead of blanking it.
+            # A newly opened competition month can exist before uma.moe publishes
+            # any member rows for it: HTTP 200 with an empty member list, null
+            # live fields, and the previous month's monthly_point still attached.
+            # There is nothing to show yet, so report no snapshot rather than an
+            # empty one; the caller then leaves the previous board alone instead
+            # of blanking it.
             if not gains:
                 logger.info(
                     f"circle {self.circle_id}: no live rows yet for "
@@ -318,14 +318,11 @@ class UmaMoeAPIScraper(BaseScraper):
         means the slot holds a settled value rather than a running total.
 
         Uses the newest of ``yesterday_updated`` and ``last_updated``. The former
-        is the finalize marker proper — measured 2026-08-02, every circle reported
-        exactly ``15:01:00Z``. ``last_updated`` alone is not safe to gate on: it is
-        touched at unrelated times, and around the 2026-08 rollover it read
-        ``10:00:28Z`` on a day that had already finalized at 15:01, which failed
-        this check, exhausted the scheduler's retries and lost a day of history.
-
-        Replaces the older "did any member's fan count grow?" heuristic, which
-        could not tell a not-yet-published day from a genuinely quiet one.
+        is the finalize marker proper, always written at ``15:01:00Z``.
+        ``last_updated`` alone is not safe to gate on: it is touched at unrelated
+        times and can carry a timestamp from earlier the same day even after the
+        day has actually finalized, which would reject an already-finalized day
+        until the scheduler's retries run out.
         """
         closed_at = datetime(
             target.jst_day.year, target.jst_day.month, target.jst_day.day,
@@ -407,9 +404,7 @@ class UmaMoeAPIScraper(BaseScraper):
         they joined, so the fans sitting in it were earned partly before and
         partly after they arrived. Both numbers therefore come out as 0 and the
         row is flagged ``is_new`` so the board can say so instead of listing them
-        among members who simply haven't raced. Measured on circle 690001342,
-        2026-08-03: three members joined on competition day 2 the same day two
-        others left.
+        among members who simply haven't raced.
         """
         gains: List[MemberGain] = []
         prev_slot = live_slot - 1
@@ -499,10 +494,8 @@ class UmaMoeAPIScraper(BaseScraper):
 
         # No full-day reference means yesterday_points is absent, which in practice
         # only happens while a competition period is turning over — and during that
-        # window the circle totals themselves are in flux. Measured across the
-        # 2026-08 rollover: July's monthly_point fell from 1,837,269,789 to
-        # 1,165,044,213 between two reads while the member rows stayed put, so
-        # comparing against it flagged every club at 63-91%.
+        # window monthly_point itself can swing sharply between reads while the
+        # member rows stay put, so comparing against it would flag every club.
         #
         # Skip rather than compare against a figure known to be unreliable. A real
         # slot-index error still shows up on any ordinary day, when the reference

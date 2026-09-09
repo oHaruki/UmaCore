@@ -4,8 +4,8 @@ uma.moe runs on JST. Everything about which array slot to read follows from that
 so this module owns the mapping and nothing else in the codebase should be doing
 day arithmetic against ``daily_fans`` by hand.
 
-Verified against the live API on 2026-07-25 (two independent circles, member sums
-reconciled against the circle totals to <0.5%):
+Verified against the live API (member sums reconcile to the circle totals within
+0.5%):
 
     daily_fans[i]  ==  each member's lifetime fan total at the END of JST day i+1
 
@@ -16,7 +16,7 @@ So on a given moment there are exactly two slots of interest:
     live slot   = the JST day currently being raced   -> matches circle.live_points
     final slot  = the last JST day that has closed    -> matches circle.monthly_point
 
-Concretely, at 08:10 UTC on 2026-07-25 (= 17:10 JST, JST day 25 in progress):
+Concretely, if JST day 25 is currently in progress:
 
     slot[22] == circle.yesterday_points   (JST day 23, closed)
     slot[23] == circle.monthly_point      (JST day 24, last closed)  <- final
@@ -33,8 +33,8 @@ Date attribution
 (``jst_day - 1``) rather than the JST day number. Existing ``quota_history`` rows
 are keyed on that convention and ``calculate_expected_fans`` counts days from
 ``join_date`` to ``data_date``, so re-labelling would shift every historical row
-and silently change everyone's quota math. The bug this module fixes is *which
-slot gets read*, not what the resulting day is called.
+and silently change everyone's quota math. This module only changes *which slot
+gets read*, not what the resulting day is called.
 """
 import calendar
 from dataclasses import dataclass
@@ -135,11 +135,11 @@ def slot_location(jst_day: date) -> Tuple[int, int, int]:
         slot D        competition day D  ==  JST day D+1
 
     Which is why every array is 32 slots and why the populated range tracks month
-    length exactly. Measured 2026-08-01 on circle 860280110: July (31 days)
-    populates 0..31, June (30 days) populates 1..30 with slot 31 empty, and
-    ``sum(slot[30] - slot[0])`` reproduces July's ``monthly_point`` to 0.71%.
+    length exactly: a 31-day month populates 0..31, a 30-day month populates
+    1..30 with slot 31 empty, and ``sum(slot[N] - slot[0])`` reproduces the
+    month's ``monthly_point`` to within 1%.
 
-    Two consequences worth stating, because both caused bugs:
+    Two consequences worth stating:
 
     * A month's data is only ever reached through its own array. uma.moe rejects
       an unstarted month (``HTTP 400 "circle month cannot be in the future"``),
@@ -168,16 +168,12 @@ def _target(jst_day: date, is_live: bool) -> SlotTarget:
 def resolve_finalized(now_utc: Optional[datetime] = None) -> SlotTarget:
     """The slot safe to persist: the last fully-closed JST day.
 
-    This is what quota accounting must read. Replaces the old
-    "probe whether slot > 0 and fall back a day" heuristic, which broke once
-    uma.moe started populating the in-progress slot live.
+    This is what quota accounting must read.
 
     Month boundaries need no special handling: the slot is the competition day,
     so JST August 1 resolves to July slot 31 — July's final day — and August
     opens at JST August 2 with slot 1, measured against August's own slot-0
-    baseline. An earlier version deferred day 1 to avoid a zero monthly total,
-    which was a symptom of mapping the slot to the wrong month rather than a real
-    constraint.
+    baseline.
     """
     return _target(last_closed_jst_day(now_utc), is_live=False)
 

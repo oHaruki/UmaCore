@@ -591,9 +591,8 @@ class SettingsCommands(commands.Cog):
         await ChannelName.upsert(club_obj.club_id, channel.id, template)
 
         # Only this channel. Renaming the club's other channels here would spend
-        # their rename budget for no reason, and — the bug that hid a refusal for
-        # an hour of debugging — would let one of them succeed and be reported as
-        # if this one had.
+        # their rename budget for no reason, and could let one of them succeed
+        # and be reported as if this one had.
         result = await channel_names.refresh_now(self.bot, club_obj, only=channel.id)
         outcome = result.get("per_channel", {}).get(channel.id, {})
         status = outcome.get("status")

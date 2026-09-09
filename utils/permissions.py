@@ -74,9 +74,7 @@ def post_requirements(channel, *, files: bool = False) -> tuple:
     Note what is *not* required: none of this is needed to answer a slash command.
     An interaction is replied to with its own token rather than as a message in
     the channel, so ``/my_status`` works in a channel where the bot holds nothing
-    at all — which makes a working command no evidence that a report can be
-    posted. Measured 2026-09-02 on channel 1542974943682232380, where exactly
-    that reading sent the diagnosis down the wrong path twice.
+    at all — a working command is therefore no evidence that a report can post.
     """
     needs = ['view_channel', 'send_messages', 'embed_links']
     if files:
@@ -84,12 +82,12 @@ def post_requirements(channel, *, files: bool = False) -> tuple:
     return tuple(needs)
 
 
-# The fix in almost every case, in the words of the buttons someone has to
-# click. Channel permissions are applied on top of the server-wide ones, so a
-# private channel — one that denies @everyone — removes them again for anyone
-# not named on the channel itself. Granting the bot a permission server-wide
-# therefore does nothing there. Administrator hides this entirely, since it
-# bypasses overwrites, which is why it only shows up on a normal setup.
+# Channel permissions are applied on top of the server-wide ones, so a private
+# channel — one that denies @everyone — removes them again for anyone not named
+# on the channel itself. Granting the bot a permission server-wide therefore does
+# nothing there; this is the fix in almost every case, phrased as the buttons to
+# click. Administrator bypasses overwrites entirely, which is why this only shows
+# up on a normal (non-administrator) setup.
 ADD_ME = "**Edit Channel → Permissions → add UmaCore →** allow "
 
 
@@ -318,8 +316,7 @@ def timeout_note(me) -> Optional[str]:
     This is worth checking before anything else, because it counterfeits a
     permission problem exactly: the channel's settings look correct because they
     *are* correct, and every permission except viewing reads as missing no matter
-    what is granted. Diagnosed 2026-09-01 after three wrong guesses at a refusal
-    whose overwrites plainly allowed the action.
+    what is granted.
     """
     try:
         if not me.is_timed_out():
@@ -416,11 +413,9 @@ def is_admin(interaction: discord.Interaction) -> bool:
 
     That local route fails open-ended: when the cached guild is a partial object
     its role cache is empty and ``owner_id`` is unset, so every member resolves to
-    base permissions and administrator silently reads False. Measured 2026-08-05
-    on guild 1426560692932317186, where a server admin was refused ``/remove_club``
-    while ``interaction.permissions.administrator`` was True the whole time — the
-    same reading ``app_commands.checks.has_permissions`` uses, which is why the
-    admin-gated ``/add_manager_role`` had let him through minutes earlier.
+    base permissions and administrator silently reads False — even though
+    ``interaction.permissions.administrator`` (the reading
+    ``app_commands.checks.has_permissions`` uses) is True.
 
     Administrator cannot be revoked by channel overwrites, so the channel-resolved
     permissions in the payload carry it faithfully.

@@ -1,13 +1,9 @@
 """/promotion must point a club at the grade band directly above it.
 
-`PROMOTION_MILESTONES` used to be a hand-picked list — [10, 50, 100, 500, 3000] —
-with nothing between 500 and 3000. `next_milestone` returns the best milestone
-better than your rank, so every club from #501 to #2999 was told to climb to Top
-500. Reported 2026-08-13: a B+ club at #1483 was pointed at Top 500 (+908M fans,
-four grades up) instead of Top 1000, the A band immediately above it.
-
-The milestones are now derived from the real grade bands, so a promotion target
-is always exactly one grade up.
+`PROMOTION_MILESTONES` is derived from the real grade bands rather than a
+hand-picked list, so a gap between milestones (e.g. nothing between 500 and
+3000) can't point every club in that range at the same distant target instead
+of the next grade up.
 """
 import pytest
 

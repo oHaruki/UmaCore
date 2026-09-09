@@ -1,9 +1,9 @@
 """Tests for the slot-index checksum guard.
 
-Calibration comes from six real clubs measured 2026-07-25, whose parsed totals
-differed from uma.moe's monthly_point by 1.9M-7.0M fans regardless of club size
-(monthly points spanning 125M-1.66B). Because that residual is roughly constant
-in absolute terms, it is a large *percentage* on a small club — so the guard
+Calibration comes from six real clubs, whose parsed totals differed from
+uma.moe's monthly_point by 1.9M-7.0M fans regardless of club size (monthly
+points spanning 125M-1.66B). Because that residual is roughly constant in
+absolute terms, it is a large *percentage* on a small club — so the guard
 scales against one day's fans, which is the size of an actual off-by-one.
 """
 import logging
@@ -59,7 +59,7 @@ class TestChecksumTotalCountsLeavers:
 
 
 class TestRealWorldClubsPass:
-    """Every club measured on 2026-07-25 must pass."""
+    """Every real club below must pass the guard."""
 
     # (name, monthly_point, yesterday_points, parsed_total)
     CLUBS = [
@@ -159,11 +159,10 @@ class TestFreshnessGate:
     """The gate decides whether a day has finalized. Getting it wrong loses a
     whole day of history: the scheduler retries, gives up, and writes nothing.
 
-    Measured 2026-08-02 across the month rollover:
-        yesterday_updated  2026-08-01T15:01:00Z   the finalize, on every circle
-        last_updated       2026-08-01T18:06:30Z   touched at unrelated times
-                           2026-08-01T10:00:28Z   earlier the same day
-    Gating on last_updated alone rejected a day that had already finalized.
+    ``last_updated`` moves on any touch to the circle, not just the finalize, so
+    it can show a time before the finalize even after the day has closed.
+    ``yesterday_updated`` only moves on the finalize itself — gating on
+    ``last_updated`` alone can therefore reject an already-finalized day.
     """
     from datetime import date as _date
 
@@ -191,7 +190,6 @@ class TestFreshnessGate:
         return datetime(y, mo, d, h, mi, s, tzinfo=timezone.utc)
 
     def test_accepts_a_finalized_day_despite_a_stale_last_updated(self):
-        """The 2026-08-01 regression that cost a day of history."""
         assert not self._check(self._utc(2026, 8, 1, 10, 0, 28),
                                self._utc(2026, 8, 1, 15, 1))
 

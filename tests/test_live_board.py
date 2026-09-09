@@ -486,11 +486,10 @@ class TestMonthBoundaryGains:
 
 
 class TestUnpublishedMonth:
-    """A newly opened competition month exists before uma.moe publishes rows for it.
-
-    Observed 2026-08-01 17:23 UTC: August returned HTTP 200 with an empty member
-    list, null live fields, and July's monthly_point still attached. Rendering that
-    replaced a good board with 'Total Members: 0'.
+    """A newly opened competition month can exist before uma.moe publishes rows
+    for it: HTTP 200 with an empty member list, null live fields, and the
+    previous month's monthly_point still attached. Rendering that would replace
+    a good board with 'Total Members: 0'.
     """
 
     def test_no_snapshot_when_there_are_no_member_rows(self, monkeypatch):
@@ -701,11 +700,9 @@ NOW = datetime(2026, 7, 25, 12, tzinfo=UTC)
 
 
 class TestRefusalNamesThePermission:
-    """The board's half of the 2026-09-02 support thread.
-
-    ``refresh`` reported one word — ``"failed"`` — and the log said "No
-    permission to post the live board". Three permissions produce exactly that
-    and only one was missing, so the answer had to be guessed at over Discord.
+    """A refusal must name the missing permission, not just report "failed" —
+    three different permissions can produce the same generic refusal, and only
+    one of them is actually the problem.
     """
 
     def _run(self, coro):
@@ -738,9 +735,8 @@ class TestRefusalNamesThePermission:
             outcome, outcome.get("channel"), what="the board")
 
     def test_a_refused_edit_is_not_reported_as_edited(self, wired, monkeypatch):
-        """The bug behind "Board edited in place." on a board that had not
-        changed since yesterday: ``_edit_existing`` returned True for "don't
-        repost", and the caller read True as "edited"."""
+        """``_edit_existing`` returns True for both "edited" and "unchanged,
+        don't repost" — a refused edit must not be read as either."""
         monkeypatch.setattr(wired.bot, "_c", RefusedChannel(on="edit",
                                                             view_channel=True))
         c = attach_persistence(

@@ -1,7 +1,7 @@
 """Tests for the JST slot mapping.
 
-The reference cases come from a live API probe on 2026-07-25 08:10 UTC against
-circles 452414222 and 883951941, where member sums reconciled as:
+The reference cases come from a live API probe, where member sums reconciled
+as:
 
     slot[22] == yesterday_points
     slot[23] == monthly_point   (last closed JST day)
@@ -154,9 +154,9 @@ class TestRolloverSlot:
     """Day 1 of a month lives in the PREVIOUS month's array.
 
     Every daily_fans array is 32 slots regardless of month length, and the slot
-    past the month's last day holds day 1 of the following month. Verified
-    2026-08-01 on circle 860280110: July (31 days) populated slots 0..31 with
-    slot[31] = August 1, and June slot[30] == July slot[0].
+    past the month's last day holds day 1 of the following month: a 31-day
+    month populates slots 0..31 with slot[31] as the 1st of the next month, and
+    that next month's slot[0] equals this month's slot[30].
 
     This is not cosmetic — uma.moe rejects a request for a month it considers
     unstarted (HTTP 400 "circle month cannot be in the future"), so on day 1 the
@@ -185,8 +185,8 @@ class TestRolloverSlot:
         assert slot_location(date(2026, 7, 25)) == (2026, 7, 24)
 
     def test_live_target_on_day_one_never_requests_the_new_month(self):
-        """The regression: requesting August on Aug 1 returns HTTP 400, and that
-        day belongs to July anyway."""
+        """Requesting August on Aug 1 would return HTTP 400 — that day belongs
+        to July anyway."""
         t = resolve_live(utc(2026, 8, 1, 12, 49))
         assert (t.year, t.month) == (2026, 7), "would request an unstarted month"
         assert t.slot == 31
