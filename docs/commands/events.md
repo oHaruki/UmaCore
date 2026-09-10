@@ -93,6 +93,20 @@ GameTora. Campaign end times need no such help — those match on 49 of 52.
 If GameTora is unreachable the feed still works; banners just carry uma.moe's
 derived end, which runs about a day early.
 
+### Artwork and links
+
+uma.moe hosts the Japanese artwork for everything. GameTora hosts the English
+artwork Global players actually see in game, but only for banners and mission
+campaigns — and uma.moe supplies the ids needed to build those URLs.
+
+So each announcement takes its art and its link from the same site: GameTora for
+banners and campaigns, uma.moe for everything else. The Japanese art is kept as a
+fallback in case GameTora doesn't have that particular id.
+
+Story events stay on uma.moe's art even though GameTora hosts English story
+banners, because GameTora's story ids don't map onto uma.moe's — guessing one
+would show a different event's banner.
+
 ---
 
 ## What does *not* get announced

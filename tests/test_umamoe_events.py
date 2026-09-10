@@ -212,3 +212,55 @@ def test_each_event_gets_a_distinct_url():
     urls = [e.url for e in run(feed(payload).fetch_events())]
 
     assert len(set(urls)) == 3
+
+
+# ------------------------------------------------------------------- artwork
+
+def test_banners_use_gametora_english_art():
+    """uma.moe hosts the Japanese banner; Global players see the English one.
+    uma.moe's gacha_id is what lets us build the English URL."""
+    e = run(feed([raw(gacha_id=30124)]).fetch_events())[0]
+
+    assert e.image == "https://gametora.com/images/umamusume/en/gacha/img_bnr_gacha_30124.png"
+    assert "gametora.com" in e.url
+
+
+def test_campaigns_use_gametora_english_art():
+    e = run(feed([raw(id="campaign-198", type="campaign")]).fetch_events())[0]
+
+    assert e.image.endswith("/en/missions/tex_campaign_mission_logo_00198.png")
+    assert "gametora.com" in e.url
+
+
+def test_the_japanese_art_is_kept_as_a_fallback():
+    """GameTora doesn't have every id; better the Japanese banner than none."""
+    e = run(feed([raw(gacha_id=30124)]).fetch_events())[0]
+
+    assert e.image_alt == "https://uma.moe/assets/images/character/banner/2022_30124.webp"
+
+
+def test_story_events_stay_on_uma_moe():
+    """GameTora hosts English story art, but its ids don't map to uma.moe's
+    slugs — guessing one would show a different event's banner."""
+    e = run(feed([raw(id="story-event-10_intertwined", type="story_event",
+                      image_path="assets/images/story/10_intertwined.webp")]).fetch_events())[0]
+
+    assert e.image.startswith("https://uma.moe/")
+    assert e.url.startswith("https://uma.moe/timeline#")
+
+
+def test_news_derived_campaigns_stay_on_uma_moe():
+    """Only the ``campaign-<mission id>`` form maps onto GameTora."""
+    e = run(feed([raw(id="news-event-campaign-994", type="campaign")]).fetch_events())[0]
+
+    assert e.image.startswith("https://uma.moe/")
+    assert "uma.moe/timeline" in e.url
+
+
+def test_art_and_link_never_come_from_different_sites():
+    payload = [raw(gacha_id=1, id="b1"),
+               raw(id="campaign-2", type="campaign"),
+               raw(id="story-event-x", type="story_event")]
+
+    for e in run(feed(payload).fetch_events()):
+        assert ("gametora.com" in e.image) == ("gametora.com" in e.url)
