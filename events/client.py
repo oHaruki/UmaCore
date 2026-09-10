@@ -54,6 +54,9 @@ class GameEvent:
     image: Optional[str]
     url: str
     detail: str = ""     # extra line for the embed (pickup names, race conditions)
+    #: Used when ``image`` doesn't resolve. Global art is preferred over the
+    #: Japanese original, but not every event has an English version uploaded.
+    image_alt: Optional[str] = None
 
     @property
     def is_permanent(self) -> bool:
@@ -425,20 +428,27 @@ class GametoraClient:
 
 
 async def strip_missing_images(events: list[GameEvent], image_exists) -> list[GameEvent]:
-    """Blank out banner art that doesn't resolve, checking all of them at once.
+    """Resolve each event's art, falling back before giving up.
+
+    ``image`` is the preferred version (English where we can build a URL for it)
+    and ``image_alt`` the original. An event keeps whichever resolves; only when
+    neither does is it left without art, since an embed claiming an image it
+    cannot load renders as a blank strip.
 
     Takes the checker as an argument rather than reading it off a client, so the
     announcer and the commands share one implementation and the tests exercise
     it rather than a copy.
     """
-    async def ok(event: GameEvent) -> bool:
-        return True if not event.image else await image_exists(event.image)
+    async def resolve(event: GameEvent) -> Optional[str]:
+        for candidate in (event.image, event.image_alt):
+            if candidate and await image_exists(candidate):
+                return candidate
+        return None
 
-    flags = await asyncio.gather(*(ok(e) for e in events))
+    resolved = await asyncio.gather(*(resolve(e) for e in events))
     out = []
-    for event, present in zip(events, flags):
-        if not present:
-            logger.info(f"No banner image for {event.key} ({event.image})")
-            event = replace(event, image=None)
-        out.append(event)
+    for event, image in zip(events, resolved):
+        if image != event.image:
+            logger.info(f"Art for {event.key}: {event.image} -> {image}")
+        out.append(replace(event, image=image) if image != event.image else event)
     return out

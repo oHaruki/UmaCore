@@ -25,7 +25,10 @@ import aiohttp
 
 from config.settings import UMAMOE_API_KEY
 
-from .client import GameEvent, PERMANENT_CUTOFF, PERMANENT_WINDOW
+from .client import (
+    GameEvent, PERMANENT_CUTOFF, PERMANENT_WINDOW,
+    gacha_banner_image, mission_logo_image, page_url as gt_page_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,15 +54,13 @@ KIND_BY_TYPE = {
     "trainer_skills_test": "trainer_skills_test",
 }
 
-#: Where each kind sends the reader. uma.moe has no per-event page, so these are
-#: the section pages; :func:`events.client.page_url` keeps them unique per event.
-PATH_BY_KIND = {
-    "gacha_char": "gacha",
-    "gacha_support": "gacha",
-    "gacha_paid": "gacha",
-    "mission": "missions",
-    "story": "events",
-}
+
+def timeline_url(key: str) -> str:
+    """uma.moe's timeline covers every event type on one page. The fragment
+    keeps each embed's url distinct, which is what stops Discord folding them
+    into a single gallery."""
+    return f"{SITE_BASE}/timeline#{key.replace(':', '-')}"
+
 
 #: Descriptions are news copy written for a web page, not an embed. Champions
 #: Meeting uses them for the race conditions, which is worth keeping; the news
@@ -140,6 +141,35 @@ class UmaMoeEventsClient:
             self._cached = data
             return data
 
+    @staticmethod
+    def _artwork(raw: dict, kind: str, key: str) -> tuple[Optional[str], Optional[str], str]:
+        """Pick the art and the link, preferring English where it exists.
+
+        uma.moe hosts the Japanese original for everything. GameTora hosts the
+        English art Global players actually see in game, but only for banners and
+        mission campaigns — and uma.moe hands us the ids to build those URLs:
+        ``gacha_id`` for banners, ``campaign-<mission id>`` for campaigns.
+
+        Art and link come from the same site so the two never disagree, and the
+        Japanese art rides along as the fallback for when GameTora turns out not
+        to have that particular id.
+        """
+        original = image_url(raw.get("image_path"))
+
+        gacha_id = raw.get("gacha_id")
+        if gacha_id and kind.startswith("gacha"):
+            return (gacha_banner_image(gacha_id), original,
+                    gt_page_url("gacha", key))
+
+        mission_id = re.fullmatch(r"campaign-(\d+)", str(raw.get("id") or ""))
+        if mission_id:
+            return (mission_logo_image(int(mission_id.group(1))), original,
+                    gt_page_url("missions", key))
+
+        # Everything else — story events, Champions Meeting, the news-derived
+        # campaigns — has no English art to point at, so it stays on uma.moe.
+        return original, None, timeline_url(key)
+
     def _to_event(self, raw: dict) -> Optional[GameEvent]:
         start = _unix(raw.get("global_release_date"))
         if not start:
@@ -166,16 +196,17 @@ class UmaMoeEventsClient:
         if event_id is None:
             return None
 
-        from .client import page_url
         key = f"umamoe:{event_id}"
+        image, image_alt, url = self._artwork(raw, kind, key)
         return GameEvent(
             key=key,
             kind=kind,
             name=name,
             start=start,
             end=end,
-            image=image_url(raw.get("image_path")),
-            url=page_url(PATH_BY_KIND.get(kind, "events"), key),
+            image=image,
+            image_alt=image_alt,
+            url=url,
             detail=detail,
         )
 
