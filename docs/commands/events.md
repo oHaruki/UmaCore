@@ -1,11 +1,13 @@
 # Event Feed
 
 Announces new Uma Musume **Global** content in a channel as it goes live —
-gacha banners, mission events and story events — with the banner art and the
-start/end times rendered in each reader's own timezone.
+gacha banners, story events, Champions Meeting, mission campaigns and more —
+with the banner art and the start/end times rendered in each reader's own
+timezone.
 
-Data comes from [GameTora](https://gametora.com/umamusume). UmaCore polls it
-every 15 minutes and posts anything it hasn't posted before.
+Data comes from [uma.moe](https://uma.moe), with gacha end times corrected from
+[GameTora](https://gametora.com/umamusume). UmaCore polls every 15 minutes and
+posts anything it hasn't posted before.
 
 ---
 
@@ -57,23 +59,39 @@ Server**.
 
 ## What gets announced
 
-| Type | Source | State |
-|---|---|---|
-| Character banners | `en/gacha/char-standard` | Current |
-| Support card banners | `en/gacha/support-standard` | Current |
-| Mission events | `en/missions/limited` | Current |
-| Story events | `en/storyevents` | GameTora's Global data lags behind — see below |
-| Champions Meeting | `en/events/champions-meeting` | Current |
-| Legend Race | `en/events/legend-race` | Current |
+Every confirmed Global event uma.moe tracks:
 
-Banners and mission events (celebration missions, anniversary missions, the
-Tracen Specials) are the two feeds GameTora keeps up to date for Global, and
-they're what you'll actually see day to day.
+| Type | Notes |
+|---|---|
+| Character banners | End time corrected from GameTora |
+| Support card banners | End time corrected from GameTora |
+| Paid banners | End time corrected from GameTora |
+| Story events | |
+| Champions Meeting | Race conditions shown in the embed |
+| Legend Race | |
+| Mission campaigns | Mission count shown in the embed |
+| New scenarios | |
+| Racing Carnival, League of Heroes, Masters Challenge, Strongest Team, Trainer Aptitude Test, Factor Research | Announced when they reach Global |
 
-**Story events are wired up but quiet.** GameTora's `en/storyevents` file has not
-been extended past February 2026, so Global story events currently produce no
-announcements. Nothing needs changing on this end — if GameTora resumes updating
-it, they start appearing.
+A type uma.moe adds later is announced too, labelled from its own name, rather
+than being dropped for being unrecognised.
+
+---
+
+### Why two sources
+
+uma.moe covers Global content GameTora has no data for at all — Champions
+Meeting, story events, scenario releases and the smaller recurring events.
+
+Its one weak spot is gacha end times, which it derives from a duration field
+rather than reading from the game. Since April 2026 that has run exactly one
+daily rollover early on every Global banner (23 of 61 matched historically).
+GameTora carries the real value and the start times agree across both sources
+on all 61, so the start is used to join them and the end is taken from
+GameTora. Campaign end times need no such help — those match on 49 of 52.
+
+If GameTora is unreachable the feed still works; banners just carry uma.moe's
+derived end, which runs about a day early.
 
 ---
 
@@ -87,11 +105,16 @@ Three rules keep the channel from being a firehose. All three are deliberate:
 - **Entries backdated by more than 3 days** are recorded without posting. GameTora
   sometimes adds an event that started weeks ago; that's a data edit, not news.
 - **Permanent mission sets older than 21 days** (the launch tutorials, the Tracen
-  Specials) never count as live. Same 21-day rule GameTora's own front page uses.
+  Specials) never count as live.
+- **Unconfirmed entries.** uma.moe forecasts when JP content will reach Global.
+  Those dates move and the same campaign can appear several times at different
+  dates, so only confirmed entries are announced.
 
 Because the record of what's been announced is global to the bot, a server that
 enables the feed today starts from the next new event rather than replaying
-history into a fresh channel.
+history into a fresh channel. Announcement keys are namespaced per source, so
+changing data source seeds the new source silently instead of re-announcing
+everything currently live.
 
 ---
 

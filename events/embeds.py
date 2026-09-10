@@ -21,27 +21,53 @@ MAX_EMBEDS_PER_MESSAGE = 10
 KIND_LABELS = {
     "gacha_char": "Character Banner",
     "gacha_support": "Support Card Banner",
+    "gacha_paid": "Paid Banner",
     "mission": "Mission Event",
     "story": "Story Event",
     "champions_meeting": "Champions Meeting",
     "legend_race": "Legend Race",
+    "scenario": "New Scenario",
+    "factor_research": "Factor Research",
+    "league_of_heroes": "League of Heroes",
+    "masters_challenge": "Masters Challenge",
+    "racing_carnival": "Racing Carnival",
+    "strongest_team": "Strongest Team",
+    "trainer_skills_test": "Trainer Aptitude Test",
 }
 
 KIND_COLOURS = {
     "gacha_char": 0xe84393,
     "gacha_support": 0x4a7dff,
+    "gacha_paid": 0x8e44ad,
     "mission": 0xf39c12,
     "story": 0x9b59b6,
     "champions_meeting": 0xf1c40f,
     "legend_race": 0x1abc9c,
+    "scenario": 0x16a085,
+    "factor_research": 0x27ae60,
+    "league_of_heroes": 0xe67e22,
+    "masters_challenge": 0xc0392b,
+    "racing_carnival": 0xff7675,
+    "strongest_team": 0x2980b9,
+    "trainer_skills_test": 0x7f8c8d,
 }
 
+#: Listing order: what people pull on first, then what they play, then the rest.
 KIND_ORDER = [
-    "gacha_char", "gacha_support", "story", "mission",
-    "champions_meeting", "legend_race",
+    "gacha_char", "gacha_support", "gacha_paid",
+    "story", "champions_meeting", "legend_race",
+    "scenario", "mission",
+    "racing_carnival", "league_of_heroes", "masters_challenge",
+    "strongest_team", "trainer_skills_test", "factor_research",
 ]
 
-FOOTER = "Uma Musume Global · data from GameTora"
+FOOTER = "Uma Musume Global · data from uma.moe"
+
+
+def kind_label(kind: str) -> str:
+    """Readable label, falling back to the raw kind so a newly added uma.moe
+    event type still shows something sensible instead of just "Event"."""
+    return KIND_LABELS.get(kind) or kind.replace("_", " ").title()
 
 
 def ts(unix: int, style: str = "f") -> str:
@@ -73,7 +99,7 @@ def event_embed(event: GameEvent, now: int = None, *, footer: bool = True) -> di
     ``footer`` is off for all but the last embed of a listing — repeating the
     same source line five times down a message is noise, not attribution.
     """
-    label = KIND_LABELS.get(event.kind, "Event")
+    label = kind_label(event.kind)
 
     lines = []
     if event.detail and event.detail != label:

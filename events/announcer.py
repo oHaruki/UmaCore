@@ -1,10 +1,11 @@
 """
-Polls GameTora and announces newly-live Uma Musume events.
+Polls the event feed and announces newly-live Uma Musume events.
 
 The loop is deliberately dumb: fetch everything dated, keep what is live now,
 subtract what we have already posted, announce the rest. All the state that
-makes "new" meaningful lives in ``announced_events`` — GameTora re-serves the
-same entries on every poll and has no notion of what any given bot has seen.
+makes "new" meaningful lives in ``announced_events`` — the upstream sources
+re-serve the same entries on every poll and have no notion of what any given
+bot has seen.
 """
 import logging
 import time
@@ -17,7 +18,8 @@ from config.settings import (
 )
 from utils.permissions import post_requirements, missing_channel_permissions
 
-from .client import GametoraClient, GameEvent, strip_missing_images
+from .client import GameEvent, strip_missing_images
+from .feed import EventFeed
 from .embeds import event_embed
 from .store import EventFeedChannel, AnnouncedEvents
 
@@ -27,7 +29,7 @@ logger = logging.getLogger(__name__)
 class EventAnnouncer(commands.Cog):
     """Background poller + fan-out to every guild that opted in."""
 
-    def __init__(self, bot: commands.Bot, client: GametoraClient):
+    def __init__(self, bot: commands.Bot, client: EventFeed):
         self.bot = bot
         self.client = client
         self.last_poll: float = 0.0
@@ -67,16 +69,24 @@ class EventAnnouncer(commands.Cog):
         if not fresh:
             return []
 
-        # An empty record means we've never checked, not that everything live
-        # just went live — record it silently so enabling the feed doesn't dump
-        # a month of banners into the channel.
-        if not known:
-            await AnnouncedEvents.mark_many(fresh)
-            logger.info(f"Event feed seeded with {len(fresh)} live events (nothing announced)")
-            return []
+        # Keys are namespaced by source ("umamoe:123"). A namespace we have no
+        # record of at all means we've never read that source, not that all of
+        # its content just went live — true on a fresh database, and true again
+        # the first time the feed changes source. Either way, recording it
+        # silently is what stops a month of banners landing in the channel.
+        seen_namespaces = {k.split(":", 1)[0] for k in known}
+        unseen = [e for e in fresh if e.key.split(":", 1)[0] not in seen_namespaces]
+        if unseen:
+            await AnnouncedEvents.mark_many(unseen)
+            logger.info(f"Event feed seeded {len(unseen)} live events from a new "
+                        f"source (nothing announced)")
+            seeded = {e.key for e in unseen}
+            fresh = [e for e in fresh if e.key not in seeded]
+            if not fresh:
+                return []
 
-        # A GameTora backfill (an entry added weeks after it started) is a data
-        # edit, not news.
+        # An entry added weeks after it started is a data edit upstream, not
+        # news.
         stale = [e for e in fresh if now - e.start > EVENTS_MAX_BACKFILL_SEC]
         if stale:
             await AnnouncedEvents.mark_many(stale)
@@ -90,8 +100,8 @@ class EventAnnouncer(commands.Cog):
         fresh.sort(key=lambda e: e.start)
         targets = await EventFeedChannel.all()
 
-        # Banner art is derived from an id, so a feed entry can point at an image
-        # that was never uploaded. Better no image than a blank strip.
+        # Some entries carry placeholder art paths that were never uploaded.
+        # Better no image than a blank strip.
         fresh = await strip_missing_images(fresh, self.client.image_exists)
 
         for event in fresh:

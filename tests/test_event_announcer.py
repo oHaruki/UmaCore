@@ -194,7 +194,7 @@ def test_missing_banner_art_drops_the_image(wire):
     channel = FakeChannel(10)
     art = "https://gametora.com/images/umamusume/en/gacha/img_bnr_gacha_9999.png"
     cog, _ = wire([event("gacha:9999", kind="gacha_char", image=art)],
-                  targets=[Target(1, 10)], announced=["seed"],
+                  targets=[Target(1, 10)], announced=["gacha:1"],
                   missing_images=[art], bot=FakeBot(channel))
 
     run(cog.run_once())
@@ -206,7 +206,7 @@ def test_ping_role_is_mentioned(wire):
     channel = FakeChannel(10)
     cog, _ = wire([event("mission:2")],
                   targets=[Target(1, 10, ping_role_id=777)],
-                  announced=["seed"], bot=FakeBot(channel))
+                  announced=["mission:1"], bot=FakeBot(channel))
 
     run(cog.run_once())
 
@@ -227,7 +227,7 @@ def test_one_broken_guild_does_not_block_the_others(wire):
     working = FakeChannel(20)
     cog, store = wire([event("mission:2")],
                       targets=[Target(1, 10), Target(2, 20)],
-                      announced=["seed"],
+                      announced=["mission:1"],
                       bot=FakeBot(broken, working))
 
     posted = run(cog.run_once())
@@ -239,9 +239,41 @@ def test_one_broken_guild_does_not_block_the_others(wire):
 
 def test_no_subscribers_still_records(wire):
     """Otherwise the first channel to subscribe gets everything since deploy."""
-    cog, store = wire([event("mission:2")], targets=[], announced=["seed"])
+    cog, store = wire([event("mission:2")], targets=[], announced=["mission:1"])
 
     posted = run(cog.run_once())
 
     assert [e.key for e in posted] == ["mission:2"]
     assert "mission:2" in store.announced
+
+
+def test_switching_source_seeds_instead_of_re_announcing(wire):
+    """Keys are namespaced per source. Changing source changes every key, so
+    without this the whole live schedule would be re-announced as "new" the
+    first time the new source is polled."""
+    channel = FakeChannel(10)
+    cog, store = wire(
+        [event("umamoe:1"), event("umamoe:2")],
+        targets=[Target(1, 10)],
+        announced=["gacha:30124", "mission:198"],   # the previous source
+        bot=FakeBot(channel),
+    )
+
+    posted = run(cog.run_once())
+
+    assert posted == []
+    assert channel.sent == []
+    assert {"umamoe:1", "umamoe:2"} <= set(store.announced)
+
+
+def test_a_new_event_from_a_known_source_still_announces(wire):
+    """The seeding is per namespace, not a blanket amnesty on anything new."""
+    channel = FakeChannel(10)
+    cog, _ = wire([event("umamoe:1"), event("umamoe:2")],
+                  targets=[Target(1, 10)],
+                  announced=["umamoe:1"], bot=FakeBot(channel))
+
+    posted = run(cog.run_once())
+
+    assert [e.key for e in posted] == ["umamoe:2"]
+    assert len(channel.sent) == 1

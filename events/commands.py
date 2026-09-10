@@ -16,7 +16,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from .announcer import EventAnnouncer
-from .client import GametoraClient, strip_missing_images
+from .client import strip_missing_images
+from .feed import EventFeed
 from .embeds import event_embed, event_embeds, chunk
 from .store import EventFeedChannel, AnnouncedEvents
 
@@ -26,7 +27,7 @@ NOTHING_ON = "Nothing is running on Global right now."
 
 
 class EventCommands(commands.Cog):
-    def __init__(self, bot: commands.Bot, client: GametoraClient):
+    def __init__(self, bot: commands.Bot, client: EventFeed):
         self.bot = bot
         self.client = client
 
@@ -64,7 +65,7 @@ class EventCommands(commands.Cog):
         except Exception as e:
             logger.error(f"/events failed: {e}", exc_info=True)
             await interaction.followup.send(
-                "Couldn't reach GameTora just now. Try again in a minute."
+                "Couldn't reach the event data source just now. Try again in a minute."
             )
             return
         await self._send_listing(interaction.followup.send, embeds)
@@ -103,9 +104,9 @@ class EventCommands(commands.Cog):
             )
             return
         except Exception as e:
-            logger.error(f"set_events_channel: GameTora fetch failed: {e}", exc_info=True)
+            logger.error(f"set_events_channel: event fetch failed: {e}", exc_info=True)
             await interaction.followup.send(
-                "Couldn't reach GameTora to verify the feed. Try again in a minute."
+                "Couldn't reach the event data source to verify the feed. Try again in a minute."
             )
             return
 
@@ -181,7 +182,7 @@ class EventCommands(commands.Cog):
             live = await self.client.fetch_live_events()
             embed.add_field(name="Live right now", value=str(len(live)), inline=True)
         except Exception as e:
-            embed.add_field(name="Live right now", value=f"GameTora unreachable: {e}",
+            embed.add_field(name="Live right now", value=f"Data source unreachable: {e}",
                             inline=False)
 
         await interaction.followup.send(embed=embed)
@@ -197,7 +198,7 @@ class EventCommands(commands.Cog):
         try:
             live = await self.client.fetch_live_events()
         except Exception as e:
-            await interaction.followup.send(f"GameTora unreachable: {e}", ephemeral=True)
+            await interaction.followup.send(f"Data source unreachable: {e}", ephemeral=True)
             return
 
         if not live:
@@ -211,15 +212,15 @@ class EventCommands(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    # One client for both cogs: it caches the manifest and the ~840KB card-name
-    # tables, and there is no reason to hold two copies of either.
-    client = GametoraClient()
-    bot._gametora_client = client
+    # One feed for both cogs: it holds the uma.moe ETag cache and GameTora's
+    # manifest, and there is no reason to keep two copies of either.
+    client = EventFeed()
+    bot._event_feed = client
     await bot.add_cog(EventAnnouncer(bot, client))
     await bot.add_cog(EventCommands(bot, client))
 
 
 async def teardown(bot: commands.Bot):
-    client = getattr(bot, "_gametora_client", None)
+    client = getattr(bot, "_event_feed", None)
     if client:
         await client.close()
