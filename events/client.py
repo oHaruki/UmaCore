@@ -393,6 +393,36 @@ class GametoraClient:
         now = int(time.time())
         return [e for e in await self.fetch_events() if e.is_live(now)]
 
+    async def gacha_end_times(self) -> dict[int, int]:
+        """Authoritative gacha end timestamps, keyed by start timestamp.
+
+        uma.moe derives a banner's end from a duration field rather than reading
+        it out of the game, and since April 2026 that has run exactly one daily
+        rollover early on every Global banner (23 of 61 matched historically).
+        GameTora carries the real value. Start times agree across both sources
+        on all 61, which is what makes the start usable as the join key.
+
+        Only gacha is affected — uma.moe's campaign end times match GameTora's
+        on 49 of 52 — so nothing else is corrected from here.
+        """
+        manifest = await self.manifest()
+        feeds = await asyncio.gather(
+            self._fetch_key(manifest, "en/gacha/char-standard"),
+            self._fetch_key(manifest, "en/gacha/support-standard"),
+            return_exceptions=True,
+        )
+
+        ends: dict[int, int] = {}
+        for feed in feeds:
+            if isinstance(feed, Exception):
+                logger.warning(f"Gacha end-time lookup failed: {feed}")
+                continue
+            for row in feed or []:
+                start, end = _seconds(row.get("start")), _seconds(row.get("end"))
+                if start and end and end < PERMANENT_CUTOFF:
+                    ends[start] = end
+        return ends
+
 
 async def strip_missing_images(events: list[GameEvent], image_exists) -> list[GameEvent]:
     """Blank out banner art that doesn't resolve, checking all of them at once.
