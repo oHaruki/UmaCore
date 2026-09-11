@@ -9,7 +9,7 @@
 [![Invite Bot](https://img.shields.io/badge/Invite-Add%20to%20Server-57F287?style=flat-square&logo=discord)](https://discord.com/oauth2/authorize?client_id=1467295225184784488&permissions=83968&integration_type=0&scope=bot+applications.commands)
 [![Ko-Fi](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?style=flat-square&logo=ko-fi)](https://ko-fi.com/harukidev)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?style=flat-square&logo=python)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL--3.0-green?style=flat-square)](LICENSE)
 
 </div>
 
@@ -156,4 +156,28 @@ UmaCore is free and open source. If it saves your club leadership time, consider
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+UmaCore is licensed under the **[GNU AGPL-3.0](LICENSE)**.
+
+Copyright © 2025–2026 Haruki ([@oHaruki](https://github.com/oHaruki))
+
+What that means in practice:
+
+- You may use, self-host, study, and modify UmaCore.
+- If you run a modified version **where other people can use it** — a public Discord bot counts — you must make your modified source available to those users under the same license.
+- Every copy and fork must keep the copyright notice and the license file intact.
+
+## Attribution
+
+If you run, fork, or build on UmaCore, credit it visibly — in your bot's help or about output, your repository README, or your server description:
+
+```
+Based on UmaCore (https://github.com/oHaruki/UmaCore) by oHaruki — licensed under AGPL-3.0.
+```
+
+Markdown version:
+
+```markdown
+Based on [UmaCore](https://github.com/oHaruki/UmaCore) by [oHaruki](https://github.com/oHaruki) — licensed under [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html).
+```
+
+Stripping the attribution or republishing UmaCore as your own work is a license violation, not a grey area. If you'd like to use UmaCore under different terms, ask in the [support server](https://discord.gg/f4QZNag9Hv).
