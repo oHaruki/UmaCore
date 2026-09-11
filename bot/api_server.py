@@ -343,8 +343,8 @@ async def handle_guild_channels(request: web.Request) -> web.StreamResponse:
 
     Powers the dashboard's channel pickers. Each entry carries whether the bot
     can actually rename it, so the UI can warn about a missing permission at the
-    moment someone picks the channel rather than an hour later when the first
-    scheduled rename quietly fails.
+    moment someone picks the channel rather than at the next scheduled rename,
+    when it would quietly fail.
     """
     guild_id_str = request.rel_url.query.get('guild_id')
     if not guild_id_str:
@@ -409,7 +409,7 @@ async def handle_refresh_channel_names(request: web.Request) -> web.StreamRespon
     """Rename a club's tracking channels right now.
 
     Called by the dashboard straight after a template is saved: the scheduled
-    paths would take up to an hour, which is far too long to find out whether
+    paths wait for the club's next slot, which is too long to find out whether
     what you typed reads the way you meant.
     """
     try:

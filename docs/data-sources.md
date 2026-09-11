@@ -24,7 +24,8 @@ The primary data source. Fast and reliable.
 
 **Timing notes:**
 - Uma.moe runs on JST. Each competition day finalizes at **15:00 UTC** (00:00 JST)
-- Between finalizes, the in-progress day's total updates roughly hourly (`live_points`)
+- Between finalizes, the in-progress day's total is rewritten as the day runs
+  (`live_points`) — about every 5 minutes for top-100 circles, less often below
 - The bot always reports the **last fully-closed** day — never the in-progress one
 - Month boundaries are handled automatically (the closing day may live in the previous month's data)
 
@@ -68,7 +69,7 @@ Per-club: if a club has no `circle_id` set, it always uses ChronoGenesis regardl
 #### Live vs Finalized Data
 
 Uma.moe's per-member `daily_fans` array is indexed by **JST competition day**, and the
-slot for the day currently being raced updates roughly every hour. Only the last
+slot for the day currently being raced is rewritten every few minutes. Only the last
 fully-closed day is used for quota accounting — reading the in-progress slot would
 under-report every member by however much of the day is left.
 

@@ -33,7 +33,7 @@ from config.settings import (
     USE_UMAMOE_API, SCRAPE_ROLLOVER_GRACE_SEC, SCRAPE_MAX_FRESHNESS_RETRIES,
     SCRAPE_FRESHNESS_RETRY_DELAY_SEC, SCRAPE_MAX_CONCURRENCY,
     DATABASE_URL, DB_BACKUP_ENABLED, DB_BACKUP_DIR, DB_BACKUP_KEEP,
-    DB_BACKUP_UTC_TIME, DB_BACKUP_TIMEOUT_SEC,
+    DB_BACKUP_UTC_TIME, DB_BACKUP_TIMEOUT_SEC, LIVE_BOARD_REFRESH_MIN,
 )
 
 logger = logging.getLogger(__name__)
@@ -242,13 +242,17 @@ class BotTasks:
 
     @tasks.loop(minutes=1)
     async def live_board_tick(self):
-        """Refresh live boards and tracking channel names, spread across the hour.
+        """Refresh live boards and tracking channel names, spread across the cycle.
 
         Each club gets a stable slot minute derived from its id, so 200 clubs
-        become ~3 API calls a minute instead of a 200-call burst that would
+        become ~20 API calls a minute instead of a 200-call burst that would
         saturate the shared limiter and stall interactive commands behind it.
         The spread also matches reality: uma.moe's live batch reaches
         lower-ranked circles several minutes after the top ones.
+
+        The cycle is ``LIVE_BOARD_REFRESH_MIN`` long, tracking how often uma.moe
+        actually rewrites live_points. A poll landing on unchanged figures skips
+        the Discord edit rather than rewriting the same embed.
 
         Two features share the slot because they want the same figures: a club
         running both gets its board edit and its channel renames out of a single
@@ -271,7 +275,8 @@ class BotTasks:
         wants_board = {c.club_id for c in board_clubs}
         wants_names = {c.club_id for c in name_clubs}
 
-        due = [c for c in merged.values() if self._live_slot_minute(c) == now_utc.minute]
+        slot = now_utc.minute % LIVE_BOARD_REFRESH_MIN
+        due = [c for c in merged.values() if self._live_slot_minute(c) == slot]
         for club in due:
             try:
                 await self._live_slot(club, now_utc,
@@ -291,7 +296,8 @@ class BotTasks:
         board, the fetch happens here instead — same call, no message.
         """
         if board:
-            _, snap = await refresh_live_board(self.bot, club, now_utc=now_utc)
+            _, snap = await refresh_live_board(self.bot, club, now_utc=now_utc,
+                                               skip_unchanged=True)
         else:
             snap = await UmaMoeAPIScraper(club.circle_id, now_utc=now_utc).fetch_live()
 
@@ -312,8 +318,8 @@ class BotTasks:
 
     @staticmethod
     def _live_slot_minute(club: Club) -> int:
-        """Stable minute-of-hour for a club, so the load spreads deterministically."""
-        return zlib.crc32(str(club.club_id).encode()) % 60
+        """Stable slot within the refresh cycle, so load spreads deterministically."""
+        return zlib.crc32(str(club.club_id).encode()) % LIVE_BOARD_REFRESH_MIN
 
     @live_board_tick.before_loop
     async def before_live_board_tick(self):

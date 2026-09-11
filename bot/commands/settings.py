@@ -19,6 +19,7 @@ from utils.permissions import (
     timeout_note, describe_channel_access, describe_channel_overwrites,
     resolution_fingerprint, post_forbidden_advice, ADD_ME,
 )
+from config.settings import LIVE_BOARD_REFRESH_MIN
 
 logger = logging.getLogger(__name__)
 
@@ -534,10 +535,9 @@ class SettingsCommands(commands.Cog):
     ):
         """Bind a channel's name to a club's live figures, or unbind it.
 
-        The name is rewritten after each live update (hourly, for clubs running
-        the live board) and after the daily scrape. The first change happens
-        immediately, so you can see whether the template reads the way you wanted
-        instead of waiting an hour to find out.
+        The name is rewritten after each live update and after the daily scrape.
+        The first change happens immediately, so you can see whether the template
+        reads the way you wanted instead of waiting for the next one.
         """
         await interaction.response.defer()
 
@@ -674,10 +674,12 @@ class SettingsCommands(commands.Cog):
             )
 
         if club_obj.live_board_enabled:
-            cadence = "Updates hourly from live data, and again after the daily scrape."
+            cadence = (f"Updates every {LIVE_BOARD_REFRESH_MIN} min from live data, "
+                       f"and again after the daily scrape.")
         else:
-            cadence = ("Updates hourly from live data. This club has no live board, "
-                       "so it now gets an hourly uma.moe read of its own for this.")
+            cadence = (f"Updates every {LIVE_BOARD_REFRESH_MIN} min from live data. "
+                       f"This club has no live board, so it now gets a uma.moe read "
+                       f"of its own for this.")
         embed.set_footer(text=cadence)
 
         await interaction.followup.send(embed=embed)

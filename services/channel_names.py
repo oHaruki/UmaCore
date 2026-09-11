@@ -6,7 +6,7 @@ hand.
 
 Fed by both existing update paths, from data already in hand:
 
-* the **hourly live tick**, off the same ``LiveSnapshot`` the live board renders,
+* the **live tick**, off the same ``LiveSnapshot`` the live board renders,
   so a club running the board pays no extra uma.moe calls for this;
 * the **daily scrape**, off the circle metadata the daily report already reads,
   which is what a club with no live board gets.
@@ -150,7 +150,7 @@ class NameContext:
 
 
 def context_from_live(club: Club, snap: LiveSnapshot) -> NameContext:
-    """Build a context from the live board's snapshot — the hourly path.
+    """Build a context from the live board's snapshot — the live tick path.
 
     ``live_rank`` leads because that is the number people are watching mid-day,
     but a freshly opened competition month serves none for a while, so it falls

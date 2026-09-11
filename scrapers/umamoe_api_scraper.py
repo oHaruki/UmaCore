@@ -4,8 +4,9 @@ Uma.moe API scraper for club data fetching.
 Slot selection lives in :mod:`utils.jst_calendar` — see that module for the
 verified mapping between ``daily_fans`` indices and JST competition days.
 
-The short version: uma.moe now updates the in-progress day's slot every ~45-60min
-(``live_points``), where it used to write each slot once at the daily finalize.
+The short version: uma.moe now rewrites the in-progress day's slot as the day runs
+(``live_points``) — about every 5min for top-100 circles and less often further
+down — where it used to write each slot once at the daily finalize.
 Quota accounting therefore reads the *last closed* JST day, chosen from the clock
 and confirmed against ``circle.last_updated`` — never by probing whether a slot
 happens to be non-zero, which no longer distinguishes "finalized" from "still

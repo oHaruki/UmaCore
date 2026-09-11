@@ -14,6 +14,7 @@ import pytest
 
 from scrapers.umamoe_api_scraper import LiveSnapshot, MemberGain, UmaMoeAPIScraper
 from services import live_board
+from config.settings import LIVE_BOARD_REFRESH_MIN
 
 UTC = timezone.utc
 
@@ -161,32 +162,38 @@ class TestJoinDetection:
 
 class TestPollSpreading:
     def slot(self, club_id):
-        return zlib.crc32(str(club_id).encode()) % 60
+        return zlib.crc32(str(club_id).encode()) % LIVE_BOARD_REFRESH_MIN
+
+    def test_cycle_divides_the_hour(self):
+        """Clubs are slotted by minute-of-hour modulo the cycle, so a cycle that
+        does not divide 60 leaves a short window at every hour boundary."""
+        assert 60 % LIVE_BOARD_REFRESH_MIN == 0
 
     def test_slot_is_stable_across_calls(self):
         cid = uuid4()
         assert self.slot(cid) == self.slot(cid)
 
-    def test_slot_is_always_a_valid_minute(self):
+    def test_slot_is_always_within_the_cycle(self):
         for _ in range(500):
-            assert 0 <= self.slot(uuid4()) < 60
+            assert 0 <= self.slot(uuid4()) < LIVE_BOARD_REFRESH_MIN
 
     def test_two_hundred_clubs_spread_without_a_burst(self):
         """The whole point: no minute may carry a large share of the load.
 
-        Deterministic ids so this cannot flake — 200 items across 60 buckets has a
-        long enough tail that random ones occasionally exceed any tight bound.
+        Deterministic ids so this cannot flake — the tail of 200 items across a
+        handful of buckets occasionally exceeds any tight bound with random ones.
         """
         from uuid import UUID
         slots = [self.slot(UUID(int=i * 2654435761)) for i in range(200)]
-        counts = [slots.count(m) for m in range(60)]
-        assert max(counts) <= 12, f"worst minute holds {max(counts)} clubs"
+        counts = [slots.count(m) for m in range(LIVE_BOARD_REFRESH_MIN)]
+        even = 200 / LIVE_BOARD_REFRESH_MIN
+        assert max(counts) <= even * 1.5, f"worst minute holds {max(counts)} clubs"
         assert sum(counts) == 200
 
     def test_load_averages_out(self):
         slots = [self.slot(uuid4()) for _ in range(600)]
         used = len(set(slots))
-        assert used >= 50, f"only {used}/60 minutes used — poor spread"
+        assert used == LIVE_BOARD_REFRESH_MIN, f"only {used} minutes used — poor spread"
 
 
 # --------------------------------------------------------------------------- #
@@ -371,6 +378,7 @@ def wired(monkeypatch):
             return state["snapshot"]
 
     monkeypatch.setattr(live_board, "UmaMoeAPIScraper", FakeScraper)
+    live_board._last_as_of.clear()
     return SimpleNamespace(bot=FakeBot(channel), channel=channel, state=state)
 
 
@@ -464,6 +472,61 @@ class TestLifecycle:
         assert status == "no_data"
         assert wired.channel.posted == []
         assert c.live_board_message_id is None
+
+
+class TestUnchangedFiguresSkipTheEdit:
+    """The tick polls every LIVE_BOARD_REFRESH_MIN, uma.moe writes on its own
+    clock, so some polls see figures that have not moved."""
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def _first_board(self, wired):
+        c = attach_persistence(club(), wired.state)
+        self._run(live_board.refresh(wired.bot, c,
+                                     now_utc=datetime(2026, 7, 25, 12, tzinfo=UTC)))
+        return c, wired.channel._messages[c.live_board_message_id]
+
+    def test_second_poll_with_the_same_as_of_edits_nothing(self, wired):
+        c, msg = self._first_board(wired)
+        status, snapshot = self._run(live_board.refresh(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 12, 10, tzinfo=UTC),
+            skip_unchanged=True))
+        assert status == "unchanged"
+        assert msg.edits == []
+        # Channel names still want the figures even when the board does not.
+        assert snapshot is not None
+
+    def test_a_moved_as_of_still_edits(self, wired):
+        c, msg = self._first_board(wired)
+        wired.state["snapshot"] = snap(as_of=datetime(2026, 7, 25, 12, 11, tzinfo=UTC),
+                                      live_points=1_200_000_000)
+        status, _ = self._run(live_board.refresh(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 12, 20, tzinfo=UTC),
+            skip_unchanged=True))
+        assert status == "edited"
+        assert len(msg.edits) == 1
+
+    def test_a_missing_as_of_never_skips(self, wired):
+        """uma.moe leaves last_live_update null for some circles — with nothing to
+        compare, the board must be written rather than assumed current."""
+        wired.state["snapshot"] = snap(as_of=None)
+        c, msg = self._first_board(wired)
+        status, _ = self._run(live_board.refresh(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 12, 10, tzinfo=UTC),
+            skip_unchanged=True))
+        assert status == "edited"
+        assert len(msg.edits) == 1
+
+    def test_a_person_asking_for_a_refresh_always_gets_an_edit(self, wired):
+        """/live_refresh does not pass skip_unchanged: an untouched message is a
+        worse answer to a human than a no-op edit."""
+        c, msg = self._first_board(wired)
+        status, _ = self._run(live_board.refresh(
+            wired.bot, c, now_utc=datetime(2026, 7, 25, 12, 10, tzinfo=UTC)))
+        assert status == "edited"
+        assert len(msg.edits) == 1
 
 
 class TestMonthBoundaryGains:

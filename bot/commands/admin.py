@@ -1209,8 +1209,8 @@ class AdminCommands(commands.Cog):
         await club_obj.set_live_board(channel.id)
 
         # Post the first board now rather than at the next slot. Without the old
-        # gate this is what tells the user whether it works — an hour of silence
-        # is a worse answer than a wrong refusal was.
+        # gate this is what tells the user whether it works — a silent wait for
+        # the next slot is a worse answer than a wrong refusal was.
         from services.live_board import refresh as refresh_board
         outcome: dict = {}
         status, _ = await refresh_board(self.bot, club_obj, outcome=outcome)
@@ -1274,9 +1274,10 @@ class AdminCommands(commands.Cog):
     async def live_refresh(self, interaction: discord.Interaction, club: str):
         """Update a club's live board immediately.
 
-        The board normally refreshes on a fixed minute of the hour so that many
-        clubs spread their API calls out. This bypasses that for one club, which
-        is what you want when checking a change rather than waiting up to an hour.
+        The board normally refreshes on a fixed slot in the refresh cycle so that
+        many clubs spread their API calls out. This bypasses that for one club,
+        which is what you want when checking a change rather than waiting for the
+        club's next slot.
         """
         await interaction.response.defer(ephemeral=True)
 

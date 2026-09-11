@@ -76,7 +76,7 @@ The board follows Uma.moe's clock, not your report time. A competition day opens
 at **15:00 UTC** (00:00 JST):
 
 1. A new message is posted when the day opens
-2. It's edited through the day as fresh figures arrive (roughly hourly)
+2. It's edited through the day as fresh figures arrive (every 10 minutes)
 3. When the day closes, it gets one **final edit** with the finished numbers
 4. A new message is posted for the next day
 
@@ -136,7 +136,7 @@ Force a club's live board to update immediately, instead of waiting for its slot
 
 Boards normally refresh on a fixed minute of the hour, chosen per club so that many
 clubs spread their API calls across the hour rather than firing together. That means
-a change can take up to an hour to show. This bypasses the wait for one club.
+a change waits for the club's next slot. This bypasses that wait for one club.
 
 The reply reports which array slot was read and which competition day it maps to,
 which is the quickest way to confirm the boundary logic is behaving:

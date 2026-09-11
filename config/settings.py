@@ -42,6 +42,12 @@ UMAMOE_API_KEY = os.getenv("UMAMOE_API_KEY")
 UMAMOE_RATE_PER_MIN = int(os.getenv("UMAMOE_RATE_PER_MIN", "100"))   # tokens per minute
 UMAMOE_RATE_BURST = int(os.getenv("UMAMOE_RATE_BURST", "10"))       # bucket capacity (max burst)
 
+# How often each live board is refreshed, in minutes. Uma.moe rewrites an
+# in-progress day's live_points about every 5 min for top-100 circles and less
+# often further down, so polling faster than this buys nothing but calls.
+# Must divide 60 evenly — clubs are slotted by minute-of-hour modulo this.
+LIVE_BOARD_REFRESH_MIN = int(os.getenv("LIVE_BOARD_REFRESH_MIN", "10"))
+
 # Guard against reading the wrong daily_fans slot: the parsed club total is
 # compared against uma.moe's own monthly_point/live_points.
 #

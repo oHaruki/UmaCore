@@ -86,7 +86,7 @@ class ChannelName:
     async def club_ids_with_templates(cls) -> List[UUID]:
         """Clubs with at least one enabled template.
 
-        Used to widen the hourly poll: a club can want renamed channels without
+        Used to widen the live poll: a club can want renamed channels without
         wanting a live board message, and it still needs the live fetch.
         """
         rows = await db.fetch(

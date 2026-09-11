@@ -11,7 +11,8 @@ finalized data — counting an unfinished day would penalise people for a day th
 has not happened yet.
 
 Opt-in: a club is polled only once an admin sets a channel, so enabling this for
-one club costs 24 API calls a day and enabling it for none costs nothing.
+one club costs one call per LIVE_BOARD_REFRESH_MIN and none for a club without
+a channel. A poll whose figures match the last one edits nothing.
 """
 import logging
 from datetime import date, datetime, timezone
@@ -31,6 +32,11 @@ from config.settings import COLOR_INFO, COLOR_ON_TRACK, COLOR_BEHIND
 logger = logging.getLogger(__name__)
 
 TOP_N = 10
+
+#: Last ``as_of`` written to each club's board, so a poll that lands between
+#: uma.moe's own writes can skip re-sending an identical embed. In memory by
+#: choice: a restart costs one redundant edit, which is cheaper than a column.
+_last_as_of: Dict[Any, datetime] = {}
 
 
 def _fmt(n: Optional[int]) -> str:
@@ -291,6 +297,7 @@ async def _post_new(bot, club: Club, snap: LiveSnapshot, *,
     try:
         msg = await channel.send(embeds=build_embeds(club, snap))
         await club.set_live_board_message(msg.id, snap.jst_day)
+        _last_as_of[club.club_id] = snap.as_of
         logger.info(f"Live board opened for {club.club_name} (JST {snap.jst_day})")
         if outcome is not None:
             outcome.update(status="posted", channel=channel)
@@ -327,6 +334,7 @@ async def _edit_existing(bot, club: Club, snap: LiveSnapshot, *, closed: bool,
     try:
         msg = await channel.fetch_message(club.live_board_message_id)
         await msg.edit(embeds=build_embeds(club, snap, closed=closed))
+        _last_as_of[club.club_id] = snap.as_of
         if outcome is not None:
             outcome.update(status="edited", channel=channel)
         return "edited"
@@ -353,6 +361,7 @@ async def update_club(bot, club: Club, *, now_utc: Optional[datetime] = None) ->
 async def refresh(bot, club: Club, *,
                   now_utc: Optional[datetime] = None,
                   outcome: Optional[Dict[str, Any]] = None,
+                  skip_unchanged: bool = False,
                   ) -> Tuple[str, Optional[LiveSnapshot]]:
     """Bring one club's board up to date.
 
@@ -366,8 +375,14 @@ async def refresh(bot, club: Club, *,
     Returns one of:
         ``"posted"``   a new board was opened
         ``"edited"``   the existing board was updated in place
+        ``"unchanged"`` uma.moe's figures have not moved; the board was left as is
         ``"no_data"``  uma.moe has nothing for this day yet; board left untouched
         ``"failed"``   the message could not be sent or edited
+
+    Pass ``skip_unchanged`` to get ``"unchanged"`` instead of an edit that would
+    rewrite the same embed — the scheduled tick does, because it polls faster
+    than uma.moe writes. A person running ``/live_refresh`` does not: they asked
+    for a refresh and an untouched message is a worse answer than a no-op edit.
 
     Paired with the snapshot it read, so a caller wanting the same figures for
     something else — the channel-name updater does — reuses this fetch instead of
@@ -399,6 +414,12 @@ async def refresh(bot, club: Club, *,
     if not club.live_board_message_id or not club.live_board_day:
         return ("posted" if await _post_new(bot, club, snap, outcome=outcome)
                 else "failed"), snap
+
+    # Same day, same figures: uma.moe has not written since the last poll.
+    # The snapshot still goes back to the caller — channel names want it either way.
+    if (skip_unchanged and snap.as_of is not None
+            and _last_as_of.get(club.club_id) == snap.as_of):
+        return "unchanged", snap
 
     edited = await _edit_existing(bot, club, snap, closed=False, outcome=outcome)
     if edited == "edited":
