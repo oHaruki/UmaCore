@@ -116,6 +116,20 @@ async def _fetch_via_scraper(circle_id: str) -> tuple[dict[str, dict], int, int,
     return member_data, current_day, year, month
 
 
+def _ordered_dates(member_data: dict[str, dict]) -> list[str]:
+    """Every dd.mm label in the data, in calendar order.
+
+    Plotly orders a categorical axis by first appearance across traces, so a
+    member whose series starts mid-month pulls their dates to the front of the
+    axis and every full-month line doubles back across it. Pinning the order
+    keeps the axis chronological however the traces are ordered.
+    """
+    return sorted(
+        {d for data in member_data.values() for d in data["dates"]},
+        key=lambda s: (s[3:], s[:2]),  # dd.mm -> (mm, dd)
+    )
+
+
 def _build_chart(member_data: dict[str, dict]) -> bytes:
     """Render the Plotly chart and return PNG bytes."""
     import plotly.graph_objects as go
@@ -133,6 +147,8 @@ def _build_chart(member_data: dict[str, dict]) -> bytes:
 
     all_fans = [v for d in member_data.values() for v in d["fans"]]
     max_val = max(all_fans) if all_fans else 1_000_000
+
+    ordered_dates = _ordered_dates(member_data)
 
     # Compute clean Y-axis ticks
     raw_step = max_val / 8
@@ -161,6 +177,9 @@ def _build_chart(member_data: dict[str, dict]) -> bytes:
         paper_bgcolor="#111827",
         plot_bgcolor="#111827",
         xaxis=dict(
+            type="category",
+            categoryorder="array",
+            categoryarray=ordered_dates,
             showgrid=True,
             gridcolor="#2d3748",
             gridwidth=1,
