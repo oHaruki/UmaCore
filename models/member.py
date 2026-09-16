@@ -51,14 +51,54 @@ class Member:
     
     @classmethod
     async def get_by_name(cls, club_id: UUID, trainer_name: str) -> Optional['Member']:
-        """Get member by trainer name within a club"""
+        """Get member by trainer name within a club.
+
+        Only trainer_id is unique per club, so a name can match several rows.
+        Prefer the row that actually receives scrape data: active first, then one
+        carrying a trainer_id, then most recently seen.
+        """
         query = """
             SELECT member_id, club_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
             FROM members
             WHERE club_id = $1 AND trainer_name = $2
+            ORDER BY is_active DESC, (trainer_id IS NULL), last_seen DESC
+            LIMIT 1
         """
         row = await db.fetchrow(query, club_id, trainer_name)
         if row:
+            return cls(**dict(row))
+        return None
+
+    @classmethod
+    async def claim_unidentified(cls, club_id: UUID, trainer_name: str,
+                                 trainer_id: str) -> Optional['Member']:
+        """Attach trainer_id to a same-named row that has none, if one exists.
+
+        /add_member can create a member without a trainer_id. The scrape looks up
+        by trainer_id, so it would miss that row and insert a duplicate -- leaving
+        any user_link pointing at a row that never gets quota history. Adopting
+        the row instead keeps the link intact.
+
+        Reactivates the row (the pre-loop auto-deactivate pass drops it, since it
+        is keyed by name against a set of trainer_ids) but keeps its join_date, so
+        the admin's stated join date survives. Manually deactivated rows are left
+        alone.
+        """
+        query = """
+            UPDATE members
+            SET trainer_id = $3, is_active = TRUE, updated_at = NOW()
+            WHERE member_id = (
+                SELECT member_id FROM members
+                WHERE club_id = $1 AND trainer_name = $2
+                  AND trainer_id IS NULL AND manually_deactivated = FALSE
+                ORDER BY is_active DESC, last_seen DESC
+                LIMIT 1
+            )
+            RETURNING member_id, club_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
+        """
+        row = await db.fetchrow(query, club_id, trainer_name, trainer_id)
+        if row:
+            logger.info(f"Adopted manually-added member {trainer_name} into trainer ID {trainer_id}")
             return cls(**dict(row))
         return None
     
