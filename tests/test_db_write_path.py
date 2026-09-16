@@ -863,3 +863,113 @@ class TestBombLifecycle:
             await Bomb.expire_before(club.club_id, date(2026, 8, 1))
             return len(await Bomb.get_all_active(club.club_id))
         assert run_db(prepared_db, go) == 1, "a current-month bomb was expired"
+
+
+# --------------------------------------------------------------------------- #
+# manually added members — the /add_member + scrape collision
+# --------------------------------------------------------------------------- #
+
+class TestManuallyAddedMember:
+    """A member added by hand has no trainer_id until a scrape sees them.
+
+    The scrape resolves members by trainer_id, so it used to miss that row and
+    insert a second one. Only trainer_name is duplicated (the unique index covers
+    trainer_id, and ignores NULLs), so nothing in the schema stopped it, and the
+    member's /link_trainer stayed pinned to the row that never gets quota history
+    — /my_status then reported "No quota data found" forever.
+    """
+
+    def test_scrape_adopts_the_manual_row(self, prepared_db):
+        async def go(db):
+            from models import Member
+            from services.quota_calculator import QuotaCalculator
+            club = await _make_club()
+            await Member.create(club.club_id, "Ghost", date(2026, 7, 1))
+
+            await QuotaCalculator().process_scraped_data(
+                club.club_id,
+                {"77": {"name": "Ghost", "trainer_id": "77",
+                        "fans": [0, 2_000_000], "join_day": 1}},
+                date(2026, 7, 2), 2)
+
+            rows = await db.fetch(
+                "SELECT trainer_id FROM members WHERE club_id=$1 AND trainer_name='Ghost'",
+                club.club_id)
+            return [r["trainer_id"] for r in rows]
+
+        assert run_db(prepared_db, go) == ["77"], "scrape duplicated the manual row"
+
+    def test_link_survives_the_first_scrape(self, prepared_db):
+        """The exact user-visible bug: /link_trainer then a scrape."""
+        async def go(db):
+            from models import Member, QuotaHistory, UserLink
+            from services.quota_calculator import QuotaCalculator
+            club = await _make_club()
+            manual = await Member.create(club.club_id, "Ghost", date(2026, 7, 1))
+            await UserLink.create(discord_user_id=999, member_id=manual.member_id)
+
+            await QuotaCalculator().process_scraped_data(
+                club.club_id,
+                {"77": {"name": "Ghost", "trainer_id": "77",
+                        "fans": [0, 2_000_000], "join_day": 1}},
+                date(2026, 7, 2), 2)
+
+            link = await UserLink.get_by_discord_id(999)
+            return await QuotaHistory.get_latest_for_member(link.member_id)
+
+        latest = run_db(prepared_db, go)
+        assert latest is not None, "linked member still has no quota history"
+        assert latest.cumulative_fans == 2_000_000
+
+    def test_manual_join_date_is_not_clobbered(self, prepared_db):
+        """Adoption keeps the admin's stated join date, unlike reactivation."""
+        async def go(db):
+            from models import Member
+            from services.quota_calculator import QuotaCalculator
+            club = await _make_club()
+            await Member.create(club.club_id, "Ghost", date(2026, 7, 1))
+            await QuotaCalculator().process_scraped_data(
+                club.club_id,
+                {"77": {"name": "Ghost", "trainer_id": "77",
+                        "fans": [0, 2_000_000], "join_day": 1}},
+                date(2026, 7, 2), 2)
+            return (await Member.get_by_trainer_id(club.club_id, "77")).join_date
+
+        assert run_db(prepared_db, go) == date(2026, 7, 1)
+
+    def test_manual_deactivation_is_respected(self, prepared_db):
+        """An admin who deactivated a row on purpose does not get it revived."""
+        async def go(db):
+            from models import Member
+            from services.quota_calculator import QuotaCalculator
+            club = await _make_club()
+            manual = await Member.create(club.club_id, "Ghost", date(2026, 7, 1))
+            await manual.deactivate(manual=True)
+
+            await QuotaCalculator().process_scraped_data(
+                club.club_id,
+                {"77": {"name": "Ghost", "trainer_id": "77",
+                        "fans": [0, 2_000_000], "join_day": 1}},
+                date(2026, 7, 2), 2)
+            return await db.fetchval(
+                "SELECT count(*) FROM members WHERE club_id=$1 AND trainer_name='Ghost'",
+                club.club_id)
+
+        assert run_db(prepared_db, go) == 2, "manually deactivated row was adopted"
+
+    def test_get_by_name_prefers_the_row_with_data(self, prepared_db):
+        """Existing duplicates still resolve to the live row, for /link_trainer."""
+        async def go(db):
+            from models import Member
+            from services.quota_calculator import QuotaCalculator
+            club = await _make_club()
+            stale = await Member.create(club.club_id, "Ghost", date(2026, 7, 1))
+            await stale.deactivate(manual=True)   # keeps it out of adoption
+            await QuotaCalculator().process_scraped_data(
+                club.club_id,
+                {"77": {"name": "Ghost", "trainer_id": "77",
+                        "fans": [0, 2_000_000], "join_day": 1}},
+                date(2026, 7, 2), 2)
+            return (await Member.get_by_name(club.club_id, "Ghost")).trainer_id
+
+        assert run_db(prepared_db, go) == "77"

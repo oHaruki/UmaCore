@@ -206,6 +206,11 @@ class QuotaCalculator:
             # Look up member by trainer_id first, then by name
             if trainer_id:
                 member = await Member.get_by_trainer_id(club_id, trainer_id)
+                if not member:
+                    # A manual /add_member has no trainer_id, so the lookup above
+                    # misses it. Adopt that row rather than inserting a second one
+                    # next to it, which would strand the member's /link_trainer.
+                    member = await Member.claim_unidentified(club_id, trainer_name, trainer_id)
             else:
                 member = await Member.get_by_name(club_id, trainer_name)
             
