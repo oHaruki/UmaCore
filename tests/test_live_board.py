@@ -378,7 +378,7 @@ def wired(monkeypatch):
             return state["snapshot"]
 
     monkeypatch.setattr(live_board, "UmaMoeAPIScraper", FakeScraper)
-    live_board._last_as_of.clear()
+    live_board._last_shown.clear()
     return SimpleNamespace(bot=FakeBot(channel), channel=channel, state=state)
 
 
@@ -508,11 +508,10 @@ class TestUnchangedFiguresSkipTheEdit:
         assert status == "edited"
         assert len(msg.edits) == 1
 
-    def test_a_missing_as_of_never_skips(self, wired):
-        """uma.moe leaves last_live_update null for some circles — with nothing to
-        compare, the board must be written rather than assumed current."""
-        wired.state["snapshot"] = snap(as_of=None)
+    def test_moved_figures_under_the_same_as_of_still_edit(self, wired):
+        """A stamp that has not moved is no proof the roster has not."""
         c, msg = self._first_board(wired)
+        wired.state["snapshot"] = snap(gains=[MemberGain("1", "Alpha", 6_000_000, 61_000_000)])
         status, _ = self._run(live_board.refresh(
             wired.bot, c, now_utc=datetime(2026, 7, 25, 12, 10, tzinfo=UTC),
             skip_unchanged=True))
@@ -527,6 +526,107 @@ class TestUnchangedFiguresSkipTheEdit:
             wired.bot, c, now_utc=datetime(2026, 7, 25, 12, 10, tzinfo=UTC)))
         assert status == "edited"
         assert len(msg.edits) == 1
+
+
+class TestLiveFieldsNotPublished:
+    """While a competition month opens, uma.moe serves the circle's live fields as
+    null and keeps updating the member rows. The circle's own ``last_updated`` is
+    the daily finalize, which does not move again until the next day closes.
+
+    Runs the real scraper and board against that response shape."""
+
+    FINALIZE = "2026-10-01T15:01:46Z"
+
+    def _payload(self, raced: int, member_stamp=None) -> dict:
+        members = []
+        for i in range(4):
+            fans = [100_000_000, 100_000_000 + (2_000_000 if i < raced else 0)] + [0] * 30
+            row = {"viewer_id": 100 + i, "trainer_name": f"M{i}", "daily_fans": fans}
+            if member_stamp:
+                row["last_updated"] = member_stamp
+            members.append(row)
+        return {"circle": {"last_updated": self.FINALIZE,
+                           "yesterday_updated": "2026-10-01T15:01:00Z",
+                           "last_live_update": None, "live_points": None,
+                           "live_rank": None, "monthly_rank": 472,
+                           "monthly_point": 3_513_080_770,
+                           "yesterday_points": 3_513_080_770},
+                "members": members}
+
+    @pytest.fixture
+    def served(self, monkeypatch):
+        from scrapers import umamoe_api_scraper as mod
+        state = {}
+
+        async def fetch_month(_self, _session, year, month):
+            assert (year, month) == (2026, 10)
+            return state["payload"]
+
+        class NullSession:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+        monkeypatch.setattr(mod.UmaMoeAPIScraper, "_fetch_month", fetch_month)
+        monkeypatch.setattr(mod.UmaMoeAPIScraper, "_session", lambda self: NullSession())
+        channel = FakeChannel()
+        return SimpleNamespace(state=state, bot=FakeBot(channel), channel=channel,
+                               club=attach_persistence(club(), {"saved": []}))
+
+    def _poll(self, served, payload, hh, mm):
+        import asyncio
+        served.state["payload"] = payload
+        status, _ = asyncio.run(live_board.refresh(
+            served.bot, served.club, skip_unchanged=True,
+            now_utc=datetime(2026, 10, 1, hh, mm, tzinfo=UTC)))
+        return status
+
+    def _shown(self, served):
+        msg = served.channel._messages[served.club.live_board_message_id]
+        return msg.edits[-1][0] if msg.edits else None
+
+    def test_members_racing_after_the_board_opened_reach_it(self, served):
+        assert self._poll(served, self._payload(0, self.FINALIZE), 15, 9) == "posted"
+        assert self._poll(served, self._payload(3, "2026-10-01T17:50:58Z"), 17, 50) == "edited"
+
+        summary = self._shown(served)
+        tally = next(f for f in summary.fields if "Summary" in f.name)
+        assert "Raced today: 3" in tally.value
+        assert "17:50 UTC" in summary.footer.text
+
+    def test_moved_figures_edit_even_when_no_stamp_moved(self, served):
+        self._poll(served, self._payload(0), 15, 9)
+        assert self._poll(served, self._payload(2), 17, 50) == "edited"
+
+    def test_an_identical_response_still_skips_the_edit(self, served):
+        self._poll(served, self._payload(2, "2026-10-01T17:30:58Z"), 17, 40)
+        assert self._poll(served, self._payload(2, "2026-10-01T17:30:58Z"), 17, 50) == "unchanged"
+        assert self._shown(served) is None
+
+
+class TestLiveAsOf:
+    """The footer's 'uma.moe as of' is the newest write behind the figures shown."""
+
+    def _meta(self, live=None):
+        from scrapers.umamoe_api_scraper import CircleMeta
+        return CircleMeta(last_updated=datetime(2026, 10, 1, 15, 1, 46, tzinfo=UTC),
+                          last_live_update=live)
+
+    def _rows(self, *stamps):
+        return [{"viewer_id": i, "last_updated": s} for i, s in enumerate(stamps)]
+
+    def test_newest_member_row_wins_while_live_fields_are_null(self):
+        rows = self._rows("2026-10-01T17:30:58Z", "2026-10-01T17:50:58Z", None)
+        assert (UmaMoeAPIScraper._live_as_of(self._meta(), rows)
+                == datetime(2026, 10, 1, 17, 50, 58, tzinfo=UTC))
+
+    def test_last_live_update_counts_when_it_is_newer(self):
+        live = datetime(2026, 10, 1, 17, 55, tzinfo=UTC)
+        rows = self._rows("2026-10-01T17:50:58Z")
+        assert UmaMoeAPIScraper._live_as_of(self._meta(live), rows) == live
+
+    def test_falls_back_to_the_finalize_without_any_live_stamp(self):
+        assert (UmaMoeAPIScraper._live_as_of(self._meta(), self._rows(None))
+                == datetime(2026, 10, 1, 15, 1, 46, tzinfo=UTC))
 
 
 class TestMonthBoundaryGains:

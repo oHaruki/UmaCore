@@ -33,10 +33,21 @@ logger = logging.getLogger(__name__)
 
 TOP_N = 10
 
-#: Last ``as_of`` written to each club's board, so a poll that lands between
-#: uma.moe's own writes can skip re-sending an identical embed. In memory by
-#: choice: a restart costs one redundant edit, which is cheaper than a column.
-_last_as_of: Dict[Any, datetime] = {}
+#: What each club's board last showed, so a poll that lands between uma.moe's
+#: own writes can skip re-sending an identical embed. In memory by choice: a
+#: restart costs one redundant edit, which is cheaper than a column.
+_last_shown: Dict[Any, tuple] = {}
+
+
+def _shown(club: Club, snap: LiveSnapshot) -> tuple:
+    """Everything the board renders, so equal means an identical board.
+
+    The figures are compared rather than ``as_of`` alone: uma.moe writes the
+    member rows on their own schedule, and no single stamp is guaranteed to move
+    when they do.
+    """
+    return (club.club_name, snap.jst_day, snap.as_of, snap.live_points,
+            snap.live_rank, snap.monthly_rank, tuple(snap.gains))
 
 
 def _fmt(n: Optional[int]) -> str:
@@ -297,7 +308,7 @@ async def _post_new(bot, club: Club, snap: LiveSnapshot, *,
     try:
         msg = await channel.send(embeds=build_embeds(club, snap))
         await club.set_live_board_message(msg.id, snap.jst_day)
-        _last_as_of[club.club_id] = snap.as_of
+        _last_shown[club.club_id] = _shown(club, snap)
         logger.info(f"Live board opened for {club.club_name} (JST {snap.jst_day})")
         if outcome is not None:
             outcome.update(status="posted", channel=channel)
@@ -334,7 +345,7 @@ async def _edit_existing(bot, club: Club, snap: LiveSnapshot, *, closed: bool,
     try:
         msg = await channel.fetch_message(club.live_board_message_id)
         await msg.edit(embeds=build_embeds(club, snap, closed=closed))
-        _last_as_of[club.club_id] = snap.as_of
+        _last_shown[club.club_id] = _shown(club, snap)
         if outcome is not None:
             outcome.update(status="edited", channel=channel)
         return "edited"
@@ -415,10 +426,10 @@ async def refresh(bot, club: Club, *,
         return ("posted" if await _post_new(bot, club, snap, outcome=outcome)
                 else "failed"), snap
 
-    # Same day, same figures: uma.moe has not written since the last poll.
-    # The snapshot still goes back to the caller — channel names want it either way.
-    if (skip_unchanged and snap.as_of is not None
-            and _last_as_of.get(club.club_id) == snap.as_of):
+    # Same day, same figures: nothing uma.moe wrote since the last poll changes
+    # what the board shows. The snapshot still goes back to the caller — channel
+    # names want it either way.
+    if skip_unchanged and _last_shown.get(club.club_id) == _shown(club, snap):
         return "unchanged", snap
 
     edited = await _edit_existing(bot, club, snap, closed=False, outcome=outcome)

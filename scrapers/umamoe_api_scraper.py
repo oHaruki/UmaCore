@@ -287,7 +287,7 @@ class UmaMoeAPIScraper(BaseScraper):
             return LiveSnapshot(
                 circle_id=str(self.circle_id),
                 jst_day=target.jst_day,
-                as_of=meta.last_live_update or meta.last_updated,
+                as_of=self._live_as_of(meta, members),
                 live_points=live_points,
                 live_rank=meta.live_rank,
                 monthly_point=meta.monthly_point,
@@ -299,6 +299,20 @@ class UmaMoeAPIScraper(BaseScraper):
         except Exception as e:
             logger.warning(f"Live fetch failed for circle {self.circle_id}: {e}")
             return None
+
+    @staticmethod
+    def _live_as_of(meta: CircleMeta, members: List[dict]) -> Optional[datetime]:
+        """The newest write behind the live figures.
+
+        Each member row carries its own ``last_updated``, and the roster is built
+        from those rows, so they count alongside ``last_live_update`` — which
+        uma.moe can leave null, as it does while a competition month opens. The
+        circle's ``last_updated`` is the daily finalize, so it is only the
+        fallback.
+        """
+        stamps = [parse_api_timestamp(m.get("last_updated")) for m in members]
+        stamps.append(meta.last_live_update)
+        return max((t for t in stamps if t is not None), default=meta.last_updated)
 
     # ------------------------------------------------------------- freshness
 
