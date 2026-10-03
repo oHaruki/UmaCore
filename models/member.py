@@ -56,11 +56,14 @@ class Member:
         Only trainer_id is unique per club, so a name can match several rows.
         Prefer the row that actually receives scrape data: active first, then one
         carrying a trainer_id, then most recently seen.
+
+        Compared trimmed: in-game names can carry a trailing space, which Discord
+        strips from slash command input.
         """
         query = """
             SELECT member_id, club_id, trainer_id, trainer_name, join_date, is_active, manually_deactivated, last_seen
             FROM members
-            WHERE club_id = $1 AND trainer_name = $2
+            WHERE club_id = $1 AND btrim(trainer_name) = btrim($2)
             ORDER BY is_active DESC, (trainer_id IS NULL), last_seen DESC
             LIMIT 1
         """
@@ -89,7 +92,7 @@ class Member:
             SET trainer_id = $3, is_active = TRUE, updated_at = NOW()
             WHERE member_id = (
                 SELECT member_id FROM members
-                WHERE club_id = $1 AND trainer_name = $2
+                WHERE club_id = $1 AND btrim(trainer_name) = btrim($2)
                   AND trainer_id IS NULL AND manually_deactivated = FALSE
                 ORDER BY is_active DESC, last_seen DESC
                 LIMIT 1
