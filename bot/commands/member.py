@@ -106,10 +106,14 @@ class MemberCommands(commands.Cog):
             return []
     
     @app_commands.command(name="link_trainer", description="Link your Discord account to your trainer")
+    @app_commands.describe(
+        trainer_name="Your in-game name or trainer ID",
+        club="Your club",
+    )
     async def link_trainer(self, interaction: discord.Interaction, trainer_name: str, club: str):
         """Link your Discord account to a trainer"""
         await interaction.response.defer(ephemeral=True)
-        
+
         try:
             club_obj = await Club.get_by_name(club)
             if not club_obj:
@@ -118,16 +122,25 @@ class MemberCommands(commands.Cog):
                     ephemeral=True
                 )
                 return
-            
-            member = await Member.get_by_name(club_obj.club_id, trainer_name)
-            
+
+            # Trainer IDs are shown grouped as "485 643 302 279", so drop the spaces
+            member = None
+            trainer_id = trainer_name.replace(" ", "")
+            if trainer_id.isdigit():
+                member = await Member.get_by_trainer_id(club_obj.club_id, trainer_id)
+            if not member:
+                member = await Member.get_by_name(club_obj.club_id, trainer_name)
+
             if not member:
                 await interaction.followup.send(
-                    f"❌ Trainer '{trainer_name}' not found in {club}. Make sure the name matches exactly.",
+                    f"❌ Trainer '{trainer_name}' not found in {club}. "
+                    f"Use your exact in-game name or your trainer ID.",
                     ephemeral=True
                 )
                 return
-            
+
+            trainer_name = member.trainer_name.strip()
+
             # Check if already linked to another trainer
             existing_link = await UserLink.get_by_discord_id(interaction.user.id)
             if existing_link:
