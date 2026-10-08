@@ -114,6 +114,7 @@ async def _make_club(name="SimClub", circle_id="452414222", **kw):
         club_name=name, scrape_url="https://example.invalid",
         circle_id=circle_id, guild_id=1,
         daily_quota=kw.get("daily_quota", 5_000_000),
+        quota_period=kw.get("quota_period", "daily"),
         timezone="UTC", scrape_time=kw.get("scrape_time", dtime(17, 0)),
         bomb_trigger_days=kw.get("bomb_trigger_days", 3),
         bomb_countdown_days=kw.get("bomb_countdown_days", 7),
@@ -145,7 +146,8 @@ class TestSchemaBuildsClean:
         cols = run_db(prepared_db, go)
         for c in ("circle_id", "guild_id", "bombs_enabled", "quota_period",
                   "public_slug", "image_report_enabled",
-                  "monthly_info_channel_id", "monthly_info_message_id"):
+                  "monthly_info_channel_id", "monthly_info_message_id",
+                  "period_anchor_date"):
             assert c in cols, f"clubs.{c} missing on a fresh install"
 
     def test_idempotent(self, prepared_db):
@@ -973,3 +975,98 @@ class TestManuallyAddedMember:
             return (await Member.get_by_name(club.club_id, "Ghost")).trainer_id
 
         assert run_db(prepared_db, go) == "77"
+
+
+# --------------------------------------------------------------------------- #
+# biweeks on a club's own cycle (clubs.period_anchor_date)
+# --------------------------------------------------------------------------- #
+
+class TestAnchoredBiweek:
+    """A biweekly club on a 14-day cycle from Oct 4, run through the real
+    scraper and DB writes across two month ends. Every member's period gain
+    must equal what they actually raced inside the period."""
+
+    ANCHOR = date(2026, 10, 4)
+
+    @staticmethod
+    def _raced(member, start: date, end: date) -> int:
+        """Ground truth from the fake: competition days in [start, end] after the
+        join day (a join day is recorded as +0), times the member's daily gain."""
+        join_comp_day = member.joined - timedelta(days=1)
+        first = max(start, join_comp_day + timedelta(days=1))
+        return max(0, (end - first).days + 1) * member.daily_gain
+
+    def test_anchor_round_trips(self, prepared_db):
+        async def go(db):
+            from models import Club
+            club = await _make_club(quota_period="biweekly")
+            await club.update_settings(period_anchor_date=self.ANCHOR)
+            saved = (await Club.get_by_id(club.club_id)).period_anchor_date
+            await club.update_settings(period_anchor_date=None)
+            cleared = (await Club.get_by_id(club.club_id)).period_anchor_date
+            return saved, cleared
+        assert run_db(prepared_db, go) == (self.ANCHOR, None)
+
+    def test_period_gains_match_what_was_raced(self, prepared_db):
+        async def go(db):
+            from models import Club
+            from services.quota_calculator import QuotaCalculator
+            from services.report_generator import ReportGenerator
+            from tests.fake_umamoe import FakeMember, FakeUmaMoe
+            from tests.test_month_simulation import make_scraper
+
+            anchored = await _make_club("Anchored", quota_period="biweekly",
+                                        daily_quota=14_000_000)
+            await anchored.update_settings(period_anchor_date=self.ANCHOR)
+            anchored = await Club.get_by_id(anchored.club_id)
+            calendar_club = await _make_club("Calendar", quota_period="biweekly",
+                                             daily_quota=14_000_000)
+
+            roster = [
+                FakeMember(2001, "Steady", 800_000_000, 1_000_000, joined=date(2026, 9, 1)),
+                FakeMember(2002, "Grinder", 750_000_000, 3_000_000, joined=date(2026, 9, 1)),
+                # joins inside the Oct 18 - Oct 31 biweek
+                FakeMember(2003, "MidPeriod", 300_000_000, 2_000_000, joined=date(2026, 10, 24)),
+                # joins on the competition month's last day, inside Nov 29 - Dec 12
+                FakeMember(2004, "MonthEnd", 200_000_000, 500_000, joined=date(2026, 12, 1)),
+            ]
+            by_name = {m.name: m for m in roster}
+            backend = FakeUmaMoe(members=roster, sim_start=date(2026, 9, 1))
+            qc = QuotaCalculator()
+
+            mismatches, checked, headers = [], 0, {}
+            d = date(2026, 9, 2)
+            while d <= date(2026, 12, 16):
+                scraper = make_scraper(backend, datetime(d.year, d.month, d.day, 17, tzinfo=UTC))
+                parsed = await scraper.scrape()
+                data_date = scraper.get_data_date()
+                for club in (anchored, calendar_club):
+                    await qc.process_scraped_data(
+                        club.club_id, parsed, data_date, scraper.get_current_day(),
+                        quota_period="biweekly")
+                    summary = await qc.get_member_status_summary(
+                        club.club_id, data_date, "biweekly",
+                        period_anchor=club.period_anchor_date)
+                    period = summary["period_info"]
+                    for item in summary["on_track"] + summary["behind"]:
+                        name = item["member"].trainer_name
+                        want = self._raced(by_name[name], period["period_start"], data_date)
+                        checked += 1
+                        if item["period_fans"] != want:
+                            mismatches.append((club.club_name, data_date, name,
+                                               item["period_fans"], want))
+                    if club is anchored and data_date in (date(2026, 10, 17), date(2026, 12, 3)):
+                        embeds = ReportGenerator().create_daily_report(
+                            club.club_name, 14_000_000, summary, [], data_date,
+                            quota_period="biweekly", club_timezone="UTC")
+                        headers[data_date] = embeds[0].description
+                d += timedelta(days=1)
+            return mismatches, checked, headers
+
+        mismatches, checked, headers = run_db(prepared_db, go)
+        # Sep 1 - Dec 15 for both clubs: 2 full-run members x 106 days, plus
+        # MidPeriod from Oct 23 (54 days) and MonthEnd from Nov 30 (16 days).
+        assert checked == 2 * (2 * 106 + 54 + 16), f"{checked} member-days checked"
+        assert not mismatches, mismatches[:10]
+        assert "Biweek Oct 04 – Oct 17 (day 14 of 14)" in headers[date(2026, 10, 17)]
+        assert "Biweek Nov 29 – Dec 12 (day 5 of 14)" in headers[date(2026, 12, 3)]

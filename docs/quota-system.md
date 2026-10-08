@@ -144,6 +144,14 @@ TrainerName    500K / 700K this week  (-200K overall)
 
 The "overall" figure is the full month deficit/surplus. The per-period figure resets at the start of each new period.
 
+Biweeks are calendar blocks by default (1st–14th, 15th–28th, 29th–end), so the
+29th–end block is a short one with a prorated quota. A club that tallies every
+14 days from its own date can set that date with `/edit_club biweek_start:` or
+under Quota on the dashboard settings page. Biweeks then run back to back from
+it, and the per-period figure counts only fans earned inside the biweek, even
+when it crosses into the next month. The report header shows which biweek it
+is and how far in, e.g. `Biweek Nov 29 – Dec 12 (day 5 of 14)`.
+
 #### Multiple Quota Changes on the Same Day
 
 If `/quota` is run multiple times in a single day, the most recently set value takes effect. The monthly info board reflects the final value for that day.

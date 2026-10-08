@@ -707,7 +707,8 @@ class BotTasks:
 
                     # Send deficit notifications
                     status_summary = await self.quota_calculator.get_member_status_summary(
-                        club.club_id, current_date, quota_period=club.quota_period
+                        club.club_id, current_date, quota_period=club.quota_period,
+                        period_anchor=club.period_anchor_date,
                     )
                     if status_summary['behind']:
                         logger.info(f"📨 Sending deficit notifications for {club.club_name}...")
@@ -720,7 +721,8 @@ class BotTasks:
                 try:
                     logger.info(f"📊 Generating daily report for {club.club_name}...")
                     status_summary = await self.quota_calculator.get_member_status_summary(
-                        club.club_id, current_date, quota_period=club.quota_period
+                        club.club_id, current_date, quota_period=club.quota_period,
+                        period_anchor=club.period_anchor_date,
                     )
 
                     if club.bombs_enabled:

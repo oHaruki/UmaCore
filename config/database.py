@@ -477,6 +477,20 @@ class Database:
             END IF;
         END $$;
 
+        -- Migration: Add period_anchor_date column if it doesn't exist.
+        -- The first day of any biweek in a club's own 14-day cycle. NULL keeps
+        -- biweeks on calendar blocks (1st-14th, 15th-28th, 29th-end).
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='clubs' AND column_name='period_anchor_date'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN period_anchor_date DATE;
+                RAISE NOTICE 'Added period_anchor_date column to clubs';
+            END IF;
+        END $$;
+
         -- Transfer requests: someone queues for a spot in another club and a
         -- club leader approves or rejects it. Replaces the hand-run flow where
         -- people posted their trainer ID in a channel and pinged a mod, which

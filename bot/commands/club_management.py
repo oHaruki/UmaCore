@@ -4,11 +4,13 @@ Club management commands (add, remove, edit, list)
 import discord
 from discord import app_commands
 from discord.ext import commands
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
 import logging
 import pytz
 
+from config.database import db
 from models import Club, ClubPermission, GuildManagerRole
+from services.quota_calculator import QuotaCalculator
 from utils.audit import log_audit
 from utils.permissions import ensure_can_manage, can_create_club, creator_role_ids, is_full_manager
 
@@ -16,6 +18,24 @@ logger = logging.getLogger(__name__)
 
 # Bot author ID for pre-migration club deletion
 AUTHOR_ID = 139769063948681217
+
+# /edit_club biweek_start values that switch back to calendar biweeks
+BIWEEK_CALENDAR_WORDS = {'off', 'none', 'clear', 'reset', 'calendar'}
+
+
+async def biweek_cycle_preview(club_id, anchor: date, count: int = 3) -> str:
+    """The biweek holding the club's latest data day, then the ones after it."""
+    latest = await db.fetchval(
+        "SELECT MAX(date) FROM quota_history WHERE club_id = $1", club_id
+    )
+    info = QuotaCalculator.get_period_info('biweekly', latest or date.today(), anchor)
+    start = info['period_start']
+    runs = []
+    for _ in range(count):
+        end = start + timedelta(days=13)
+        runs.append(f"{start:%b %d} – {end:%b %d}")
+        start = end + timedelta(days=1)
+    return ", ".join(runs)
 
 
 class DeleteConfirmModal(discord.ui.Modal, title="Confirm Club Deletion"):
@@ -430,7 +450,9 @@ class ClubManagementCommands(commands.Cog):
                 period_label = {'daily': 'day', 'weekly': 'week', 'biweekly': '2 weeks'}.get(
                     getattr(club, 'quota_period', 'daily'), 'day'
                 )
-                
+                if club.quota_period == 'biweekly' and club.period_anchor_date:
+                    period_label += f" (cycle from {club.period_anchor_date:%b %d})"
+
                 # Scraper type indicator
                 if club.circle_id:
                     if club.is_circle_id_valid():
@@ -464,11 +486,15 @@ class ClubManagementCommands(commands.Cog):
         app_commands.Choice(name="Weekly", value="weekly"),
         app_commands.Choice(name="Biweekly (every 2 weeks)", value="biweekly"),
     ])
+    @app_commands.describe(
+        biweek_start="First day of any biweek in your cycle (YYYY-MM-DD), or 'off' for 1st/15th of the month",
+    )
     async def edit_club(self, interaction: discord.Interaction,
                        club: str,
                        circle_id: str = None,
                        daily_quota: int = None,
                        quota_period: app_commands.Choice[str] = None,
+                       biweek_start: str = None,
                        scrape_time: str = None,
                        timezone: str = None,
                        bomb_trigger_days: int = None,
@@ -513,6 +539,19 @@ class ClubManagementCommands(commands.Cog):
                 updates['daily_quota'] = daily_quota
             if quota_period is not None:
                 updates['quota_period'] = quota_period.value
+            if biweek_start is not None:
+                raw = biweek_start.strip().lower()
+                if raw in BIWEEK_CALENDAR_WORDS:
+                    updates['period_anchor_date'] = None
+                else:
+                    try:
+                        updates['period_anchor_date'] = date.fromisoformat(raw)
+                    except ValueError:
+                        await interaction.followup.send(
+                            "❌ Invalid biweek_start. Use YYYY-MM-DD (e.g. 2026-10-04), "
+                            "or `off` to go back to 1st–14th / 15th–28th biweeks."
+                        )
+                        return
             if scrape_time is not None:
                 try:
                     hour, minute = map(int, scrape_time.split(':'))
@@ -543,7 +582,6 @@ class ClubManagementCommands(commands.Cog):
                 return
 
             # If bombs are being disabled, deactivate all active bombs
-            from datetime import date
             from models import Bomb
             deactivated_count = 0
             if bombs_enabled is False and club_obj.bombs_enabled:
@@ -585,6 +623,22 @@ class ClubManagementCommands(commands.Cog):
                 elif key == 'quota_period':
                     period_names = {'daily': 'Daily', 'weekly': 'Weekly', 'biweekly': 'Biweekly'}
                     changes_text.append(f"**Quota Period:** {period_names.get(value, value)}")
+                    if value == 'biweekly' and club_obj.period_anchor_date is None:
+                        changes_text.append(
+                            "  ↳ Biweeks run 1st–14th, 15th–28th, 29th–end. "
+                            "Set `biweek_start` to follow your own 14-day cycle instead."
+                        )
+                elif key == 'period_anchor_date':
+                    if value is None:
+                        changes_text.append("**Biweeks:** calendar blocks (1st–14th, 15th–28th, 29th–end)")
+                    else:
+                        preview = await biweek_cycle_preview(club_obj.club_id, value)
+                        changes_text.append(
+                            f"**Biweeks:** every 14 days from {value:%b %d, %Y}\n"
+                            f"  ↳ {preview}"
+                        )
+                    if effective_period != 'biweekly':
+                        changes_text.append("  ↳ Only used while the quota period is Biweekly")
                 elif key == 'scrape_time':
                     changes_text.append(f"**Scrape Time:** {value}")
                 elif key == 'timezone':

@@ -79,11 +79,16 @@ class ReportGenerator:
         description = f"**Date:** {date_range}\n{quota_line}"
 
         if period_info:
-            p_num = period_info['period_number']
-            p_total = period_info['total_periods']
+            label = period_info['quota_label'].capitalize()
             p_start = period_info['period_start'].strftime('%b %d')
             p_end = period_info['period_end'].strftime('%b %d')
-            description += f"\n**Period:** {period_info['quota_label'].capitalize()} {p_num} of {p_total} ({p_start} – {p_end})"
+            if period_info.get('anchored'):
+                description += (f"\n**Period:** {label} {p_start} – {p_end} "
+                                f"(day {period_info['day_number']} of {period_info['period_days']})")
+            else:
+                p_num = period_info['period_number']
+                p_total = period_info['total_periods']
+                description += f"\n**Period:** {label} {p_num} of {p_total} ({p_start} – {p_end})"
 
         # Summary embed
         summary_embed = discord.Embed(
@@ -181,9 +186,9 @@ class ReportGenerator:
         member = item['member']
         history = item['history']
 
-        if quota_period != 'daily' and 'period_start_fans' in item and 'period_info' in item:
+        if quota_period != 'daily' and 'period_fans' in item and 'period_info' in item:
             period_info = item['period_info']
-            period_fans = history.cumulative_fans - item['period_start_fans']
+            period_fans = item['period_fans']
             period_quota = period_info['period_quota']
             period_label = period_info['quota_label']  # 'week' or 'biweek'
 
