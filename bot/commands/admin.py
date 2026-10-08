@@ -564,7 +564,8 @@ class AdminCommands(commands.Cog):
 
             # Generate and send daily reports
             status_summary = await self.quota_calculator.get_member_status_summary(
-                club_obj.club_id, current_date, quota_period=club_obj.quota_period
+                club_obj.club_id, current_date, quota_period=club_obj.quota_period,
+                period_anchor=club_obj.period_anchor_date,
             )
 
             if club_obj.bombs_enabled:

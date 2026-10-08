@@ -2,18 +2,22 @@
 Quota calculation service with multi-club support
 """
 from datetime import date, timedelta
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, Iterable, List, Optional, Tuple, Set
 from uuid import UUID
 import logging
 import calendar
 import math
 
-from models import Member, QuotaHistory, QuotaRequirement, Bomb, Club
+from models import Member, QuotaHistory, Bomb, Club
 from models.quota_requirement import QuotaSchedule
 from scrapers.umamoe_api_scraper import JOINED_BEFORE_MONTH
 from config.database import db
 
 logger = logging.getLogger(__name__)
+
+# Periods a club can run on its own cycle (clubs.period_anchor_date)
+# instead of calendar blocks.
+ANCHORABLE_PERIODS = frozenset({'biweekly'})
 
 
 class QuotaCalculator:
@@ -328,15 +332,37 @@ class QuotaCalculator:
         return consecutive_days
     
     @staticmethod
-    def get_period_info(quota_period: str, current_date: date) -> Optional[Dict]:
+    def get_period_info(quota_period: str, current_date: date,
+                        anchor: Optional[date] = None) -> Optional[Dict]:
         """
         Return period metadata for the current date under weekly/biweekly quota.
         Returns None for daily quota.
+
+        Periods are calendar blocks (biweekly: 1st-14th, 15th-28th, 29th-end)
+        unless a biweekly club has an ``anchor``. Then they are back-to-back
+        14-day runs through the anchor date, which may cross a month end.
         """
         if quota_period == 'daily':
             return None
 
         period_days = {'weekly': 7, 'biweekly': 14}[quota_period]
+        quota_label = 'week' if quota_period == 'weekly' else 'biweek'
+
+        if anchor is not None and quota_period in ANCHORABLE_PERIODS:
+            # Floor division, so dates before the anchor land in earlier runs.
+            offset = (current_date - anchor).days // period_days * period_days
+            period_start = anchor + timedelta(days=offset)
+            return {
+                'period_number': None,
+                'total_periods': None,
+                'period_start': period_start,
+                'period_end': period_start + timedelta(days=period_days - 1),
+                'period_days': period_days,
+                'day_number': (current_date - period_start).days + 1,
+                'quota_label': quota_label,
+                'anchored': True,
+            }
+
         days_in_month = calendar.monthrange(current_date.year, current_date.month)[1]
 
         day_of_month = current_date.day  # 1-indexed
@@ -349,7 +375,6 @@ class QuotaCalculator:
         period_end = date(current_date.year, current_date.month, period_end_day)
 
         total_periods = math.ceil(days_in_month / period_days)
-        quota_label = 'week' if quota_period == 'weekly' else 'biweek'
 
         return {
             'period_number': period_number,
@@ -357,30 +382,87 @@ class QuotaCalculator:
             'period_start': period_start,
             'period_end': period_end,
             'period_days': period_days,
+            'day_number': day_of_month - period_start_day + 1,
             'quota_label': quota_label,
+            'anchored': False,
         }
 
+    @staticmethod
+    def period_quota(schedule: QuotaSchedule, period_info: Dict) -> int:
+        """The club's quota for the whole period, prorated day by day.
+
+        The stored quota is per full period, so a short calendar block (29th-end)
+        or a quota change partway through counts each day at its own rate.
+        """
+        total = 0.0
+        day = period_info['period_start']
+        while day <= period_info['period_end']:
+            total += schedule.for_date(day) / period_info['period_days']
+            day += timedelta(days=1)
+        return round(total)
+
+    @staticmethod
+    def period_gain(history: Iterable[Tuple[date, int]], period_start: date,
+                    through: date) -> int:
+        """Fans a member earned from ``period_start`` through ``through``.
+
+        ``history`` is ``(date, cumulative_fans)`` rows. Cumulative fans restart
+        every month, so each month in the window counts its last value, minus
+        the last value before ``period_start`` in the month the window opens in.
+        """
+        baseline: Optional[Tuple[date, int]] = None
+        last_in_window: Dict[Tuple[int, int], Tuple[date, int]] = {}
+
+        for row_date, cumulative in history:
+            if row_date > through:
+                continue
+            if row_date >= period_start:
+                key = (row_date.year, row_date.month)
+                if key not in last_in_window or row_date > last_in_window[key][0]:
+                    last_in_window[key] = (row_date, cumulative)
+            elif (row_date.year, row_date.month) == (period_start.year, period_start.month):
+                if baseline is None or row_date > baseline[0]:
+                    baseline = (row_date, cumulative)
+
+        start_month = (period_start.year, period_start.month)
+        gain = 0
+        for month, (_, cumulative) in last_in_window.items():
+            base = baseline[1] if baseline and month == start_month else 0
+            gain += max(0, cumulative - base)
+        return gain
+
     async def get_member_status_summary(self, club_id: UUID, current_date: date,
-                                        quota_period: str = 'daily') -> Dict:
+                                        quota_period: str = 'daily',
+                                        period_anchor: Optional[date] = None) -> Dict:
         """
         Get summary of all members' status for a club.
 
         For weekly/biweekly quotas, each member_status entry will additionally
-        contain 'period_start_fans' and 'period_info'.
+        contain 'period_fans' and 'period_info'.
 
         Returns:
             Dict with categorized member data
         """
         members = await Member.get_all_active(club_id)
 
-        period_info = self.get_period_info(quota_period, current_date)
+        period_info = self.get_period_info(quota_period, current_date, period_anchor)
 
-        # Pre-compute period_quota for the current period when not daily
+        period_rows: Dict[UUID, List[Tuple[date, int]]] = {}
         if period_info:
-            actual_period_length = (period_info['period_end'] - period_info['period_start']).days + 1
-            stored_quota = await QuotaRequirement.get_quota_for_date(club_id, period_info['period_start'])
-            period_quota = round(stored_quota / period_info['period_days'] * actual_period_length)
-            period_info['period_quota'] = period_quota
+            schedule = await QuotaSchedule.load(club_id)
+            period_info['period_quota'] = self.period_quota(schedule, period_info)
+
+            # From the 1st of the opening month, so the baseline row is included.
+            rows = await db.fetch(
+                "SELECT member_id, date, cumulative_fans FROM quota_history "
+                "WHERE member_id = ANY($1::uuid[]) AND date >= $2",
+                [m.member_id for m in members],
+                period_info['period_start'].replace(day=1),
+            )
+            for row in rows:
+                period_rows.setdefault(row['member_id'], []).append(
+                    (row['date'], row['cumulative_fans'])
+                )
 
         on_track = []
         behind = []
@@ -397,15 +479,11 @@ class QuotaCalculator:
             }
 
             if period_info:
-                # Fans earned before this period started
-                if period_info['period_start'].day == 1:
-                    period_start_fans = 0
-                else:
-                    day_before_period = period_info['period_start'] - timedelta(days=1)
-                    prev_record = await QuotaHistory.get_for_member_date(member.member_id, day_before_period)
-                    period_start_fans = prev_record.cumulative_fans if prev_record else 0
-
-                member_status['period_start_fans'] = period_start_fans
+                member_status['period_fans'] = self.period_gain(
+                    period_rows.get(member.member_id, ()),
+                    period_info['period_start'],
+                    latest_history.date,
+                )
                 member_status['period_info'] = period_info
 
             if latest_history.deficit_surplus >= 0:

@@ -71,6 +71,7 @@ Modify settings for an existing club.
 | `circle_id` | No | Update uma.moe circle ID |
 | `daily_quota` | No | Update quota amount |
 | `quota_period` | No | Update quota period (`daily`, `weekly`, `biweekly`) |
+| `biweek_start` | No | First day of any biweek in your own cycle (`YYYY-MM-DD`), or `off` for calendar biweeks |
 | `scrape_time` | No | Update daily check time (HH:MM) |
 | `timezone` | No | Update timezone |
 | `bomb_trigger_days` | No | Days behind before bomb activates (default: 3) |
@@ -78,6 +79,11 @@ Modify settings for an existing club.
 | `bombs_enabled` | No | Enable or disable bomb system (`true`/`false`) |
 
 Only include the parameters you want to change.
+
+Biweekly quotas run on calendar blocks by default: 1st–14th, 15th–28th, then
+29th–end. If your club tallies every 14 days from its own date, set
+`biweek_start` to any tally day — `biweek_start:2026-10-04` gives biweeks of
+Oct 4–17, Oct 18–31, Nov 1–14 and so on, carrying on across month ends.
 
 
 ---
