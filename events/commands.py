@@ -212,8 +212,9 @@ class EventCommands(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    # One feed for both cogs: it holds the uma.moe ETag cache and GameTora's
-    # manifest, and there is no reason to keep two copies of either.
+    # One feed for both cogs: it holds the uma.moe ETag cache, GameTora's
+    # manifest and the umapyoi notice cache, and there is no reason to keep two
+    # copies of any of them.
     client = EventFeed()
     bot._event_feed = client
     await bot.add_cog(EventAnnouncer(bot, client))

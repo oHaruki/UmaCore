@@ -404,9 +404,6 @@ class GametoraClient:
         rollover early on every Global banner (23 of 61 matched historically).
         GameTora carries the real value. Start times agree across both sources
         on all 61, which is what makes the start usable as the join key.
-
-        Only gacha is affected — uma.moe's campaign end times match GameTora's
-        on 49 of 52 — so nothing else is corrected from here.
         """
         manifest = await self.manifest()
         feeds = await asyncio.gather(
@@ -424,6 +421,25 @@ class GametoraClient:
                 start, end = _seconds(row.get("start")), _seconds(row.get("end"))
                 if start and end and end < PERMANENT_CUTOFF:
                     ends[start] = end
+        return ends
+
+    async def mission_end_times(self) -> dict[int, int]:
+        """Mission set end timestamps, keyed by mission id.
+
+        uma.moe stretches the first set of each multi-part campaign to the end
+        of the whole part; GameTora reads the game's own value. The mission id
+        is in both, so this join is exact.
+        """
+        manifest = await self.manifest()
+        rows = await self._fetch_key(manifest, "en/missions/limited")
+        if isinstance(rows, dict):
+            rows = rows.get("events", [])
+
+        ends: dict[int, int] = {}
+        for row in rows or []:
+            eid, end = row.get("eventId"), _seconds(row.get("endDate"))
+            if eid and end and end < PERMANENT_CUTOFF:
+                ends[int(eid)] = end
         return ends
 
 

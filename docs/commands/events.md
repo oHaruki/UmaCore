@@ -5,7 +5,9 @@ gacha banners, story events, Champions Meeting, mission campaigns and more —
 with the banner art and the start/end times rendered in each reader's own
 timezone.
 
-Data comes from [uma.moe](https://uma.moe), with gacha end times corrected from
+Events come from the official Global notices, read through
+[umapyoi.net](https://umapyoi.net). Banners and mission sets come from
+[uma.moe](https://uma.moe), with their end times corrected from
 [GameTora](https://gametora.com/umamusume). UmaCore polls every 15 minutes and
 posts anything it hasn't posted before.
 
@@ -44,8 +46,8 @@ each, with the banner art. Anyone can use it.
 
 ## /events_status
 
-Where the feed posts, when it last checked GameTora, and how many events are on
-record. Requires **Manage Server**.
+Where the feed posts, when it last checked its sources, how many events are on
+record, and which source failed if one is down. Requires **Manage Server**.
 
 ---
 
@@ -59,59 +61,54 @@ Server**.
 
 ## What gets announced
 
-Every confirmed Global event uma.moe tracks:
-
-| Type | Notes |
-|---|---|
-| Character banners | End time corrected from GameTora |
-| Support card banners | End time corrected from GameTora |
-| Paid banners | End time corrected from GameTora |
-| Story events | |
-| Champions Meeting | Race conditions shown in the embed |
-| Legend Race | |
-| Mission campaigns | Mission count shown in the embed |
-| New scenarios | |
-| Racing Carnival, League of Heroes, Masters Challenge, Strongest Team, Trainer Aptitude Test, Factor Research | Announced when they reach Global |
-
-A type uma.moe adds later is announced too, labelled from its own name, rather
-than being dropped for being unrecognised.
+| Type | Source | Notes |
+|---|---|---|
+| Character, support card and paid banners | uma.moe | End time corrected from GameTora |
+| Mission sets | uma.moe | End time corrected from GameTora; mission count shown |
+| Story events | Official notices | Event SSR shown; ends when the event does, not when reward collection does |
+| Champions Meeting | Official notices | Runs from league selection to the final; race conditions shown |
+| Legend Race | Official notices | Covers both halves; race conditions shown |
+| Events (Aim for the Stars! Dream Team, Trainer Aptitude Test, ...) | Official notices | |
+| Campaigns (celebrations, Bonus Star Pieces, Transfer Requests, ...) | Official notices | |
+| New Career scenarios | Official notices | No end date |
 
 ---
 
-### Why two sources
+### Why three sources
 
-uma.moe covers Global content GameTora has no data for at all — Champions
-Meeting, story events, scenario releases and the smaller recurring events.
+The official notices are the only source whose dates are the game's own. Checked
+against them over Aug–Oct 2026, uma.moe ended every Champions Meeting before its
+final, ended story events and Legend Races early, and left several campaigns out
+entirely. umapyoi mirrors the notices, so the feed reads the dates straight from
+them.
 
-Its one weak spot is gacha end times, which it derives from a duration field
-rather than reading from the game. Since April 2026 that has run exactly one
-daily rollover early on every Global banner (23 of 61 matched historically).
-GameTora carries the real value and the start times agree across both sources
-on all 61, so the start is used to join them and the end is taken from
-GameTora. Campaign end times need no such help — those match on 49 of 52.
+The notices are prose, but every period is written in one fixed form under a
+heading — `10:00 p.m., Sep 28–9:59 p.m., Oct 12, 2026 (UTC)` — so they can be
+read reliably. A "coming soon" notice and the matching "is here" notice are
+recognised as one event, as are Champions Meeting's league-selection and
+race-day notices.
 
-If GameTora is unreachable the feed still works; banners just carry uma.moe's
-derived end, which runs about a day early.
+Banners stay on uma.moe because it carries the pickups and the banner ids the
+art is built from. uma.moe derives their end times from a duration rather than
+reading them, which has run one daily rollover early since April 2026, so the
+end is taken from GameTora, joined on the start time. Mission sets are corrected
+the same way, joined on the mission id.
+
+Each source fails on its own. If umapyoi is down the banners still show; if
+uma.moe is down the events still show; `/events_status` names whichever is
+missing.
 
 ### Artwork and links
 
-uma.moe hosts the Japanese artwork for everything. GameTora hosts the English
-artwork Global players actually see in game, but only for banners and mission
-campaigns — and uma.moe supplies the ids needed to build those URLs.
-
-So each announcement takes its art and its link from the same site: GameTora for
-banners and campaigns, uma.moe for everything else. The Japanese art is kept as a
-fallback in case GameTora doesn't have that particular id.
-
-Story events stay on uma.moe's art even though GameTora hosts English story
-banners, because GameTora's story ids don't map onto uma.moe's — guessing one
-would show a different event's banner.
+Events use the official English notice banner and link to the notice on
+umapyoi. Banners and mission sets use GameTora's English art and link there,
+with uma.moe's Japanese art as a fallback when GameTora doesn't have that id.
 
 ---
 
 ## What does *not* get announced
 
-Three rules keep the channel from being a firehose. All three are deliberate:
+These rules keep the channel from being a firehose. All are deliberate:
 
 - **The first run after enabling the feed posts nothing.** Everything already
   live is recorded silently, because "we have never checked before" is not the
@@ -120,9 +117,11 @@ Three rules keep the channel from being a firehose. All three are deliberate:
   sometimes adds an event that started weeks ago; that's a data edit, not news.
 - **Permanent mission sets older than 21 days** (the launch tutorials, the Tracen
   Specials) never count as live.
-- **Unconfirmed entries.** uma.moe forecasts when JP content will reach Global.
-  Those dates move and the same campaign can appear several times at different
+- **Unconfirmed banners.** uma.moe forecasts when JP content will reach Global.
+  Those dates move and the same banner can appear several times at different
   dates, so only confirmed entries are announced.
+- **Notices that aren't events** — scout announcements (banners come from
+  uma.moe), known issues, maintenance, WebStore items and "has ended" posts.
 
 Because the record of what's been announced is global to the bot, a server that
 enables the feed today starts from the next new event rather than replaying
@@ -138,5 +137,5 @@ Both are optional environment variables with working defaults.
 
 | Variable | Default | Description |
 |---|---|---|
-| `EVENTS_POLL_MINUTES` | `15` | How often GameTora is checked |
+| `EVENTS_POLL_MINUTES` | `15` | How often the sources are checked |
 | `EVENTS_MAX_BACKFILL_SEC` | `259200` | How far past its start an entry can be and still be announced |
