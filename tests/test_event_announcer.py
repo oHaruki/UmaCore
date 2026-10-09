@@ -277,3 +277,16 @@ def test_a_new_event_from_a_known_source_still_announces(wire):
 
     assert [e.key for e in posted] == ["umamoe:2"]
     assert len(channel.sent) == 1
+
+def test_a_source_that_is_down_shows_as_the_last_error(wire):
+    """The feed survives one source failing, so the poll itself succeeds;
+    /events_status still has to say which source is missing."""
+    cog, _ = wire([event("mission:1")], announced=["mission:1"])
+
+    cog.client.problems = ["umapyoi: timed out"]
+    run(cog.run_once())
+    assert cog.last_error == "umapyoi: timed out"
+
+    cog.client.problems = []
+    run(cog.run_once())
+    assert cog.last_error == ""

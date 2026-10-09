@@ -26,6 +26,8 @@ KIND_LABELS = {
     "story": "Story Event",
     "champions_meeting": "Champions Meeting",
     "legend_race": "Legend Race",
+    "event": "Event",
+    "campaign": "Campaign",
     "scenario": "New Scenario",
     "factor_research": "Factor Research",
     "league_of_heroes": "League of Heroes",
@@ -43,6 +45,8 @@ KIND_COLOURS = {
     "story": 0x9b59b6,
     "champions_meeting": 0xf1c40f,
     "legend_race": 0x1abc9c,
+    "event": 0x3498db,
+    "campaign": 0xd35400,
     "scenario": 0x16a085,
     "factor_research": 0x27ae60,
     "league_of_heroes": 0xe67e22,
@@ -55,18 +59,18 @@ KIND_COLOURS = {
 #: Listing order: what people pull on first, then what they play, then the rest.
 KIND_ORDER = [
     "gacha_char", "gacha_support", "gacha_paid",
-    "story", "champions_meeting", "legend_race",
-    "scenario", "mission",
+    "story", "champions_meeting", "legend_race", "event",
+    "scenario", "campaign", "mission",
     "racing_carnival", "league_of_heroes", "masters_challenge",
     "strongest_team", "trainer_skills_test", "factor_research",
 ]
 
-FOOTER = "Uma Musume Global · data from uma.moe"
+FOOTER = "Uma Musume Global · data from umapyoi.net, uma.moe & GameTora"
 
 
 def kind_label(kind: str) -> str:
-    """Readable label, falling back to the raw kind so a newly added uma.moe
-    event type still shows something sensible instead of just "Event"."""
+    """Readable label, falling back to the raw kind so a newly added event
+    type still shows something sensible."""
     return KIND_LABELS.get(kind) or kind.replace("_", " ").title()
 
 

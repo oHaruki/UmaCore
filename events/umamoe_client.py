@@ -1,5 +1,5 @@
 """
-uma.moe timeline client — the primary event source.
+uma.moe timeline client — the source for banners and mission sets.
 
 uma.moe publishes a versioned resource manifest; ``banner_timeline.json`` in it
 carries every dated thing in the game across both servers, with a
@@ -210,8 +210,9 @@ class UmaMoeEventsClient:
             detail=detail,
         )
 
-    async def fetch_events(self) -> list[GameEvent]:
-        """Every confirmed Global item that hasn't finished yet.
+    async def fetch_events(self, ended_within: int = 0) -> list[GameEvent]:
+        """Every confirmed Global item that hasn't finished yet, or finished
+        less than ``ended_within`` seconds ago by uma.moe's own end time.
 
         Unconfirmed entries are uma.moe's own forecast of when JP content will
         reach Global. They move, they duplicate, and announcing one as though it
@@ -230,7 +231,7 @@ class UmaMoeEventsClient:
             if event.end is None:
                 if now - event.start > PERMANENT_WINDOW:
                     continue
-            elif event.end <= now:
+            elif event.end <= now - ended_within:
                 continue
             events.append(event)
 

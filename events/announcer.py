@@ -60,7 +60,8 @@ class EventAnnouncer(commands.Cog):
         now = int(time.time())
         events = await self.client.fetch_events()
         self.last_poll = time.time()
-        self.last_error = ""
+        # One source down still yields a feed; say which one is missing.
+        self.last_error = "; ".join(getattr(self.client, "problems", []))
 
         live = [e for e in events if e.is_live(now)]
         known = await AnnouncedEvents.keys()
