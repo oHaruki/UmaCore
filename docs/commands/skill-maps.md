@@ -21,20 +21,39 @@ One skill on one course.
 | `course` | No | Champions Meeting, race or course (autocomplete). Default: the current Champions Meeting |
 | `strategy` | No | Running style. Default: the one the skill is written for, else Pace Chaser |
 
-The reply is one line with the headline number, and an image (click it for full
-size) with:
+The reply is a skill card:
 
-- the course chart: the reference uma's speed, height, slopes, corners and race
-  phases, with the stretches where she is still accelerating shaded green
-- the skill drawn as a box over the stretch it stays active when fired at its
-  best spot
-- when it can fire and what it does, from the game's own trigger conditions
-- every spot it can fire (taller = more likely), coloured by what a firing there
-  wins, plus the average lengths gained and, for acceleration skills, how often
-  the acceleration lands while she is still speeding up
+- the skill type and name. The name links to the skill on the same course in
+  umalator
+- a **verdict** for this course and running style (Strong, Decent, Weak or
+  Wasted here, or Can't fire here) with the fact behind it, e.g. how often the
+  acceleration lands while she's still speeding up. The card's colour follows it
+- **Avg gain**, **Best spot** and where it **Fires**, in horse lengths at the finish
+- **When**: its trigger conditions, from the game data. Position conditions
+  also show the places they mean in a 9-runner Champions Meeting (e.g. "front
+  50% of the field (1st–5th in CM)")
+- **Effect**: what it does and how long that lasts on this course (durations
+  scale with race distance)
+- **By running style**: the average gain for each style, when more than one can
+  use the skill
+- a course strip (click it for full size) with the reference uma's speed,
+  height, slopes, corners and race phases. Where the skill can fire is
+  highlighted, coloured by what a firing there wins, and a box shows the
+  stretch it stays active when fired at its best spot
 
-A dropdown under the reply switches running style without retyping the command.
-Only the person who ran it can use the dropdown.
+Under the card:
+
+| Control | What it does |
+|---|---|
+| Running style | Redraws the card for another running style |
+| Support cards with this hint | Gold skills list the cards for their white version. Picking one shows its other hint skills (only you see it) |
+| ↓ / ↑ | Switches to the weaker or stronger version of the skill |
+
+Only the person who ran the command can change the card. Anyone can look up
+supporters.
+
+The course list offers the current and next Champions Meeting first (from
+uma.moe's schedule), then graded races and every course.
 
 ---
 
@@ -44,7 +63,7 @@ Every skill of one type on a course, best first.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `course` | No | Champions Meeting, race or course. Default: the current Champions Meeting |
+| `course` | No | Champions Meeting, race or course (autocomplete). Default: the current Champions Meeting |
 | `type` | No | Acceleration (default), Speed or Recovery |
 | `strategy` | No | Running style. Default: Pace Chaser |
 
@@ -97,7 +116,7 @@ the ground it wins at the finish is measured.
   aptitudes, great mood, enough stamina for a full last spurt.
 - She runs alone: no blocking, position keep, rushing or downhill speed-ups.
 - Gains are for when the skill fires; white and gold skills also have to pass a
-  Wit check first (the reply shows the chance).
+  Wit check first.
 - Unique skills are shown at level 1.
 
 Real races add traffic, so treat the numbers as a comparison between skills,

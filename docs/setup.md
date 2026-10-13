@@ -113,7 +113,7 @@ If you want to use the Uma.moe API (recommended):
 ### Docker
 
 ```bash
-docker compose up -d --build     # same command after every git pull
+docker compose up -d --build --force-recreate     # same command after every git pull
 ```
 
 `compose.yml` runs the bot with host networking (Postgres on `localhost` and the

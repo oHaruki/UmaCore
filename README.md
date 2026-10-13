@@ -139,7 +139,7 @@ After inviting, use `/add_club` to register your club and `/set_report_channel` 
 
 **Docker:**
 ```bash
-docker compose up -d --build     # same command after every git pull
+docker compose up -d --build --force-recreate     # same command after every git pull
 ```
 Uses host networking, so `DATABASE_URL` can point at a Postgres on `localhost`.
 

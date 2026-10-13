@@ -141,6 +141,10 @@ class UmaMoeEventsClient:
             self._cached = data
             return data
 
+    async def timeline(self) -> dict:
+        """The raw timeline, for other features that read it (the skill maps' CM schedule)."""
+        return await self._fetch_timeline()
+
     @staticmethod
     def _artwork(raw: dict, kind: str, key: str) -> tuple[Optional[str], Optional[str], str]:
         """Pick the art and the link, preferring English where it exists.

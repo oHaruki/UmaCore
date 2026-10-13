@@ -1,6 +1,7 @@
 """Skill maps: condition parsing, where skills can fire, the firing-point
 distribution, and the race model that decides whether a firing pays off.
 """
+import asyncio
 import math
 
 import pytest
@@ -8,7 +9,9 @@ import pytest
 from skillmap import conditions as cond
 from skillmap.analysis import USEFUL_LENGTHS, analyze_skill, analyze_track, skill_kind, strategy_hint
 from skillmap.gamedata import Course, CourseChoice, RaceEnv, load
+from skillmap.schedule import CmSchedule, parse_cm
 from skillmap.sim import Build, EffectSig, RaceModel, phase_start
+from skillmap.text import condition_lines
 
 # A 2000m course with two laps' worth of corners, one hill and a final straight.
 COURSE = Course(
@@ -177,22 +180,80 @@ def test_every_skill_condition_parses(data):
             cond.parse(alt.pre)
 
 
-def test_every_champions_meeting_has_its_course(data):
-    assert data.cms
-    for cm in data.cms:
-        assert cm.course_id in data.courses
-
-
 def test_lookup_keeps_circle_and_cross_variants_apart(data):
     assert data.find_skill("Right-Handed ○").name == "Right-Handed ○"
     assert data.find_skill("right-handed ×").name == "Right-Handed ×"
     assert data.find_skill("corner connoisseur").name == "Corner Connoisseur"
 
 
-def test_course_lookup_defaults_to_a_champions_meeting(data):
-    choice = data.resolve_course(None)
-    assert choice.key.startswith("cm:")
+def test_course_lookup_takes_races_and_courses(data):
     assert data.resolve_course("race:1023").course.label.startswith("Nakayama 2500m")
+    assert data.resolve_course("course:10701").course.label == "Chukyo 1200m Turf"
+    assert data.resolve_course(None) is None
+
+
+# ── Champions Meeting schedule (uma.moe timeline) ───────────────────────
+
+def _cm(idx, title, start, desc, confirmed=True):
+    return {"id": f"champions-meeting-{idx}", "type": "champions_meeting", "title": title,
+            "global_release_date": start, "estimated_end_date": None, "is_confirmed": confirmed,
+            "description": desc}
+
+
+TIMELINE = {"events": [
+    _cm(19, "Sagittarius Cup", "2026-10-07T22:00:00Z",
+        "Nakayama - Turf<br>2500m - Long - Clockwise<br>Good - Winter - Cloudy"),
+    _cm(20, "Capricorn Cup", "2026-10-27T22:00:00Z",
+        "Chukyo - Turf<br>1200m - Short - Counterclockwise<br>Firm - Winter - Sunny"),
+    _cm(21, "Aquarius Cup", "2026-11-18T22:00:00Z",
+        "Tokyo - Dirt<br>1600m - Mile - Counterclockwise<br>Soft - Winter - Snow", confirmed=False),
+    {"id": "jp-only", "type": "champions_meeting", "is_confirmed": True,
+     "global_release_date": "2026-10-01T00:00:00Z", "description": "The race event is being held..."},
+]}
+OCT_13 = 1791849600     # 2026-10-13 00:00 UTC
+
+
+def test_cm_race_text_maps_to_a_course_and_conditions(data):
+    cm = parse_cm(TIMELINE["events"][0], data)
+    assert cm.choice.course.label == "Nakayama 2500m Turf (Inner)"
+    assert cm.choice.env == RaceEnv(season=4, weather=2, ground=2)
+    assert parse_cm(TIMELINE["events"][3], data) is None
+
+
+def test_ambiguous_layouts_take_the_outer_course(data):
+    raw = _cm(1, "Test Cup", "2026-01-01T00:00:00Z", "Kyoto - Turf<br>1600m - Mile - Clockwise<br>Firm - Fall - Sunny")
+    assert parse_cm(raw, data).choice.course.inout == 3
+
+
+def test_schedule_offers_the_running_cm_and_the_next_confirmed_one(data):
+    async def fetch():
+        return TIMELINE
+    schedule = CmSchedule(fetch, data)
+    asyncio.run(schedule.refresh())
+    labels = [c.label for c in schedule.choices(now=OCT_13)]
+    assert labels[0].startswith("Current CM: Sagittarius Cup")
+    assert labels[1].startswith("Next CM, Oct 27: Capricorn Cup")
+    assert len(labels) == 2                       # unconfirmed and unparseable entries are skipped
+    default = data.resolve_course(None, cms=schedule.choices(now=OCT_13))
+    assert default.event == "Sagittarius Cup"
+    # uma.moe ends CMs early; one still counts as running for its usual nine days.
+    later = schedule.choices(now=OCT_13 + 3 * 86400)
+    assert later[0].event == "Sagittarius Cup"
+
+
+# ── card text and lookups ───────────────────────────────────────────────
+
+def test_position_conditions_show_cm_places(data):
+    lines = condition_lines(data.find_skill("Neck and Neck"), 0)
+    assert "Pace Chaser" in lines
+    assert any("1st–5th in CM" in line for line in lines)
+
+
+def test_gold_and_white_versions_link_up(data):
+    lower, higher = data.related(data.find_skill("Neck and Neck"))
+    assert lower.name == "Head-On" and higher is None
+    assert data.related(data.find_skill("Head-On"))[1].name == "Neck and Neck"
+    assert data.cards_for(data.find_skill("Head-On").id)
 
 
 def test_skill_kind_and_strategy_hint(data):
@@ -217,3 +278,18 @@ def test_track_overview_lists_only_skills_that_can_fire(data):
     assert t.results and all(r.possible for r in t.results)
     assert all(not r.skill.is_unique for r in t.results)
     assert [r.mean_gain for r in t.results] == sorted((r.mean_gain for r in t.results), reverse=True)
+
+
+def test_card_verdict_and_style_comparison(data):
+    from skillmap.text import stat_fields, style_line, verdict
+    choice = data.resolve_course("course:10701")
+    skill = data.find_skill("Groundwork")
+    by_style = {k: analyze_skill(skill, choice, Build(strategy=k)) for k in (1, 2, 3, 4)}
+    head, _, _ = verdict(by_style[1])
+    assert head in ("Strong here", "Decent here")
+    assert "**Front +" in style_line(by_style, 1)
+    assert [name for name, _ in stat_fields(by_style[1])] == ["Avg gain", "Fires"]
+    locked = data.find_skill("Neck and Neck")
+    only_pace = {k: analyze_skill(locked, choice, Build(strategy=k)) for k in (1, 2, 3, 4)}
+    assert style_line(only_pace, 2) is None
+    assert verdict(only_pace[4])[0] == "Can't fire here"

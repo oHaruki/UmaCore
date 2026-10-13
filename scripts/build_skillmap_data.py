@@ -2,10 +2,11 @@
 """
 Build skillmap/assets/gamedata.json from the Global client's master.mdb.
 
-Skills (names, descriptions, trigger conditions, effects), Champions Meeting
-schedules and graded races come straight from master.mdb. Corner, straight and
-slope positions are not in master.mdb (they live in the course asset files), so
-they come from the uma-tools course data, which is extracted from those assets.
+Skills (names, descriptions, trigger conditions, effects), support card skill
+hints and graded races come straight from master.mdb. Corner, straight and slope
+positions are not in master.mdb (they live in the course asset files), so they
+come from the uma-tools course data, which is extracted from those assets.
+Champions Meeting schedules are not built here: the bot reads them from uma.moe.
 
 Run it after a game update, from the repo root:
 
@@ -30,9 +31,13 @@ OUT = Path(__file__).resolve().parent.parent / "skillmap" / "assets" / "gamedata
 # text_data categories
 TXT_SKILL_NAME = 47
 TXT_SKILL_DESC = 48
-TXT_RACE_INSTANCE = 28
 TXT_RACE = 32
 TXT_TRACK = 35
+TXT_CARD = 75
+TXT_CARD_TITLE = 76
+TXT_CARD_CHARA = 77
+CARD_TYPES = {101: "Speed", 105: "Stamina", 102: "Power", 103: "Guts", 106: "Wit"}
+UNRELEASED = 4_000_000_000      # placeholder cards are dated 2099
 
 
 def _texts(cur, category: int) -> dict[int, str]:
@@ -78,6 +83,8 @@ def build_skills(cur) -> dict:
             "n": name,
             "d": descs.get(sid, ""),
             "r": r["rarity"],
+            "g": r["group_id"],
+            "gv": r["grade_value"],
             "lot": r["activate_lot"],
             "sp": sp.get(sid),
             "icon": r["icon_id"],
@@ -128,30 +135,26 @@ def build_races(cur, courses: dict) -> list:
     return races
 
 
-def build_cms(cur, courses: dict) -> list:
-    instance_names = _texts(cur, TXT_RACE_INSTANCE)
-    cms = []
-    for cm_id, start, end in cur.execute("SELECT id, start_date, end_date FROM champions_schedule ORDER BY id").fetchall():
-        first = cur.execute(
-            "SELECT race_instance_id, race_condition_id FROM champions_race_condition "
-            "WHERE champions_id = ? ORDER BY round_id LIMIT 1", (cm_id,)
-        ).fetchone()
-        if not first:
+def build_cards(cur, skills: dict) -> dict:
+    """Released support cards and the skills they hint."""
+    full, title, chara = _texts(cur, TXT_CARD), _texts(cur, TXT_CARD_TITLE), _texts(cur, TXT_CARD_CHARA)
+    cards = {}
+    for cid, rarity, kind, command, start in cur.execute(
+        "SELECT id, rarity, support_card_type, command_id, start_date FROM support_card_data ORDER BY id"
+    ).fetchall():
+        if cid not in full or start >= UNRELEASED:
             continue
-        instance, condition = first
-        course = cur.execute(
-            "SELECT r.course_set FROM race_instance i JOIN race r ON r.id = i.race_id WHERE i.id = ?", (instance,)
-        ).fetchone()
-        env = cur.execute("SELECT season, weather, ground FROM race_condition WHERE id = ?", (condition,)).fetchone()
-        if not course or str(course[0]) not in courses or not env:
-            continue
-        name = instance_names.get(instance, f"Champions Meeting {cm_id}")
-        name = name.replace("Champions Meeting", "").strip(" :")
-        cms.append({
-            "id": cm_id, "name": name, "start": start, "end": end, "course": course[0],
-            "season": env[0], "weather": env[1], "ground": env[2],
-        })
-    return cms
+        hints = [h for (h,) in cur.execute(
+            "SELECT hint_value_1 FROM single_mode_hint_gain WHERE support_card_id = ? AND hint_gain_type = 0 "
+            "ORDER BY hint_group", (cid,)) if str(h) in skills]
+        cards[str(cid)] = {
+            "t": title.get(cid, "").strip("[]"),
+            "c": chara.get(cid, ""),
+            "r": rarity,
+            "k": CARD_TYPES.get(command, {2: "Friend", 3: "Group"}.get(kind, "")),
+            "h": list(dict.fromkeys(hints)),
+        }
+    return cards
 
 
 def main() -> int:
@@ -179,14 +182,14 @@ def main() -> int:
         "skills": skills,
         "courses": courses,
         "races": build_races(cur, courses),
-        "cms": build_cms(cur, courses),
+        "cards": build_cards(cur, skills),
     }
     con.close()
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print(f"{args.out}: {len(skills)} skills, {len(courses)} courses, "
-          f"{len(data['races'])} races, {len(data['cms'])} Champions Meetings")
+          f"{len(data['races'])} races, {len(data['cards'])} support cards")
     return 0
 
 
