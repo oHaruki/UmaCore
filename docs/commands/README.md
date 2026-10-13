@@ -12,6 +12,7 @@ All commands are Discord slash commands (`/`).
 - [Transfers](transfers.md) — Queue for a spot in another club and review the waiting list
 - [Charts & Stats](charts.md) — Progress charts and bot statistics
 - [Event Feed](events.md) — Announce new Uma Musume banners and events as they go live
+- [Skill Maps](skill-maps.md) — Where a skill fires on a course, and whether its acceleration pays there
 
 ---
 
@@ -44,6 +45,8 @@ All commands are Discord slash commands (`/`).
 | `/events` | Anyone | Current banners, missions and events |
 | `/events_status` | Admin | Event feed health |
 | `/events_preview` | Admin | Preview an announcement embed |
+| `/skill` | Anyone | Where a skill fires on a course and what it gains |
+| `/track` | Anyone | Every acceleration, speed or recovery skill on a course |
 | `/update_monthly_info` | Admin | Refresh monthly info board |
 | `/add_member` | Admin | Manually add a member |
 | `/deactivate_member` | Admin | Deactivate a member |

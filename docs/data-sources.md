@@ -129,3 +129,27 @@ When a scrape fails, the bot retries up to **3 times** with exponential backoff 
 #### Concurrent Scrape Prevention
 
 The bot uses a per-club scrape lock to prevent two scrapes from running at the same time (e.g. a scheduled check overlapping with a `/force_check`). If a lock is already held, the second attempt is silently skipped. Locks automatically expire after **30 minutes** to prevent deadlocks if the bot crashes mid-scrape.
+
+---
+
+## Skill Map Data
+
+`/skill` and `/track` read `skillmap/assets/gamedata.json`, which ships with the
+bot. It holds:
+
+- **Skills, Champions Meetings and graded races** from the Global client's
+  `master.mdb`: names, descriptions, trigger conditions, effects, each Champions
+  Meeting's course, dates, ground, weather and season.
+- **Corner, straight and slope positions** from the
+  [uma-tools](https://github.com/alpha123/uma-tools) course data, which is
+  extracted from the game's course files (they are not in `master.mdb`).
+
+The file doesn't update itself. After a game update that adds skills or a new
+Champions Meeting, rebuild it on a PC with the game installed and commit it:
+
+```bash
+python scripts/build_skillmap_data.py
+```
+
+It reads `master.mdb` from `%USERPROFILE%\AppData\LocalLow\Cygames\Umamusume\master\`
+and downloads the course data; `--mdb` and `--courses` point it elsewhere.
