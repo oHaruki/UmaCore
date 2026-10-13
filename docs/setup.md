@@ -113,8 +113,13 @@ If you want to use the Uma.moe API (recommended):
 ### Docker
 
 ```bash
-docker-compose up -d --build
+docker compose up -d --build     # same command after every git pull
 ```
+
+`compose.yml` runs the bot with host networking (Postgres on `localhost` and the
+internal API on `127.0.0.1:BOT_API_PORT` work unchanged) and mounts the checkout,
+so `bot.log` and `backups/` stay next to the code. Package versions are pinned in
+`constraints.txt`; bump them there together with `requirements.txt`.
 
 ### Railway / Render / Fly.io
 
@@ -133,10 +138,6 @@ sudo nano /etc/systemd/system/umacore.service
 sudo systemctl enable umacore
 sudo systemctl start umacore
 ```
-
-### GitHub Actions (Raspberry Pi / Docker)
-
-If you deploy via `.github/workflows/deploy.yml`, add `BOT_API_SECRET` as a repository secret in GitHub (Settings → Secrets → Actions). The workflow writes it into the bot `.env` on each deploy.
 
 ---
 

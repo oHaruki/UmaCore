@@ -1,41 +1,17 @@
-FROM python:3.11-slim
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    DEBIAN_FRONTEND=noninteractive \
-    CHROME_EXTRA_ARGS="--no-sandbox --disable-dev-shm-usage --disable-gpu --single-process --no-zygote"
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    curl \
-    unzip \
-    xvfb \
-    # Chrome dependencies
-    fonts-liberation \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libatspi2.0-0 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libwayland-client0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxkbcommon0 \
-    libxrandr2 \
-    xdg-utils \
-    && rm -rf /var/lib/apt/lists/*
-RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-driver \
-    && rm -rf /var/lib/apt/lists/*
+# Runtime image only: compose.yml bind-mounts the checkout at /app, so bot.log,
+# backups/ and the tally portrait cache stay in the checkout on the host.
+FROM python:3.10-slim-bookworm
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 HOME=/tmp
+# chromium + chromedriver: ChronoGenesis fallback scraper and plotly/kaleido charts.
+# postgresql-client-14: pg_dump for the built-in DB backups, same major as the server.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg chromium chromium-driver fonts-liberation \
+ && install -d /usr/share/postgresql-common/pgdg \
+ && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+ && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update && apt-get install -y --no-install-recommends postgresql-client-14 \
+ && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt constraints.txt /tmp/
+RUN pip install --no-cache-dir -r /tmp/requirements.txt -c /tmp/constraints.txt
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
 CMD ["python", "main.py"]

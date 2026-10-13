@@ -1,0 +1,17 @@
+# Deploy / update: git pull && docker compose up -d --build
+# The project name comes from the folder, so a second checkout (e.g. a test
+# instance with its own .env and BOT_API_PORT) runs as a separate stack.
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    # Host network: Postgres on localhost and the internal API on 127.0.0.1:BOT_API_PORT
+    # (used by the web dashboard) work exactly as without Docker.
+    network_mode: host
+    # Owner of the checkout, so bot.log and backups/ stay writable on the host.
+    user: "1000:1000"
+    env_file: .env
+    volumes:
+      - .:/app
+    shm_size: 1gb
+    stop_grace_period: 30s
