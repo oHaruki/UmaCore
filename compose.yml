@@ -1,4 +1,7 @@
-# Deploy / update: git pull && docker compose up -d --build
+# Deploy / update: git pull && docker compose up -d --build --force-recreate
+# The code is bind-mounted, so a code-only update leaves the image unchanged and
+# plain `up -d --build` would keep the old process running; --force-recreate
+# restarts it either way.
 # The project name comes from the folder, so a second checkout (e.g. a test
 # instance with its own .env and BOT_API_PORT) runs as a separate stack.
 services:

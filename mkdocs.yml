@@ -45,6 +45,7 @@ nav:
       - User Commands: commands/user-commands.md
       - Charts & Stats: commands/charts.md
       - Event Feed: commands/events.md
+      - Skill Maps: commands/skill-maps.md
 
   - Legal:
       - Terms of Service: terms-of-service.md

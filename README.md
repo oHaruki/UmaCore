@@ -38,6 +38,7 @@ After inviting, use `/add_club` to register your club and `/set_report_channel` 
 - **Monthly reset detection** — automatically handles Uma Musume's monthly game resets
 - **Multi-club support** — track multiple clubs independently with separate quotas, schedules, and channels
 - **Visual image reports** — optional PNG quota report with progress bars, rank movement, and bomb indicators (opt-in per club)
+- **Skill maps** — `/skill` and `/track` show where skills fire on a course and whether an acceleration skill lands while your uma is still speeding up
 - **Web dashboard** — pair with [UmaCore Web](https://github.com/oHaruki/UmaCore-web) for a visual management interface
 
 ---
@@ -68,6 +69,12 @@ After inviting, use `/add_club` to register your club and `/set_report_channel` 
 | `/disable_events_channel` | Stop event announcements |
 | `/events` | View current banners, mission events and story events |
 | `/events_status` | Event feed health and last check |
+
+### Skill Maps
+| Command | Description |
+|---|---|
+| `/skill` | Where a skill fires on a course (default: the current Champions Meeting) and whether it pays off there |
+| `/track` | Every acceleration, speed or recovery skill on a course, with where acceleration actually works |
 
 ### Quota Management
 | Command | Description |
@@ -132,7 +139,7 @@ After inviting, use `/add_club` to register your club and `/set_report_channel` 
 
 **Docker:**
 ```bash
-docker compose up -d --build     # same command after every git pull
+docker compose up -d --build --force-recreate     # same command after every git pull
 ```
 Uses host networking, so `DATABASE_URL` can point at a Postgres on `localhost`.
 
