@@ -20,6 +20,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from models import Club, Member, TransferRequest, UserLink
+from scrapers import ProfileUnavailable, lookup_trainer
 from services import transfers as transfer_service
 from utils.audit import log_audit
 from utils.permissions import (
@@ -30,6 +31,18 @@ from utils.permissions import (
 logger = logging.getLogger(__name__)
 
 MAX_PANEL_ROWS = 25  # Discord's hard cap on select-menu options
+
+
+def _clean_trainer_id(raw: str) -> Optional[str]:
+    """A typed trainer ID as digits, or None if it cannot be one.
+
+    The game shows IDs grouped as "485 643 302 279", and people copy them that
+    way, so the spaces are not a mistake.
+    """
+    digits = raw.replace(" ", "").strip()
+    if digits.isdigit() and 9 <= len(digits) <= 12:
+        return digits
+    return None
 
 
 def _line(index: int, request: TransferRequest) -> str:
@@ -68,9 +81,10 @@ def _guide_embed(clubs: List[Club]) -> discord.Embed:
     """The pinnable how-to for a transfer channel.
 
     Written for someone who has never run either command, because the two are
-    easy to get in the wrong order: ``/transfer_request`` is refused until a
-    trainer is linked, and the refusal is the first thing most people would
-    otherwise see.
+    easy to get in the wrong order: a member of one of the server's clubs has
+    ``/transfer_request`` refused until their trainer is linked, and the refusal
+    is the first thing most of them would otherwise see. Someone coming from
+    outside has nothing to link, so their way in is told apart from it.
     """
     embed = discord.Embed(
         title="📥 How to request a transfer",
@@ -78,7 +92,7 @@ def _guide_embed(clubs: List[Club]) -> discord.Embed:
     )
 
     embed.add_field(
-        name="1 · Link your trainer — once",
+        name="1 · Already in one of our clubs? Link your trainer — once",
         value=("`/link_trainer trainer_name:<your in-game name> club:<your current club>`\n"
                "Everything else is read from this, so you never type your trainer ID."),
         inline=False,
@@ -86,6 +100,8 @@ def _guide_embed(clubs: List[Club]) -> discord.Embed:
     embed.add_field(
         name="2 · Ask for a spot",
         value=("`/transfer_request club:<club you want>`\n"
+               "**Not in one of our clubs?** Add `trainer_id:` — it's on your "
+               "in-game profile. Your name is looked up from it, so check it's yours.\n"
                "Add `note:` if there's something the leaders should know."),
         inline=False,
     )
@@ -353,23 +369,130 @@ class TransferCommands(commands.Cog):
             return None
         return club
 
+    async def _linked_applicant(self, interaction: discord.Interaction, target: Club,
+                                link: UserLink, typed_id: Optional[str]) -> Optional[dict]:
+        """Who is asking, read from their trainer link. None once refused."""
+        member = await Member.get_by_id(link.member_id)
+        if member is None:
+            await interaction.followup.send(
+                "❌ Your trainer link points at a member record that no longer exists. "
+                "Run `/link_trainer` again to re-link, then retry.",
+                ephemeral=True,
+            )
+            return None
+
+        # The link wins, but a typed ID that disagrees with it is someone asking
+        # for a different trainer — an alt, say — and quietly queueing the linked
+        # one instead would put the wrong name in front of the leaders.
+        if typed_id is not None and _clean_trainer_id(typed_id) != member.trainer_id:
+            await interaction.followup.send(
+                f"❌ You're linked to **{member.trainer_name}**, and transfer requests "
+                f"use that trainer. Leave `trainer_id` out — or `/unlink` first if "
+                f"the link is wrong.",
+                ephemeral=True,
+            )
+            return None
+
+        # Only an *active* membership blocks it: someone whose old record sits
+        # in the target club because they left it is rejoining, which is the
+        # ordinary case rather than a mistake.
+        if member.club_id == target.club_id and member.is_active:
+            await interaction.followup.send(
+                f"❌ You're already in **{target.club_name}**.", ephemeral=True
+            )
+            return None
+
+        origin = await Club.get_by_id(member.club_id)
+        return dict(
+            trainer_name=member.trainer_name,
+            trainer_id=member.trainer_id,
+            from_club_id=member.club_id,
+            from_club_name=origin.club_name if origin else None,
+        )
+
+    async def _outside_applicant(self, interaction: discord.Interaction, target: Club,
+                                 typed_id: str) -> Optional[dict]:
+        """Who is asking, from a trainer ID checked against uma.moe. None once refused.
+
+        This is for people no club here tracks, so there is no link to read. The
+        name queued is the one uma.moe holds for the ID, never one they typed: a
+        wrong digit then shows up as a stranger's name on their own confirmation,
+        rather than as an invite a leader sends into silence.
+        """
+        account_id = _clean_trainer_id(typed_id)
+        if account_id is None:
+            await interaction.followup.send(
+                f"❌ `{typed_id}` isn't a trainer ID. It's the long number on "
+                f"your in-game profile — digits only, spaces are fine.",
+                ephemeral=True,
+            )
+            return None
+
+        # Someone a club here already tracks goes through their link, which is
+        # where the club they are leaving gets recorded. Left members are not
+        # caught here: rejoining is the ordinary case.
+        for tracked in await Club.get_all_for_guild(interaction.guild_id):
+            member = await Member.get_by_trainer_id(tracked.club_id, account_id)
+            if member is None or not member.is_active:
+                continue
+            if tracked.club_id == target.club_id:
+                await interaction.followup.send(
+                    f"❌ **{member.trainer_name}** is already in **{target.club_name}**.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"❌ **{member.trainer_name}** is in **{tracked.club_name}**, which "
+                    f"this server already tracks. Link it once with `/link_trainer`, "
+                    f"then run this again without `trainer_id`.",
+                    ephemeral=True,
+                )
+            return None
+
+        try:
+            identity = await lookup_trainer(account_id)
+        except ProfileUnavailable:
+            await interaction.followup.send(
+                "❌ Couldn't check that trainer ID with uma.moe just now. "
+                "Try again in a few minutes.",
+                ephemeral=True,
+            )
+            return None
+
+        if identity is None:
+            await interaction.followup.send(
+                f"❌ uma.moe has no trainer with ID `{account_id}`. Check it against "
+                f"your in-game profile — the club's invite goes to exactly this number.",
+                ephemeral=True,
+            )
+            return None
+
+        return dict(
+            trainer_name=identity.name,
+            trainer_id=account_id,
+            from_club_id=None,
+            from_club_name=identity.circle_name,
+        )
+
     @app_commands.command(
         name="transfer_request",
         description="Queue for a spot in another club",
     )
     @app_commands.describe(
         club="The club you want to transfer into",
+        trainer_id="Only if you're not in one of our clubs: your in-game trainer ID",
         note="Anything the club leaders should know (optional)",
     )
     async def transfer_request(self, interaction: discord.Interaction, club: str,
+                               trainer_id: Optional[str] = None,
                                note: Optional[str] = None):
-        """Queue for a spot, using the trainer already linked to this account.
+        """Queue for a spot, as the trainer linked to this account.
 
-        Nothing about the trainer is typed here. A retyped ID is the one thing in
-        this flow nobody can check — a leader sending an invite to a wrong digit
-        gets silence, and no part of the queue can tell that apart from someone
-        ignoring it. The link is already the answer to who you are, so it is the
-        only accepted answer.
+        Members of a club here never type anything about their trainer: the link
+        already says who they are. Someone from outside has no link to read, so
+        they give their trainer ID, and the name is looked up from it rather than
+        typed — a leader sends the invite to an ID that is known to exist, under
+        the name it really belongs to.
         """
         await interaction.response.defer(ephemeral=True)
 
@@ -386,60 +509,51 @@ class TransferCommands(commands.Cog):
                 return
 
             link = await UserLink.get_by_discord_id(interaction.user.id)
-            if link is None:
+            if link is not None:
+                applicant = await self._linked_applicant(interaction, target, link, trainer_id)
+            elif trainer_id:
+                applicant = await self._outside_applicant(interaction, target, trainer_id)
+            else:
                 await interaction.followup.send(
-                    "❌ Link your trainer first: `/link_trainer`.\n"
-                    "Transfer requests take your name and ID from that link, so you "
-                    "never have to type them — and a leader can trust the ID they're "
-                    "sending an invite to.",
+                    "❌ Tell me which trainer is asking first:\n"
+                    "• **In one of our clubs?** Link your trainer once with "
+                    "`/link_trainer`, then run this again.\n"
+                    "• **Coming from somewhere else?** Run this again with "
+                    "`trainer_id:` — the number on your in-game profile.",
                     ephemeral=True,
                 )
                 return
 
-            member = await Member.get_by_id(link.member_id)
-            if member is None:
-                await interaction.followup.send(
-                    "❌ Your trainer link points at a member record that no longer exists. "
-                    "Run `/link_trainer` again to re-link, then retry.",
-                    ephemeral=True,
-                )
-                return
-
-            origin = await Club.get_by_id(member.club_id)
-
-            # Only an *active* membership blocks it: someone whose old record sits
-            # in the target club because they left it is rejoining, which is the
-            # ordinary case rather than a mistake.
-            if member.club_id == target.club_id and member.is_active:
-                await interaction.followup.send(
-                    f"❌ You're already in **{target.club_name}**.", ephemeral=True
-                )
+            if applicant is None:
                 return
 
             request = await TransferRequest.submit(
                 to_club_id=target.club_id,
                 discord_user_id=interaction.user.id,
                 discord_name=interaction.user.display_name,
-                trainer_name=member.trainer_name,
-                trainer_id=member.trainer_id,
-                from_club_id=member.club_id,
-                from_club_name=origin.club_name if origin else None,
                 note=note,
+                **applicant,
             )
             position = await request.position()
 
+            description = (
+                f"Your request to transfer into **{target.club_name}** has been "
+                f"logged. A club leader will review it."
+            )
+            if link is None:
+                description += (
+                    "\n\nThe name below was looked up from the trainer ID you gave. "
+                    "If it isn't you, the ID is wrong — run this again with the right one."
+                )
             embed = discord.Embed(
                 title="✅ You're in the queue",
-                description=(
-                    f"Your request to transfer into **{target.club_name}** has been "
-                    f"logged. A club leader will review it."
-                ),
+                description=description,
                 color=discord.Color.green(),
                 timestamp=discord.utils.utcnow(),
             )
-            trainer = member.trainer_name
-            if member.trainer_id:
-                trainer += f"\n`{member.trainer_id}`"
+            trainer = request.trainer_name
+            if request.trainer_id:
+                trainer += f"\n`{request.trainer_id}`"
             embed.add_field(name="Trainer", value=trainer, inline=True)
             embed.add_field(name="Queue position", value=f"#{position}", inline=True)
             if request.from_club_name:
