@@ -66,15 +66,20 @@ class TestGuideEmbed:
     """The pinned guide is the only instructions most members will ever read."""
 
     def test_puts_linking_before_requesting(self):
-        """`/transfer_request` is refused until a trainer is linked, so a guide
-        that introduced it first would teach people the failing order."""
+        """A member's `/transfer_request` is refused until their trainer is
+        linked, so a guide that introduced it first would teach the failing
+        order."""
         fields = _guide_embed([club()]).fields
         body = " ".join(f"{f.name} {f.value}" for f in fields)
         assert body.index("/link_trainer") < body.index("/transfer_request")
 
-    def test_never_tells_anyone_to_type_a_trainer_id(self):
+    def test_offers_a_trainer_id_only_to_people_outside_our_clubs(self):
+        """Someone from outside has nothing to link, so the guide must tell them
+        their way in — but as the exception, after members are sent to link."""
         body = " ".join(f"{f.name} {f.value}" for f in _guide_embed([club()]).fields)
-        assert "trainer_id:" not in body
+        assert "trainer_id:" in body
+        assert "Not in one of our clubs?" in body
+        assert body.index("/link_trainer") < body.index("trainer_id:")
 
     def test_lists_the_clubs_that_can_be_requested(self):
         clubs = [club(club_name="Horsecore"), club(club_name="Turfcore")]
