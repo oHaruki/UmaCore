@@ -437,8 +437,10 @@ class QuotaCalculator:
         """
         Get summary of all members' status for a club.
 
-        For weekly/biweekly quotas, each member_status entry will additionally
-        contain 'period_fans' and 'period_info'.
+        Each member_status entry has 'day_fans', the fans gained on
+        ``current_date`` (None on the member's join day, which only sets the
+        baseline). For weekly/biweekly quotas it additionally contains
+        'period_fans' and 'period_info'.
 
         Returns:
             Dict with categorized member data
@@ -447,22 +449,24 @@ class QuotaCalculator:
 
         period_info = self.get_period_info(quota_period, current_date, period_anchor)
 
-        period_rows: Dict[UUID, List[Tuple[date, int]]] = {}
+        # From the 1st of the opening month, so the baseline row is included.
+        since = current_date.replace(day=1)
         if period_info:
             schedule = await QuotaSchedule.load(club_id)
             period_info['period_quota'] = self.period_quota(schedule, period_info)
+            since = min(since, period_info['period_start'].replace(day=1))
 
-            # From the 1st of the opening month, so the baseline row is included.
-            rows = await db.fetch(
-                "SELECT member_id, date, cumulative_fans FROM quota_history "
-                "WHERE member_id = ANY($1::uuid[]) AND date >= $2",
-                [m.member_id for m in members],
-                period_info['period_start'].replace(day=1),
+        rows = await db.fetch(
+            "SELECT member_id, date, cumulative_fans FROM quota_history "
+            "WHERE member_id = ANY($1::uuid[]) AND date >= $2",
+            [m.member_id for m in members],
+            since,
+        )
+        history_rows: Dict[UUID, List[Tuple[date, int]]] = {}
+        for row in rows:
+            history_rows.setdefault(row['member_id'], []).append(
+                (row['date'], row['cumulative_fans'])
             )
-            for row in rows:
-                period_rows.setdefault(row['member_id'], []).append(
-                    (row['date'], row['cumulative_fans'])
-                )
 
         on_track = []
         behind = []
@@ -473,14 +477,17 @@ class QuotaCalculator:
             if not latest_history:
                 continue
 
+            member_rows = history_rows.get(member.member_id, ())
             member_status = {
                 'member': member,
-                'history': latest_history
+                'history': latest_history,
+                'day_fans': (None if member.join_date == current_date
+                             else self.period_gain(member_rows, current_date, current_date)),
             }
 
             if period_info:
                 member_status['period_fans'] = self.period_gain(
-                    period_rows.get(member.member_id, ()),
+                    member_rows,
                     period_info['period_start'],
                     latest_history.date,
                 )

@@ -591,6 +591,7 @@ class AdminCommands(commands.Cog):
                         club_obj.club_name, effective_quota, status_summary, bombs_data, current_date,
                         rank_data=rank_data, quota_period=club_obj.quota_period,
                         club_timezone=club_obj.timezone,
+                        daily_gain=club_obj.report_daily_gain,
                     )
                     for embed in daily_reports:
                         await report_channel.send(embed=embed)
@@ -602,6 +603,7 @@ class AdminCommands(commands.Cog):
                     club_obj.club_name, effective_quota, status_summary, bombs_data, current_date,
                     rank_data=rank_data, quota_period=club_obj.quota_period,
                     club_timezone=club_obj.timezone,
+                    daily_gain=club_obj.report_daily_gain,
                 )
                 for embed in daily_reports:
                     await report_channel.send(embed=embed)
