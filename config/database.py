@@ -636,13 +636,16 @@ class Database:
         -- Rows are never deleted: an expired event that reappears in the feed
         -- must not be announced a second time.
         CREATE TABLE IF NOT EXISTS announced_events (
-            event_key    VARCHAR(64) PRIMARY KEY,
+            event_key    TEXT        PRIMARY KEY,
             kind         VARCHAR(32) NOT NULL,
             name         TEXT        NOT NULL,
             start_ts     BIGINT      NOT NULL,
             end_ts       BIGINT,
             announced_at TIMESTAMPTZ DEFAULT NOW()
         );
+
+        -- umapyoi keys carry the full notice title slug, longer than 64 chars.
+        ALTER TABLE announced_events ALTER COLUMN event_key TYPE TEXT;
         """
         
         try:
