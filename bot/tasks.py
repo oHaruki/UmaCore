@@ -764,6 +764,7 @@ class BotTasks:
                                 club.club_name, effective_quota, status_summary, bombs_data, current_date,
                                 rank_data=rank_data, quota_period=club.quota_period,
                                 club_timezone=club.timezone,
+                                daily_gain=club.report_daily_gain,
                             )
                             for embed in daily_reports:
                                 await _send(report_channel, club.club_name,
@@ -773,6 +774,7 @@ class BotTasks:
                             club.club_name, effective_quota, status_summary, bombs_data, current_date,
                             rank_data=rank_data, quota_period=club.quota_period,
                             club_timezone=club.timezone,
+                            daily_gain=club.report_daily_gain,
                         )
                         for embed in daily_reports:
                             await _send(report_channel, club.club_name,

@@ -448,6 +448,18 @@ class Database:
             END IF;
         END $$;
 
+        -- Migration: report lines show the day's gain instead of the running surplus
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='clubs' AND column_name='report_daily_gain'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN report_daily_gain BOOLEAN NOT NULL DEFAULT FALSE;
+                RAISE NOTICE 'Added report_daily_gain column to clubs';
+            END IF;
+        END $$;
+
         -- Migration: Add last_report_date column if it doesn't exist.
         -- The club's local date of its last scheduled daily report. The tick
         -- claims a date here before running, so a restart inside a club's

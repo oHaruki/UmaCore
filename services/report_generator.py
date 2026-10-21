@@ -60,9 +60,13 @@ class ReportGenerator:
                             bombs_data: List[Dict], report_date: date,
                             rank_data: Optional[Dict] = None,
                             quota_period: str = 'daily',
-                            club_timezone: Optional[str] = None) -> List[discord.Embed]:
+                            club_timezone: Optional[str] = None,
+                            daily_gain: bool = False) -> List[discord.Embed]:
         """
         Create the main daily report embeds.
+
+        ``daily_gain`` swaps each member's running surplus for the fans they
+        gained that day.
 
         Returns a list of embeds (multiple if content is too long).
         """
@@ -136,7 +140,8 @@ class ReportGenerator:
         if status_summary['on_track']:
             on_track_sections = self._split_into_sections(
                 status_summary['on_track'],
-                lambda item: self._format_member_line(item, is_behind=False, quota_period=quota_period),
+                lambda item: self._format_member_line(item, is_behind=False, quota_period=quota_period,
+                                                       daily_gain=daily_gain),
                 max_length=1000
             )
 
@@ -154,7 +159,8 @@ class ReportGenerator:
         if status_summary['behind']:
             behind_sections = self._split_into_sections(
                 status_summary['behind'],
-                lambda item: self._format_member_line(item, is_behind=True, quota_period=quota_period),
+                lambda item: self._format_member_line(item, is_behind=True, quota_period=quota_period,
+                                                       daily_gain=daily_gain),
                 max_length=1000
             )
 
@@ -181,7 +187,12 @@ class ReportGenerator:
 
         return embeds
 
-    def _format_member_line(self, item: Dict, is_behind: bool, quota_period: str = 'daily') -> str:
+    def _format_day_gain(self, item: Dict) -> str:
+        day_fans = item.get('day_fans')
+        return "joined today" if day_fans is None else f"+{self.format_fans_short(day_fans)}"
+
+    def _format_member_line(self, item: Dict, is_behind: bool, quota_period: str = 'daily',
+                            daily_gain: bool = False) -> str:
         """Format a single member line for on-track or behind sections"""
         member = item['member']
         history = item['history']
@@ -191,6 +202,11 @@ class ReportGenerator:
             period_fans = item['period_fans']
             period_quota = period_info['period_quota']
             period_label = period_info['quota_label']  # 'week' or 'biweek'
+
+            if daily_gain:
+                return (f"**{member.trainer_name}**: "
+                        f"{self.format_fans_short(period_fans)}/{self.format_fans_short(period_quota)} this {period_label} "
+                        f"({self._format_day_gain(item)} today)")
 
             if is_behind:
                 deficit = abs(history.deficit_surplus)
@@ -204,6 +220,15 @@ class ReportGenerator:
                         f"(+{self.format_fans_short(surplus)} overall)")
 
         # Default daily format
+        if daily_gain:
+            if is_behind:
+                days_behind = history.days_behind
+                days_text = f"{days_behind} day{'s' if days_behind != 1 else ''}"
+                return (f"**{member.trainer_name}**: {self._format_day_gain(item)} "
+                        f"(-{self.format_fans_short(abs(history.deficit_surplus))}, {days_text} behind)")
+            return (f"**{member.trainer_name}**: {self._format_day_gain(item)} "
+                    f"({self.format_number(history.cumulative_fans)} total)")
+
         if is_behind:
             deficit = abs(history.deficit_surplus)
             days_behind = history.days_behind

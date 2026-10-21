@@ -147,7 +147,7 @@ class TestSchemaBuildsClean:
         for c in ("circle_id", "guild_id", "bombs_enabled", "quota_period",
                   "public_slug", "image_report_enabled",
                   "monthly_info_channel_id", "monthly_info_message_id",
-                  "period_anchor_date"):
+                  "period_anchor_date", "report_daily_gain"):
             assert c in cols, f"clubs.{c} missing on a fresh install"
 
     def test_idempotent(self, prepared_db):
