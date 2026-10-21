@@ -106,12 +106,14 @@ class EventAnnouncer(commands.Cog):
         fresh = await strip_missing_images(fresh, self.client.image_exists)
 
         for event in fresh:
+            # mark first: if saving fails we skip the post instead of
+            # reposting it every poll
+            await AnnouncedEvents.mark(event.key, event.kind, event.name,
+                                       event.start, event.end)
+
             embed = event_embed(event, now)
             for target in targets:
                 await self._post(target, embed, event)
-
-            await AnnouncedEvents.mark(event.key, event.kind, event.name,
-                                       event.start, event.end)
 
         logger.info(f"Event feed announced {len(fresh)} event(s) to "
                     f"{len(targets)} channel(s): {', '.join(e.key for e in fresh)}")
