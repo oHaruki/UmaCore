@@ -58,3 +58,23 @@ class TestQuotaCalculator:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestDaysBehind:
+    """The streak was cut off at 10 because only the last 10 rows were read."""
+
+    def test_counts_a_streak_longer_than_ten_days(self, monkeypatch):
+        import asyncio
+        from types import SimpleNamespace
+        from models.quota_history import QuotaHistory
+
+        # Behind every day from Oct 6 to Oct 18, on track before that.
+        rows = [SimpleNamespace(date=date(2026, 10, d), deficit_surplus=-1 if d >= 6 else 1)
+                for d in range(18, 0, -1)]
+
+        async def last_n(member_id, n):
+            return rows[:n]
+
+        monkeypatch.setattr(QuotaHistory, "get_last_n_days", last_n)
+        got = asyncio.run(QuotaCalculator()._calculate_days_behind(None, -1, date(2026, 10, 19)))
+        assert got == 14

@@ -306,7 +306,8 @@ class QuotaCalculator:
         if current_deficit_surplus >= 0:
             return 0
 
-        recent_history = await QuotaHistory.get_last_n_days(member_id, 10)
+        # A whole month, since the streak runs back to the 1st at most.
+        recent_history = await QuotaHistory.get_last_n_days(member_id, 31)
 
         if not recent_history:
             return 1
