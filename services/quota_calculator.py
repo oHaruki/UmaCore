@@ -1,6 +1,7 @@
 """
 Quota calculation service with multi-club support
 """
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Dict, Iterable, List, Optional, Tuple, Set
 from uuid import UUID
@@ -18,6 +19,55 @@ logger = logging.getLogger(__name__)
 # Periods a club can run on its own cycle (clubs.period_anchor_date)
 # instead of calendar blocks.
 ANCHORABLE_PERIODS = frozenset({'biweekly'})
+
+PERIOD_DAYS = {'daily': 1, 'weekly': 7, 'biweekly': 14}
+
+# How a club counts "days behind" (clubs.days_behind_mode).
+DAYS_BEHIND_MODES = ('streak', 'quota')
+
+
+def quota_days(deficit_surplus: int, per_day_quota: float) -> int:
+    """Days' worth of quota a member is short: 47M behind at 8M a day is 6."""
+    if deficit_surplus >= 0 or per_day_quota <= 0:
+        return 0
+    return math.ceil(-deficit_surplus / per_day_quota)
+
+
+@dataclass(frozen=True)
+class BehindCount:
+    """How a club counts "days behind", for the report, DMs and bombs alike.
+
+    ``streak`` is days in a row under quota, so it only resets once someone
+    has fully caught up. ``quota`` is how many days of quota the deficit is
+    worth, so it shrinks as soon as they earn more than the quota.
+    """
+    mode: str = 'streak'
+    per_day_quota: float = 0
+
+    def of(self, history) -> int:
+        if self.mode == 'quota':
+            return quota_days(history.deficit_surplus, self.per_day_quota)
+        return history.days_behind
+
+    def describe(self, n: int) -> str:
+        """"6 days of quota" or "14 consecutive days"."""
+        if self.mode == 'quota':
+            return f"{n} day{'s' if n != 1 else ''} of quota"
+        return f"{n} consecutive day{'s' if n != 1 else ''}"
+
+    def trigger_reason(self, trigger_days: int) -> str:
+        """Finishes "The following members ..." in the bomb activation alert."""
+        if self.mode == 'quota':
+            return f"are {trigger_days}+ days of quota behind"
+        return f"have been behind quota for {trigger_days}+ consecutive days"
+
+    @classmethod
+    async def for_club(cls, club, on: date) -> 'BehindCount':
+        mode = getattr(club, 'days_behind_mode', None)
+        if mode != 'quota':
+            return cls()
+        schedule = await QuotaSchedule.load(club.club_id)
+        return cls('quota', schedule.for_date(on) / PERIOD_DAYS.get(club.quota_period, 1))
 
 
 class QuotaCalculator:
@@ -434,13 +484,16 @@ class QuotaCalculator:
 
     async def get_member_status_summary(self, club_id: UUID, current_date: date,
                                         quota_period: str = 'daily',
-                                        period_anchor: Optional[date] = None) -> Dict:
+                                        period_anchor: Optional[date] = None,
+                                        days_mode: str = 'streak') -> Dict:
         """
         Get summary of all members' status for a club.
 
         Each member_status entry has 'day_fans', the fans gained on
         ``current_date`` (None on the member's join day, which only sets the
-        baseline). For weekly/biweekly quotas it additionally contains
+        baseline), plus both ways of counting days behind: 'streak',
+        'quota_days', and 'days_behind', whichever of the two ``days_mode``
+        picks. For weekly/biweekly quotas it additionally contains
         'period_fans' and 'period_info'.
 
         Returns:
@@ -449,11 +502,12 @@ class QuotaCalculator:
         members = await Member.get_all_active(club_id)
 
         period_info = self.get_period_info(quota_period, current_date, period_anchor)
+        schedule = await QuotaSchedule.load(club_id)
+        period_days = PERIOD_DAYS.get(quota_period, 1)
 
         # From the 1st of the opening month, so the baseline row is included.
         since = current_date.replace(day=1)
         if period_info:
-            schedule = await QuotaSchedule.load(club_id)
             period_info['period_quota'] = self.period_quota(schedule, period_info)
             since = min(since, period_info['period_start'].replace(day=1))
 
@@ -479,11 +533,16 @@ class QuotaCalculator:
                 continue
 
             member_rows = history_rows.get(member.member_id, ())
+            short_days = quota_days(latest_history.deficit_surplus,
+                                    schedule.for_date(latest_history.date) / period_days)
             member_status = {
                 'member': member,
                 'history': latest_history,
                 'day_fans': (None if member.join_date == current_date
                              else self.period_gain(member_rows, current_date, current_date)),
+                'streak': latest_history.days_behind,
+                'quota_days': short_days,
+                'days_behind': short_days if days_mode == 'quota' else latest_history.days_behind,
             }
 
             if period_info:

@@ -6,11 +6,13 @@ These commands are restricted to server admins.
 
 ## /quota
 
-Set the daily quota requirement for a club. Takes effect from today onwards.
+Set a club's quota for one quota period: per day for daily clubs, per week for weekly ones, and per 2 weeks for biweekly ones. Takes effect from today onwards.
+
+A biweekly club that wants about 650K a day sets `9000000`, not `650000`.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `amount` | Yes | Fan goal (integer) |
+| `amount` | Yes | Fans for the whole quota period (integer) |
 | `club` | Yes | Target club |
 
 **Example:**

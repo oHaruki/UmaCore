@@ -8,6 +8,7 @@ import logging
 import secrets
 from uuid import UUID
 from datetime import datetime, date, timedelta
+from typing import Optional
 
 import pytz
 from aiohttp import web
@@ -481,6 +482,83 @@ async def handle_preview_channel_name(request: web.Request) -> web.StreamRespons
     })
 
 
+async def _club_from(value) -> Optional[Club]:
+    try:
+        return await Club.get_by_id(UUID(str(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+async def handle_embed_style(request: web.Request) -> web.StreamResponse:
+    """The style editor's vocabulary and the club's current report/live style."""
+    club = await _club_from(request.rel_url.query.get('club_id'))
+    if not club:
+        return await _send_json(request, {'error': 'Club not found'}, status=404)
+
+    from services import embed_preview
+    return await _send_json(request, embed_preview.describe(club))
+
+
+async def handle_embed_style_preview(request: web.Request) -> web.StreamResponse:
+    """Render one kind with an unsaved style, from the club's own figures.
+
+    Body: ``{club_id, kind, style, days_behind_mode?, closed?}``. Field errors
+    come back next to the embeds, which still render with those fields at
+    their defaults, so the preview never goes blank mid-typing.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return await _send_json(request, {'error': 'Invalid JSON body'}, status=400)
+
+    club = await _club_from(body.get('club_id'))
+    if not club:
+        return await _send_json(request, {'error': 'Club not found'}, status=404)
+
+    from services import embed_preview, embed_style
+    from services.quota_calculator import DAYS_BEHIND_MODES
+
+    kind = body.get('kind')
+    if kind not in embed_style.KINDS:
+        return await _send_json(request, {'error': 'kind must be report or live'}, status=400)
+    override = body.get('style') if isinstance(body.get('style'), dict) else None
+    _, errors = embed_style.validate(kind, override or {})
+
+    try:
+        if kind == embed_style.REPORT:
+            mode = body.get('days_behind_mode')
+            if mode not in DAYS_BEHIND_MODES:
+                mode = club.days_behind_mode
+            result = await embed_preview.report_preview(club, override, mode)
+        else:
+            result = await embed_preview.live_preview(club, override, closed=bool(body.get('closed')))
+    except Exception as e:
+        logger.error(f"Embed preview failed for {club.club_name}: {e}", exc_info=True)
+        return await _send_json(request, {'error': str(e)}, status=500)
+
+    result['errors'] = errors
+    return await _send_json(request, result)
+
+
+async def handle_embed_style_validate(request: web.Request) -> web.StreamResponse:
+    """Check a full ``{report, live}`` style and return only what to store.
+
+    The dashboard writes the result itself, next to its audit log entry.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return await _send_json(request, {'error': 'Invalid JSON body'}, status=400)
+
+    club = await _club_from(body.get('club_id'))
+    if not club:
+        return await _send_json(request, {'error': 'Club not found'}, status=404)
+
+    from services import embed_preview
+    stored, errors = embed_preview.to_store(club, body.get('style'))
+    return await _send_json(request, {'embed_style': stored, 'errors': errors})
+
+
 async def handle_bot_guilds(request: web.Request) -> web.StreamResponse:
     """List the guilds the bot is actually a member of.
 
@@ -601,6 +679,9 @@ def create_app(bot=None) -> web.Application:
     app.router.add_get('/guild_channels', handle_guild_channels)
     app.router.add_get('/channel_names/preview', handle_preview_channel_name)
     app.router.add_post('/channel_names/refresh', handle_refresh_channel_names)
+    app.router.add_get('/embed_style', handle_embed_style)
+    app.router.add_post('/embed_style/preview', handle_embed_style_preview)
+    app.router.add_post('/embed_style/validate', handle_embed_style_validate)
     app.router.add_post('/transfer_decision', handle_transfer_decision)
     app.router.add_get('/bot_guilds', handle_bot_guilds)
     app.router.add_get('/health', handle_health)

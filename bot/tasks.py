@@ -18,6 +18,8 @@ from services import (
     ScrapeLockManager, ScrapeContext, ScrapeScheduler,
 )
 from services.tally_renderer import generate_tally_image
+from services import embed_style
+from services.quota_calculator import BehindCount
 from utils.timezone_helper import resolve_timezone
 from utils.jst_calendar import ROLLOVER_UTC_HOUR
 from utils.permissions import (
@@ -693,11 +695,19 @@ class BotTasks:
                 else:
                     logger.info(f"⏭️ Skipping bomb management for {club.club_name} (bombs disabled)")
 
+                # How this club counts days behind, for its DMs, report and alerts
+                try:
+                    behind = await BehindCount.for_club(club, current_date)
+                except Exception as e:
+                    logger.error(f"❌ Couldn't load the days-behind rule for {club.club_name}: {e}", exc_info=True)
+                    behind = BehindCount()
+
                 # STEP 6: Send DM notifications to linked users
                 try:
                     if newly_activated_bombs:
                         logger.info(f"📨 Sending bomb activation DMs for {club.club_name}...")
-                        await self.notification_service.send_bomb_notifications(club.club_name, newly_activated_bombs)
+                        await self.notification_service.send_bomb_notifications(
+                            club.club_name, newly_activated_bombs, behind, club.bomb_trigger_days)
 
                     if deactivated_bombs:
                         logger.info(f"📨 Sending bomb deactivation DMs for {club.club_name}...")
@@ -708,11 +718,13 @@ class BotTasks:
                     # Send deficit notifications
                     status_summary = await self.quota_calculator.get_member_status_summary(
                         club.club_id, current_date, quota_period=club.quota_period,
-                        period_anchor=club.period_anchor_date,
+                        period_anchor=club.period_anchor_date, days_mode=behind.mode,
                     )
                     if status_summary['behind']:
                         logger.info(f"📨 Sending deficit notifications for {club.club_name}...")
-                        await self.notification_service.send_deficit_notifications(club.club_name, status_summary['behind'])
+                        await self.notification_service.send_deficit_notifications(
+                            club.club_name, status_summary['behind'], behind,
+                            club.bomb_trigger_days if club.bombs_enabled else None)
 
                 except Exception as e:
                     logger.error(f"❌ Error sending DM notifications for {club.club_name}: {e}", exc_info=True)
@@ -722,7 +734,7 @@ class BotTasks:
                     logger.info(f"📊 Generating daily report for {club.club_name}...")
                     status_summary = await self.quota_calculator.get_member_status_summary(
                         club.club_id, current_date, quota_period=club.quota_period,
-                        period_anchor=club.period_anchor_date,
+                        period_anchor=club.period_anchor_date, days_mode=behind.mode,
                     )
 
                     if club.bombs_enabled:
@@ -731,6 +743,16 @@ class BotTasks:
                         bombs_data = []
 
                     effective_quota = await QuotaRequirement.get_quota_for_date(club.club_id, current_date)
+
+                    # The club's own text above the report (a role ping, say)
+                    # rides on whichever post goes out first.
+                    report_style = embed_style.resolve(embed_style.REPORT, club)
+                    report_text = self.report_generator.daily_report_message(
+                        club.club_name, effective_quota, status_summary, bombs_data, current_date,
+                        rank_data=rank_data, quota_period=club.quota_period, style=report_style,
+                    )
+                    lead = ({'content': report_text, 'allowed_mentions': embed_style.MENTIONS}
+                            if report_text else {})
 
                     if club.image_report_enabled:
                         monthly_rank = rank_data.get("monthly_rank") if rank_data else None
@@ -745,6 +767,7 @@ class BotTasks:
                                 report_channel, club.club_name, "the tally image report",
                                 files=True,
                                 file=discord.File(str(img_path), filename="quota_report.png"),
+                                **lead,
                             )
                             if sent:
                                 logger.info(f"✅ Tally image report sent for {club.club_name}")
@@ -764,21 +787,25 @@ class BotTasks:
                                 club.club_name, effective_quota, status_summary, bombs_data, current_date,
                                 rank_data=rank_data, quota_period=club.quota_period,
                                 club_timezone=club.timezone,
-                                daily_gain=club.report_daily_gain,
+                                style=report_style,
+                                days_mode=behind.mode,
                             )
-                            for embed in daily_reports:
+                            for i, embed in enumerate(daily_reports):
                                 await _send(report_channel, club.club_name,
-                                            "the daily report", embed=embed)
+                                            "the daily report", embed=embed,
+                                            **(lead if i == 0 else {}))
                     else:
                         daily_reports = self.report_generator.create_daily_report(
                             club.club_name, effective_quota, status_summary, bombs_data, current_date,
                             rank_data=rank_data, quota_period=club.quota_period,
                             club_timezone=club.timezone,
-                            daily_gain=club.report_daily_gain,
+                            style=report_style,
+                            days_mode=behind.mode,
                         )
-                        for embed in daily_reports:
+                        for i, embed in enumerate(daily_reports):
                             await _send(report_channel, club.club_name,
-                                        "the daily report", embed=embed)
+                                        "the daily report", embed=embed,
+                                        **(lead if i == 0 else {}))
                         logger.info(f"✅ Daily report sent for {club.club_name} ({len(daily_reports)} embed(s))")
 
                     if deactivated_bombs:
@@ -807,7 +834,8 @@ class BotTasks:
                             member = await Member.get_by_id(bomb.member_id)
                             bomb_data.append({'bomb': bomb, 'member': member})
 
-                        for embed in self.report_generator.create_bomb_activation_alert(club.club_name, bomb_data):
+                        for embed in self.report_generator.create_bomb_activation_alert(
+                                club.club_name, bomb_data, behind.trigger_reason(club.bomb_trigger_days)):
                             await _send(alert_channel, club.club_name,
                                         "the bomb activation alert", embed=embed)
                         logger.info(f"💣 Sent bomb activation alert for {club.club_name} ({len(bomb_data)} member(s))")

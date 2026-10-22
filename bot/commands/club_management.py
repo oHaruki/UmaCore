@@ -486,8 +486,13 @@ class ClubManagementCommands(commands.Cog):
         app_commands.Choice(name="Weekly", value="weekly"),
         app_commands.Choice(name="Biweekly (every 2 weeks)", value="biweekly"),
     ])
+    @app_commands.choices(days_behind=[
+        app_commands.Choice(name="Days in a row under quota", value="streak"),
+        app_commands.Choice(name="Days of quota missing (deficit / daily quota)", value="quota"),
+    ])
     @app_commands.describe(
         biweek_start="First day of any biweek in your cycle (YYYY-MM-DD), or 'off' for 1st/15th of the month",
+        days_behind="How days behind are counted, for the report, DMs and the bomb trigger",
     )
     async def edit_club(self, interaction: discord.Interaction,
                        club: str,
@@ -500,7 +505,8 @@ class ClubManagementCommands(commands.Cog):
                        bomb_trigger_days: int = None,
                        bomb_countdown_days: int = None,
                        bombs_enabled: bool = None,
-                       image_report_enabled: bool = None):
+                       image_report_enabled: bool = None,
+                       days_behind: app_commands.Choice[str] = None):
         """Edit club configuration"""
         await interaction.response.defer()
         
@@ -576,6 +582,8 @@ class ClubManagementCommands(commands.Cog):
                 updates['bombs_enabled'] = bombs_enabled
             if image_report_enabled is not None:
                 updates['image_report_enabled'] = image_report_enabled
+            if days_behind is not None:
+                updates['days_behind_mode'] = days_behind.value
 
             if not updates:
                 await interaction.followup.send("❌ No changes specified")
@@ -645,6 +653,11 @@ class ClubManagementCommands(commands.Cog):
                     changes_text.append(f"**Timezone:** {value}")
                 elif key == 'bomb_trigger_days':
                     changes_text.append(f"**Bomb Trigger:** {value} days")
+                elif key == 'days_behind_mode':
+                    changes_text.append(
+                        "**Days Behind:** days of quota missing (deficit ÷ daily quota)"
+                        if value == 'quota' else "**Days Behind:** days in a row under quota"
+                    )
                 elif key == 'bomb_countdown_days':
                     changes_text.append(f"**Bomb Countdown:** {value} days")
                 elif key == 'bombs_enabled':

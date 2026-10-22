@@ -14,6 +14,7 @@ Opt-in: a club is polled only once an admin sets a channel, so enabling this for
 one club costs one call per LIVE_BOARD_REFRESH_MIN and none for a club without
 a channel. A poll whose figures match the last one edits nothing.
 """
+import json
 import logging
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,7 +28,7 @@ from utils.permissions import (
     post_requirements, missing_channel_permissions, timeout_note,
     describe_channel_access, describe_channel_overwrites, resolution_fingerprint,
 )
-from config.settings import COLOR_INFO, COLOR_ON_TRACK, COLOR_BEHIND
+from services import embed_style
 
 logger = logging.getLogger(__name__)
 
@@ -38,26 +39,59 @@ TOP_N = 10
 #: restart costs one redundant edit, which is cheaper than a column.
 _last_shown: Dict[Any, tuple] = {}
 
+#: The newest snapshot per club, so the dashboard's preview can show real
+#: figures without another uma.moe call.
+_last_snapshot: Dict[Any, LiveSnapshot] = {}
+
+# One Discord message holds at most 6000 characters across all its embeds.
+MESSAGE_BUDGET = 6000
+
+QUOTA_TOKENS = ('quota', 'quota_left', 'quota_pct')
+
+
+def last_snapshot(club_id) -> Optional[LiveSnapshot]:
+    return _last_snapshot.get(club_id)
+
 
 def _shown(club: Club, snap: LiveSnapshot) -> tuple:
     """Everything the board renders, so equal means an identical board.
 
     The figures are compared rather than ``as_of`` alone: uma.moe writes the
     member rows on their own schedule, and no single stamp is guaranteed to move
-    when they do.
+    when they do. The style is in here too, so a change on the dashboard shows
+    up on the next poll.
     """
+    style = embed_style.resolve(embed_style.LIVE, club)
     return (club.club_name, snap.jst_day, snap.as_of, snap.live_points,
-            snap.live_rank, snap.monthly_rank, tuple(snap.gains))
+            snap.live_rank, snap.monthly_rank, tuple(snap.gains),
+            json.dumps(style, sort_keys=True))
 
 
-def _fmt(n: Optional[int]) -> str:
-    if n is None:
-        return "—"
-    if abs(n) >= 1_000_000:
-        return f"{n / 1_000_000:.2f}M"
-    if abs(n) >= 1_000:
-        return f"{n / 1_000:.1f}K"
-    return f"{n:,}"
+def needs_quota(style: Dict[str, Any]) -> bool:
+    """Whether anything on the board shows or filters by the daily quota."""
+    return (embed_style.uses(style, *QUOTA_TOKENS)
+            or any(b['who'] in embed_style.QUOTA_FILTERS for b in embed_style.blocks(style, 'list')))
+
+
+async def daily_quota(club: Club, jst_day: date,
+                      style: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """The club's quota for one day, when its board shows quota figures.
+
+    None when no line asks for one, so a club that never uses them costs no
+    query. Never raises: a missing quota just leaves those tokens blank.
+    """
+    if style is None:
+        style = embed_style.resolve(embed_style.LIVE, club)
+    if not needs_quota(style):
+        return None
+    try:
+        from models import QuotaRequirement
+        from services.quota_calculator import PERIOD_DAYS
+        quota = await QuotaRequirement.get_quota_for_date(club.club_id, competition_day(jst_day))
+        return round(quota / PERIOD_DAYS.get(getattr(club, 'quota_period', 'daily'), 1))
+    except Exception as e:
+        logger.warning(f"Live board: no daily quota for {club.club_name}: {e}")
+        return None
 
 
 def _span(gain: MemberGain, comp: date, *, idle: bool = False) -> str:
@@ -96,7 +130,102 @@ def _split(lines: List[str], max_length: int = 1900) -> List[str]:
     return sections
 
 
-def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> List[discord.Embed]:
+_RACED_ORDER = {
+    'gain': lambda g: -g.gained_today,
+    'total': lambda g: -g.month_total,
+    'name': lambda g: g.name.lower(),
+}
+_IDLE_ORDER = {
+    'total': lambda g: -g.month_total,
+    'name': lambda g: g.name.lower(),
+}
+
+
+def _member_values(g: MemberGain, pos: int, comp: date, *, idle: bool,
+                   decimals: int, quota: Optional[int]) -> Dict[str, str]:
+    """Every live-board token's text for one member line."""
+    return {
+        'name': g.name,
+        'pos': str(pos),
+        'gain': embed_style.signed(g.gained_today, decimals),
+        'gain_full': embed_style.signed_full(g.gained_today),
+        'total': embed_style.compact(g.month_total, decimals),
+        'total_full': embed_style.full(g.month_total),
+        'span': _span(g, comp, idle=idle),
+        'quota': embed_style.compact(quota, decimals) if quota else embed_style.PLACEHOLDER,
+        'quota_left': (embed_style.compact(max(0, quota - g.gained_today), decimals)
+                       if quota else embed_style.PLACEHOLDER),
+        'quota_pct': embed_style.percent(g.gained_today, quota),
+    }
+
+
+# Who an extra list picks, from the members whose day is counted.
+_LIST_WHO = {
+    'raced': lambda g, quota: g.gained_today > 0,
+    'idle': lambda g, quota: g.gained_today <= 0,
+    'all': lambda g, quota: True,
+    'under_quota': lambda g, quota: bool(quota) and g.gained_today < quota,
+    'met_quota': lambda g, quota: bool(quota) and g.gained_today >= quota,
+}
+
+
+def _summary_values(club: Club, snap: LiveSnapshot, comp: date, stamp: str,
+                    decimals: int, quota: Optional[int]) -> Dict[str, str]:
+    """Board-wide token values for the message, the note and extra fields."""
+    counted = [g for g in snap.gains if not g.is_new]
+    top = max(counted, key=lambda g: g.gained_today, default=None)
+    has_top = top is not None and top.gained_today > 0
+    return {
+        'club': club.club_name,
+        'date': f"{comp:%B} {comp.day}",
+        'fans_today': embed_style.compact(snap.gained_today, decimals),
+        'month_total': embed_style.compact(snap.live_points, decimals),
+        'rank': f"#{snap.live_rank:,}" if snap.live_rank else embed_style.PLACEHOLDER,
+        'members': str(len(snap.gains)),
+        'raced': str(sum(1 for g in counted if g.gained_today > 0)),
+        'idle': str(sum(1 for g in counted if g.gained_today <= 0)),
+        'joined': str(len(snap.gains) - len(counted)),
+        'quota': embed_style.compact(quota, decimals) if quota else embed_style.PLACEHOLDER,
+        'top_name': top.name if has_top else embed_style.PLACEHOLDER,
+        'top_gain': embed_style.signed(top.gained_today, decimals) if has_top else embed_style.PLACEHOLDER,
+        'as_of': stamp,
+    }
+
+
+def _stamp(snap: LiveSnapshot) -> str:
+    return snap.as_of.strftime("%H:%M UTC") if snap.as_of else "unknown"
+
+
+def build_message(club: Club, snap: LiveSnapshot, *, style: Optional[Dict[str, Any]] = None,
+                  quota: Optional[int] = None) -> Optional[str]:
+    """The text above the board, e.g. a role ping. None when the club set none.
+
+    Discord only pings when a message is posted, so this pings once per day
+    when the board opens; the edits through the day keep it quiet.
+    """
+    if style is None:
+        style = embed_style.resolve(embed_style.LIVE, club)
+    if not style['message']:
+        return None
+    values = _summary_values(club, snap, competition_day(snap.jst_day), _stamp(snap),
+                             style['decimals'], quota)
+    return embed_style.render(style['message'], values).strip()[:2000] or None
+
+
+def _section(embeds: List[discord.Embed], title: Optional[str], lines: List[str],
+             colour: int, intro_suffix: str = "") -> None:
+    """Append one list, split across embeds, with "(continued N)" titles."""
+    for idx, section in enumerate(_split(lines)):
+        embeds.append(discord.Embed(
+            title=title if idx == 0 or title is None else f"{title} (continued {idx + 1})",
+            description=section + intro_suffix if idx == 0 else section,
+            colour=colour,
+        ))
+
+
+def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False,
+                 style: Optional[Dict[str, Any]] = None,
+                 quota: Optional[int] = None) -> List[discord.Embed]:
     """Render the board, mirroring the daily report's layout.
 
     Returns a list because a Discord message can carry up to 10 embeds — the same
@@ -107,21 +236,30 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
     the report's on-track/behind split, plus "joined today" for members whose first
     day cannot be measured. A circle holds ~30 members, so the whole roster fits
     comfortably inside one message's 6000-character budget.
+
+    ``style`` defaults to the club's own (see :mod:`services.embed_style`), and
+    ``quota`` is the club's quota for one day, for the quota tokens.
     """
+    if style is None:
+        style = embed_style.resolve(embed_style.LIVE, club)
+    decimals = style['decimals']
+
+    def title(key: str, count: int) -> Optional[str]:
+        return embed_style.render(style[key], {'club': club.club_name, 'count': str(count)}) or None
+
     # Emoji use deliberately mirrors create_daily_report: one conventional marker
     # per section header and none in the body. The live/closed distinction is
     # carried by the colour and the wording, not by a different icon.
-    title = f"📊 Live Board - {club.club_name}"
     if closed:
-        colour = COLOR_ON_TRACK
+        colour = embed_style.color(style, 'color_closed')
         blurb = ("This competition day has **closed**. Numbers are final.\n"
                  "The next day's board appears once Uma.moe publishes it — "
                  "usually within an hour or so.")
     else:
-        colour = COLOR_INFO
+        colour = embed_style.color(style, 'color_open')
         blurb = "Updating through the day — **not final** until the day closes."
 
-    stamp = snap.as_of.strftime("%H:%M UTC") if snap.as_of else "unknown"
+    stamp = _stamp(snap)
     # Members on their first day are pulled out before the raced/idle split. Their
     # slot mixes fans earned before and after they arrived, so both their figures
     # come out as 0 — which would otherwise park them among people who genuinely
@@ -130,93 +268,126 @@ def build_embeds(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> Lis
     counted = [g for g in snap.gains if not g.is_new]
     raced = [g for g in counted if g.gained_today > 0]
     idle = [g for g in counted if g.gained_today <= 0]
-    raced.sort(key=lambda g: g.gained_today, reverse=True)
-    idle.sort(key=lambda g: g.month_total, reverse=True)
+    raced.sort(key=_RACED_ORDER[style['sort_raced']])
+    idle.sort(key=_IDLE_ORDER[style['sort_idle']])
     fresh.sort(key=lambda g: g.name.lower())
 
     comp = competition_day(snap.jst_day)
+    values = _summary_values(club, snap, comp, stamp, decimals, quota)
+    description = f"**Competition day:** {comp:%B %d}\n{blurb}"
+    note = embed_style.render(style['note'], values).strip()
+    if note:
+        description = f"{description}\n\n{note}"[:4096]
 
     # ---- summary -------------------------------------------------------------
     summary = discord.Embed(
-        title=title,
-        description=f"**Competition day:** {comp:%B %d}\n{blurb}",
+        title=title('title', len(snap.gains)),
+        description=description,
         colour=colour,
         timestamp=datetime.now(timezone.utc),
     )
-    summary.add_field(name="Fans today", value=f"**{_fmt(snap.gained_today)}**", inline=True)
+    if style['thumbnail']:
+        summary.set_thumbnail(url=style['thumbnail'])
+    if style['image']:
+        summary.set_image(url=style['image'])
+    summary.add_field(name="Fans today",
+                      value=f"**{embed_style.compact(snap.gained_today, decimals)}**", inline=True)
 
-    if snap.live_rank:
-        delta = snap.rank_delta
-        move = f" ({delta:+d})" if delta else ""
-        summary.add_field(name="Rank", value=f"#{snap.live_rank:,}{move}", inline=True)
-    else:
-        # Uma.moe serves no live_rank until it starts publishing live data for a
-        # newly opened competition month. Say so rather than silently dropping the
-        # field, and don't substitute monthly_rank — measured across the 2026-08
-        # rollover, the circle-level rank and point fields were still shifting by
-        # hundreds of millions between reads.
-        summary.add_field(name="Rank", value="— *not published yet*", inline=True)
+    if style['show_rank']:
+        if snap.live_rank:
+            delta = snap.rank_delta
+            move = f" ({delta:+d})" if delta else ""
+            summary.add_field(name="Rank", value=f"#{snap.live_rank:,}{move}", inline=True)
+        else:
+            # Uma.moe serves no live_rank until it starts publishing live data for a
+            # newly opened competition month. Say so rather than silently dropping the
+            # field, and don't substitute monthly_rank — measured across the 2026-08
+            # rollover, the circle-level rank and point fields were still shifting by
+            # hundreds of millions between reads.
+            summary.add_field(name="Rank", value="— *not published yet*", inline=True)
 
-    if snap.live_points:
-        summary.add_field(name="Month total", value=_fmt(snap.live_points), inline=True)
+    if style['show_month_total'] and snap.live_points:
+        summary.add_field(name="Month total",
+                          value=embed_style.compact(snap.live_points, decimals), inline=True)
 
-    tally = (f"**Total Members:** {len(snap.gains)}\n"
-             f"Raced today: {len(raced)}\n"
-             f"Not yet: {len(idle)}")
-    if fresh:
-        tally += f"\nJoined today: {len(fresh)} (not counted)"
-    summary.add_field(name="📈 Summary", value=tally, inline=False)
-    summary.set_footer(text=f"Umamusume Quota Tracker - {club.club_name} · uma.moe as of {stamp}")
+    if style['show_summary']:
+        tally = (f"**Total Members:** {len(snap.gains)}\n"
+                 f"Raced today: {len(raced)}\n"
+                 f"Not yet: {len(idle)}")
+        if fresh:
+            tally += f"\nJoined today: {len(fresh)} (not counted)"
+        summary.add_field(name="📈 Summary", value=tally, inline=False)
+
+    for block in embed_style.blocks(style, 'field'):
+        name = embed_style.render(block['title'], values).strip()[:256]
+        value = embed_style.render(block['text'], values).strip()[:1024]
+        if name and value:
+            summary.add_field(name=name, value=value, inline=block['inline'])
+
+    footer = embed_style.render(style['footer'], {'club': club.club_name, 'as_of': stamp})
+    if footer:
+        summary.set_footer(text=footer)
     embeds = [summary]
 
     # ---- everyone who raced --------------------------------------------------
     if raced:
-        lines = [
-            f"`{i:>2}` **{g.name}**: +{_fmt(g.gained_today)} ({_fmt(g.month_total)} {_span(g, comp)})"
-            for i, g in enumerate(raced, 1)
-        ]
-        for idx, section in enumerate(_split(lines)):
-            embeds.append(discord.Embed(
-                title="✅ Raced Today" if idx == 0 else f"✅ Raced Today (continued {idx + 1})",
-                description=section,
-                colour=COLOR_ON_TRACK,
-            ))
+        lines = [embed_style.render(style['line_raced'], _member_values(
+                     g, i, comp, idle=False, decimals=decimals, quota=quota))
+                 for i, g in enumerate(raced, 1)]
+        _section(embeds, title('title_raced', len(raced)), lines,
+                 embed_style.color(style, 'color_raced'))
 
     # ---- everyone who hasn't -------------------------------------------------
-    if idle:
-        lines = [f"**{g.name}**: {_fmt(g.month_total)} {_span(g, comp, idle=True)}" for g in idle]
-        for idx, section in enumerate(_split(lines)):
-            embeds.append(discord.Embed(
-                title="⚠️ No Fans Yet Today" if idx == 0
-                      else f"⚠️ No Fans Yet Today (continued {idx + 1})",
-                description=section,
-                colour=COLOR_BEHIND,
-            ))
+    if idle and style['show_idle']:
+        lines = [embed_style.render(style['line_idle'], _member_values(
+                     g, i, comp, idle=True, decimals=decimals, quota=quota))
+                 for i, g in enumerate(idle, 1)]
+        _section(embeds, title('title_idle', len(idle)), lines,
+                 embed_style.color(style, 'color_idle'))
 
     # ---- everyone who arrived today ------------------------------------------
-    if fresh:
-        lines = [f"**{g.name}**" for g in fresh]
-        for idx, section in enumerate(_split(lines)):
-            embeds.append(discord.Embed(
-                title="🆕 Joined Today" if idx == 0
-                      else f"🆕 Joined Today (continued {idx + 1})",
-                description=(
-                    f"{section}\n\n_Not counted today._ Uma.moe records a whole day "
-                    f"per member and nothing about the moment they joined, so their "
-                    f"first day mixes fans earned before and after arriving. "
-                    f"They start counting tomorrow."
-                ) if idx == 0 else section,
-                colour=COLOR_INFO,
-            ))
+    if fresh and style['show_joined']:
+        lines = [embed_style.render(style['line_joined'], {'name': g.name}) for g in fresh]
+        _section(embeds, title('title_joined', len(fresh)), lines,
+                 embed_style.color(style, 'color_joined'),
+                 intro_suffix=(
+                     "\n\n_Not counted today._ Uma.moe records a whole day "
+                     "per member and nothing about the moment they joined, so their "
+                     "first day mixes fans earned before and after arriving. "
+                     "They start counting tomorrow."
+                 ))
+
+    # ---- the club's own lists -------------------------------------------------
+    for block in embed_style.blocks(style, 'list'):
+        keep = _LIST_WHO[block['who']]
+        members = sorted((g for g in counted if keep(g, quota)), key=_RACED_ORDER[block['order']])
+        if block['limit']:
+            members = members[:block['limit']]
+        if not members:
+            continue
+        lines = [embed_style.render(block['line'], _member_values(
+                     g, i, comp, idle=g.gained_today <= 0, decimals=decimals, quota=quota))
+                 for i, g in enumerate(members, 1)]
+        list_title = embed_style.render(block['title'], {'club': club.club_name,
+                                                         'count': str(len(members))}) or None
+        _section(embeds, list_title, lines, embed_style.color(block, 'color'))
 
     if not snap.gains:
         embeds.append(discord.Embed(
-            title="✅ Raced Today",
+            title=title('title_raced', 0),
             description="_nobody has raced yet today_",
-            colour=COLOR_BEHIND,
+            colour=embed_style.color(style, 'color_idle'),
         ))
 
-    return embeds[:10]          # Discord allows at most 10 embeds per message
+    embeds = embeds[:10]        # Discord allows at most 10 embeds per message
+
+    # Long custom lines can push the board past one message's budget, which
+    # Discord refuses outright. Drop whole sections from the end until it fits.
+    while len(embeds) > 1 and sum(len(e) for e in embeds) > MESSAGE_BUDGET:
+        dropped = embeds.pop()
+        logger.warning(f"Live board for {club.club_name} is over Discord's message size; "
+                       f"dropped {dropped.title!r}")
+    return embeds
 
 
 def build_embed(club: Club, snap: LiveSnapshot, *, closed: bool = False) -> discord.Embed:
@@ -306,7 +477,10 @@ async def _post_new(bot, club: Club, snap: LiveSnapshot, *,
             outcome.update(status="not_cached")
         return False
     try:
-        msg = await channel.send(embeds=build_embeds(club, snap))
+        quota = await daily_quota(club, snap.jst_day)
+        content = build_message(club, snap, quota=quota)
+        extra = {'content': content, 'allowed_mentions': embed_style.MENTIONS} if content else {}
+        msg = await channel.send(embeds=build_embeds(club, snap, quota=quota), **extra)
         await club.set_live_board_message(msg.id, snap.jst_day)
         _last_shown[club.club_id] = _shown(club, snap)
         logger.info(f"Live board opened for {club.club_name} (JST {snap.jst_day})")
@@ -344,7 +518,12 @@ async def _edit_existing(bot, club: Club, snap: LiveSnapshot, *, closed: bool,
         return "failed"                  # cache miss: don't repost over the old one
     try:
         msg = await channel.fetch_message(club.live_board_message_id)
-        await msg.edit(embeds=build_embeds(club, snap, closed=closed))
+        quota = await daily_quota(club, snap.jst_day)
+        content = build_message(club, snap, quota=quota)
+        # Only touch the text when there is some, or some to clear.
+        extra = ({'content': content, 'allowed_mentions': embed_style.MENTIONS}
+                 if content or getattr(msg, 'content', None) else {})
+        await msg.edit(embeds=build_embeds(club, snap, closed=closed, quota=quota), **extra)
         _last_shown[club.club_id] = _shown(club, snap)
         if outcome is not None:
             outcome.update(status="edited", channel=channel)
@@ -421,6 +600,7 @@ async def refresh(bot, club: Club, *,
     snap = await UmaMoeAPIScraper(club.circle_id, now_utc=now_utc).fetch_live()
     if snap is None:
         return "no_data", None
+    _last_snapshot[club.club_id] = snap
 
     if not club.live_board_message_id or not club.live_board_day:
         return ("posted" if await _post_new(bot, club, snap, outcome=outcome)
