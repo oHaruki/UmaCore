@@ -36,7 +36,7 @@ The bomb system warns members who consistently fall behind quota.
 
 ### How It Works
 
-1. A member falls behind quota for `bomb_trigger_days` consecutive days (default: 3)
+1. A member is `bomb_trigger_days` days behind (default: 3), counted the way the club chose (below)
 2. A bomb is activated — the member is notified via DM (if linked)
 3. The member has `bomb_countdown_days` days (default: 7) to get back on track
 4. If they catch up within the countdown, the bomb is defused
@@ -51,8 +51,28 @@ Configured per club via `/edit_club`:
 | `bomb_trigger_days` | 3 | Days behind before bomb activates |
 | `bomb_countdown_days` | 7 | Days to recover before alert |
 | `bombs_enabled` | true | Toggle bomb system on/off |
+| `days_behind` | days in a row | How days behind are counted, see below |
 
 Use `/bomb_status` to see all active bombs for a club.
+
+### Counting Days Behind
+
+A club picks one of two counts, in `/edit_club` or on the dashboard (Settings or Embeds).
+The daily report, the deficit DMs and the bomb trigger all use the same one.
+
+- **Days in a row under quota** (default): every day a member stays under the full quota
+  counts, until they have caught up completely. 45M behind since the 6th reads 14 days on the 20th.
+- **Days of quota missing**: the deficit divided by the daily quota, rounded up. 45M behind
+  at 8M a day reads 6 days, and drops as soon as they earn more than the quota.
+
+Either way a bomb is defused once the member reaches the full quota again.
+
+### Report Style
+
+The dashboard's **Embeds** page changes how the daily report and the live board look:
+what each member line shows (surplus, the day's gain, progress, days of quota missing and
+more), the order, decimals, which sections appear, and their titles and colours. It shows a
+Discord preview built from the club's own latest figures while you edit.
 
 ---
 

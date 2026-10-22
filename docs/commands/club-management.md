@@ -77,6 +77,7 @@ Modify settings for an existing club.
 | `bomb_trigger_days` | No | Days behind before bomb activates (default: 3) |
 | `bomb_countdown_days` | No | Days to get back on track (default: 7) |
 | `bombs_enabled` | No | Enable or disable bomb system (`true`/`false`) |
+| `days_behind` | No | How days behind are counted: days in a row under quota, or days of quota missing |
 
 Only include the parameters you want to change.
 

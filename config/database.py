@@ -460,6 +460,32 @@ class Database:
             END IF;
         END $$;
 
+        -- Migration: per-club look of the report and live board, only what was
+        -- changed ({"report": {...}, "live": {...}}); see services/embed_style.py
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='clubs' AND column_name='embed_style'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN embed_style JSONB NOT NULL DEFAULT '{}'::jsonb;
+                RAISE NOTICE 'Added embed_style column to clubs';
+            END IF;
+        END $$;
+
+        -- Migration: how "days behind" is counted, for the report and for bombs.
+        -- 'streak' = days in a row under quota, 'quota' = deficit / daily quota
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='clubs' AND column_name='days_behind_mode'
+            ) THEN
+                ALTER TABLE clubs ADD COLUMN days_behind_mode TEXT NOT NULL DEFAULT 'streak';
+                RAISE NOTICE 'Added days_behind_mode column to clubs';
+            END IF;
+        END $$;
+
         -- Migration: Add last_report_date column if it doesn't exist.
         -- The club's local date of its last scheduled daily report. The tick
         -- claims a date here before running, so a restart inside a club's

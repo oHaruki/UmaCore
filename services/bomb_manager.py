@@ -8,6 +8,7 @@ from uuid import UUID
 import logging
 
 from models import Member, Bomb, QuotaHistory, Club
+from services.quota_calculator import BehindCount
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +29,20 @@ class BombManager:
         """
         members = await Member.get_all_active(club.club_id)
         newly_activated = []
-        
+        behind = await BehindCount.for_club(club, current_date)
+
         for member in members:
             existing_bomb = await Bomb.get_active_for_member(member.member_id)
             if existing_bomb:
                 continue
-            
-            consecutive_days = await QuotaHistory.check_consecutive_behind_days(
-                member.member_id, club.bomb_trigger_days, current_date
-            )
-            
+
+            if behind.mode == 'quota':
+                consecutive_days = await self._quota_days_behind(member, behind, current_date)
+            else:
+                consecutive_days = await QuotaHistory.check_consecutive_behind_days(
+                    member.member_id, club.bomb_trigger_days, current_date
+                )
+
             if consecutive_days >= club.bomb_trigger_days:
                 bomb = await Bomb.create(
                     member_id=member.member_id,
@@ -50,7 +55,16 @@ class BombManager:
                              f"({consecutive_days} days behind)")
         
         return newly_activated
-    
+
+    @staticmethod
+    async def _quota_days_behind(member: Member, behind: BehindCount, current_date: date) -> int:
+        """Days of quota the member is short, from this month's newest row."""
+        latest = await QuotaHistory.get_latest_for_member(member.member_id)
+        if (latest is None or latest.date > current_date
+                or (latest.date.year, latest.date.month) != (current_date.year, current_date.month)):
+            return 0
+        return behind.of(latest)
+
     async def check_and_deactivate_bombs(self, club_id: UUID, current_date: date) -> List[Dict]:
         """
         Check active bombs and deactivate if member is back on track

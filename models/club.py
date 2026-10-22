@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, time
 from typing import Optional, List
 from uuid import UUID
+import json
 import logging
 import re
 
@@ -53,7 +54,25 @@ class Club:
     # biweeks on calendar blocks. Ignored unless quota_period is 'biweekly'.
     period_anchor_date: Optional[date] = None
     # Report lines show the fans gained that day instead of the running surplus.
+    # Only picks the default lines; a club with its own lines in embed_style
+    # ignores it.
     report_daily_gain: bool = False
+    # What the club changed about its embeds, per kind ("report", "live").
+    # Everything missing falls back to services/embed_style.py's defaults.
+    embed_style: Optional[dict] = None
+    # 'streak' (days in a row under quota) or 'quota' (deficit / daily quota).
+    # Drives the report's count and when bombs trigger, so the two agree.
+    days_behind_mode: str = 'streak'
+
+    def __post_init__(self):
+        # asyncpg hands JSONB back as text, since no codec is registered.
+        if isinstance(self.embed_style, str):
+            try:
+                self.embed_style = json.loads(self.embed_style)
+            except ValueError:
+                self.embed_style = None
+        if not isinstance(self.embed_style, dict):
+            self.embed_style = {}
 
     @property
     def live_board_enabled(self) -> bool:
@@ -79,7 +98,8 @@ class Club:
                      image_report_enabled, is_active, report_channel_id, alert_channel_id,
                      monthly_info_channel_id, monthly_info_message_id,
                    live_board_channel_id, live_board_message_id, live_board_day,
-                   transfer_channel_id, period_anchor_date, report_daily_gain, created_at, updated_at, public_slug
+                   transfer_channel_id, period_anchor_date, report_daily_gain, embed_style, days_behind_mode,
+                   created_at, updated_at, public_slug
         """
         row = await db.fetchrow(query, club_name, scrape_url, circle_id, guild_id, daily_quota, quota_period,
                                 timezone, scrape_time, bomb_trigger_days, bomb_countdown_days,
@@ -96,7 +116,8 @@ class Club:
                    image_report_enabled, is_active, report_channel_id, alert_channel_id,
                    monthly_info_channel_id, monthly_info_message_id,
                    live_board_channel_id, live_board_message_id, live_board_day,
-                   transfer_channel_id, period_anchor_date, report_daily_gain, created_at, updated_at, public_slug
+                   transfer_channel_id, period_anchor_date, report_daily_gain, embed_style, days_behind_mode,
+                   created_at, updated_at, public_slug
             FROM clubs
             WHERE club_id = $1
         """
@@ -114,7 +135,8 @@ class Club:
                    image_report_enabled, is_active, report_channel_id, alert_channel_id,
                    monthly_info_channel_id, monthly_info_message_id,
                    live_board_channel_id, live_board_message_id, live_board_day,
-                   transfer_channel_id, period_anchor_date, report_daily_gain, created_at, updated_at, public_slug
+                   transfer_channel_id, period_anchor_date, report_daily_gain, embed_style, days_behind_mode,
+                   created_at, updated_at, public_slug
             FROM clubs
             WHERE club_name = $1
         """
@@ -132,7 +154,8 @@ class Club:
                    image_report_enabled, is_active, report_channel_id, alert_channel_id,
                    monthly_info_channel_id, monthly_info_message_id,
                    live_board_channel_id, live_board_message_id, live_board_day,
-                   transfer_channel_id, period_anchor_date, report_daily_gain, created_at, updated_at, public_slug
+                   transfer_channel_id, period_anchor_date, report_daily_gain, embed_style, days_behind_mode,
+                   created_at, updated_at, public_slug
             FROM clubs
             WHERE is_active = TRUE
             ORDER BY club_name
@@ -149,7 +172,8 @@ class Club:
                    image_report_enabled, is_active, report_channel_id, alert_channel_id,
                    monthly_info_channel_id, monthly_info_message_id,
                    live_board_channel_id, live_board_message_id, live_board_day,
-                   transfer_channel_id, period_anchor_date, report_daily_gain, created_at, updated_at, public_slug
+                   transfer_channel_id, period_anchor_date, report_daily_gain, embed_style, days_behind_mode,
+                   created_at, updated_at, public_slug
             FROM clubs
             ORDER BY club_name
         """
@@ -165,7 +189,8 @@ class Club:
                    image_report_enabled, is_active, report_channel_id, alert_channel_id,
                    monthly_info_channel_id, monthly_info_message_id,
                    live_board_channel_id, live_board_message_id, live_board_day,
-                   transfer_channel_id, period_anchor_date, report_daily_gain, created_at, updated_at, public_slug
+                   transfer_channel_id, period_anchor_date, report_daily_gain, embed_style, days_behind_mode,
+                   created_at, updated_at, public_slug
             FROM clubs
             WHERE guild_id = $1 OR guild_id IS NULL
             ORDER BY club_name
@@ -202,7 +227,8 @@ class Club:
         valid_fields = {'scrape_url', 'circle_id', 'daily_quota', 'quota_period', 'timezone',
                        'scrape_time', 'bomb_trigger_days', 'bomb_countdown_days', 'bombs_enabled',
                        'image_report_enabled', 'report_channel_id', 'alert_channel_id',
-                       'transfer_channel_id', 'period_anchor_date', 'report_daily_gain'}
+                       'transfer_channel_id', 'period_anchor_date', 'report_daily_gain',
+                       'days_behind_mode'}
 
         updates = {k: v for k, v in kwargs.items() if k in valid_fields}
         if not updates:
@@ -271,7 +297,8 @@ class Club:
                    image_report_enabled, is_active, report_channel_id, alert_channel_id,
                    monthly_info_channel_id, monthly_info_message_id,
                    live_board_channel_id, live_board_message_id, live_board_day,
-                   transfer_channel_id, period_anchor_date, report_daily_gain, created_at, updated_at, public_slug
+                   transfer_channel_id, period_anchor_date, report_daily_gain, embed_style, days_behind_mode,
+                   created_at, updated_at, public_slug
             FROM clubs
             WHERE is_active = TRUE
               AND live_board_channel_id IS NOT NULL

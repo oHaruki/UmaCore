@@ -2,11 +2,12 @@
 Notification service for sending DMs to linked users
 """
 import discord
-from typing import List, Dict
+from typing import List, Dict, Optional
 import logging
 
 from models import UserLink, Member, QuotaHistory, Bomb
 from config.settings import COLOR_BOMB, COLOR_BEHIND
+from services.quota_calculator import BehindCount
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +18,11 @@ class NotificationService:
     def __init__(self, bot):
         self.bot = bot
     
-    async def send_bomb_notifications(self, club_name: str, newly_activated_bombs: List):
+    async def send_bomb_notifications(self, club_name: str, newly_activated_bombs: List,
+                                      behind: Optional[BehindCount] = None,
+                                      trigger_days: int = 3):
         """Send DM notifications to users whose bombs were just activated"""
+        behind = behind or BehindCount()
         user_links = await UserLink.get_all_with_bomb_notifications()
         
         for bomb in newly_activated_bombs:
@@ -39,7 +43,7 @@ class NotificationService:
                 
                 embed = discord.Embed(
                     title=f"💣 Bomb Activated - {club_name}",
-                    description=f"Your trainer **{member.trainer_name}** has been behind quota for 3 consecutive days.",
+                    description=f"Your trainer **{member.trainer_name}** {behind.trigger_reason(trigger_days)}.",
                     color=COLOR_BOMB,
                     timestamp=discord.utils.utcnow()
                 )
@@ -50,7 +54,7 @@ class NotificationService:
                     embed.add_field(
                         name="⚠️ Current Status",
                         value=f"**Deficit:** -{deficit:,} fans\n"
-                              f"**Days Behind:** {latest_history.days_behind} consecutive days",
+                              f"**Days Behind:** {behind.describe(behind.of(latest_history))}",
                         inline=False
                     )
                 
@@ -78,8 +82,15 @@ class NotificationService:
             except Exception as e:
                 logger.error(f"Error sending bomb notification to {user_link.discord_user_id}: {e}")
     
-    async def send_deficit_notifications(self, club_name: str, members_data: List[Dict]):
-        """Send DM notifications to users who are behind quota (once per day)"""
+    async def send_deficit_notifications(self, club_name: str, members_data: List[Dict],
+                                         behind: Optional[BehindCount] = None,
+                                         trigger_days: Optional[int] = 3):
+        """Send DM notifications to users who are behind quota (once per day)
+
+        ``trigger_days`` is when a bomb would start, for the one-day warning.
+        None means the club has bombs off, so there is nothing to warn about.
+        """
+        behind = behind or BehindCount()
         user_links = await UserLink.get_all_with_deficit_notifications()
         
         for item in members_data:
@@ -128,20 +139,22 @@ class NotificationService:
                         inline=False
                     )
                 
+                days_behind = item.get('days_behind', behind.of(history))
                 embed.add_field(
                     name="⚠️ Status",
                     value=f"**Deficit:** -{deficit:,} fans\n"
-                          f"**Days Behind:** {history.days_behind} consecutive days",
+                          f"**Days Behind:** {behind.describe(days_behind)}",
                     inline=False
                 )
-                
+
                 # Bomb warning if close
-                if history.days_behind == 2:
-                    embed.add_field(
-                        name="🚨 Bomb Warning",
-                        value="**1 more day behind** and a bomb will be activated!\nGet back on track today to avoid this.",
-                        inline=False
-                    )
+                if trigger_days and days_behind == trigger_days - 1:
+                    warning = ("**Miss today's quota** and a bomb will be activated!\n"
+                               "Earn more than today's quota to avoid this."
+                               if behind.mode == 'quota' else
+                               "**1 more day behind** and a bomb will be activated!\n"
+                               "Get back on track today to avoid this.")
+                    embed.add_field(name="🚨 Bomb Warning", value=warning, inline=False)
                 
                 embed.set_footer(text=f"Use /my_status to check progress • {club_name}")
                 

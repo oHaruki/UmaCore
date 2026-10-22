@@ -14,6 +14,8 @@ from typing import Optional
 from scrapers import ChronoGenesisScraper, UmaMoeAPIScraper
 from services import QuotaCalculator, BombManager, ReportGenerator, MonthlyInfoService
 from services.tally_renderer import generate_tally_image
+from services import embed_style
+from services.quota_calculator import BehindCount
 from services.recalculator import recalculate_club
 from models import Member, QuotaRequirement, BotSettings, Club, ClubRankHistory
 from models.quota_requirement import QuotaSchedule
@@ -110,9 +112,12 @@ class AdminCommands(commands.Cog):
             logger.error(f"Error updating monthly info board: {e}")
         return False
 
-    @app_commands.command(name="quota", description="Set the daily quota requirement")
+    @app_commands.command(name="quota", description="Set the quota for one quota period (a day, week or 2 weeks)")
+    @app_commands.describe(
+        amount="Fans for the club's whole quota period: per day, per week, or per 2 weeks for biweekly clubs",
+    )
     async def set_quota(self, interaction: discord.Interaction, amount: int, club: str):
-        """Set the daily quota requirement"""
+        """Set the quota for one of the club's quota periods"""
         await interaction.response.defer()
 
         try:
@@ -161,9 +166,12 @@ class AdminCommands(commands.Cog):
             period_label = {'daily': 'day', 'weekly': 'week', 'biweekly': '2 weeks'}.get(club_obj.quota_period, 'day')
             period_name = {'daily': 'Daily', 'weekly': 'Weekly', 'biweekly': 'Biweekly'}.get(club_obj.quota_period, 'Daily')
 
+            period_days = {'weekly': 7, 'biweekly': 14}.get(club_obj.quota_period)
+            per_day = (f" (about {amount / period_days / 1_000_000:.2f}M a day)"
+                       if period_days else "")
             embed = discord.Embed(
                 title=f"✅ Quota Updated - {club}",
-                description=f"{period_name} quota has been set to **{formatted} fans/{period_label}**",
+                description=f"{period_name} quota has been set to **{formatted} fans/{period_label}**{per_day}",
                 color=discord.Color.green(),
                 timestamp=discord.utils.utcnow()
             )
@@ -563,9 +571,10 @@ class AdminCommands(commands.Cog):
                 logger.info(f"Skipping bomb management for {club_obj.club_name} (bombs disabled)")
 
             # Generate and send daily reports
+            behind = await BehindCount.for_club(club_obj, current_date)
             status_summary = await self.quota_calculator.get_member_status_summary(
                 club_obj.club_id, current_date, quota_period=club_obj.quota_period,
-                period_anchor=club_obj.period_anchor_date,
+                period_anchor=club_obj.period_anchor_date, days_mode=behind.mode,
             )
 
             if club_obj.bombs_enabled:
@@ -575,6 +584,14 @@ class AdminCommands(commands.Cog):
 
             effective_quota = await QuotaRequirement.get_quota_for_date(club_obj.club_id, current_date)
 
+            report_style = embed_style.resolve(embed_style.REPORT, club_obj)
+            report_text = self.report_generator.daily_report_message(
+                club_obj.club_name, effective_quota, status_summary, bombs_data, current_date,
+                rank_data=rank_data, quota_period=club_obj.quota_period, style=report_style,
+            )
+            lead = ({'content': report_text, 'allowed_mentions': embed_style.MENTIONS}
+                    if report_text else {})
+
             if club_obj.image_report_enabled:
                 monthly_rank = rank_data.get("monthly_rank") if rank_data else None
                 img_path = None
@@ -583,7 +600,8 @@ class AdminCommands(commands.Cog):
                         club_obj.club_id, club_obj.club_name, current_date,
                         daily_quota=effective_quota, monthly_rank=monthly_rank,
                     )
-                    await report_channel.send(file=discord.File(str(img_path), filename="quota_report.png"))
+                    await report_channel.send(file=discord.File(str(img_path), filename="quota_report.png"),
+                                              **lead)
                     logger.info(f"✅ Tally image report sent for {club_obj.club_name}")
                 except Exception as img_err:
                     logger.error(f"❌ Tally image failed for {club_obj.club_name}, falling back to embeds: {img_err}", exc_info=True)
@@ -591,10 +609,11 @@ class AdminCommands(commands.Cog):
                         club_obj.club_name, effective_quota, status_summary, bombs_data, current_date,
                         rank_data=rank_data, quota_period=club_obj.quota_period,
                         club_timezone=club_obj.timezone,
-                        daily_gain=club_obj.report_daily_gain,
+                        style=report_style,
+                        days_mode=behind.mode,
                     )
-                    for embed in daily_reports:
-                        await report_channel.send(embed=embed)
+                    for i, embed in enumerate(daily_reports):
+                        await report_channel.send(embed=embed, **(lead if i == 0 else {}))
                 finally:
                     if img_path and img_path.exists():
                         os.unlink(img_path)
@@ -603,10 +622,11 @@ class AdminCommands(commands.Cog):
                     club_obj.club_name, effective_quota, status_summary, bombs_data, current_date,
                     rank_data=rank_data, quota_period=club_obj.quota_period,
                     club_timezone=club_obj.timezone,
-                    daily_gain=club_obj.report_daily_gain,
+                    style=report_style,
+                    days_mode=behind.mode,
                 )
-                for embed in daily_reports:
-                    await report_channel.send(embed=embed)
+                for i, embed in enumerate(daily_reports):
+                    await report_channel.send(embed=embed, **(lead if i == 0 else {}))
 
             if deactivated:
                 deactivation_embeds = self.report_generator.create_bomb_deactivation_report(
@@ -621,7 +641,8 @@ class AdminCommands(commands.Cog):
                 for bomb in newly_activated:
                     member = await Member.get_by_id(bomb.member_id)
                     bomb_data.append({'bomb': bomb, 'member': member})
-                for embed in self.report_generator.create_bomb_activation_alert(club_obj.club_name, bomb_data):
+                for embed in self.report_generator.create_bomb_activation_alert(
+                        club_obj.club_name, bomb_data, behind.trigger_reason(club_obj.bomb_trigger_days)):
                     await alert_channel.send(embed=embed)
 
             if members_to_kick:
