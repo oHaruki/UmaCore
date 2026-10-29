@@ -19,7 +19,7 @@ import calendar
 import logging
 
 from config.database import db
-from config.settings import CLUB_RANK_GRADES, PROMOTION_MILESTONES
+from config.settings import BOTTOM_RANK_GRADE, CLUB_RANK_GRADES, PROMOTION_MILESTONES
 from models.club import Club
 from scrapers.umamoe_leaderboard import fetch_entry_at_rank, fetch_own_standing
 
@@ -58,14 +58,14 @@ def next_milestone(current_rank: int, milestones: Optional[List[int]] = None) ->
 def grade_for_rank(rank: Optional[int]) -> Optional[str]:
     """The club grade a leaderboard position sits in, e.g. 1483 → 'B+'.
 
-    ``None`` for ranks past the bottom band, where the game shows no grade.
+    Ranks past the last band are D+, like in game. ``None`` only for no rank.
     """
     if rank is None:
         return None
     for bound, grade in CLUB_RANK_GRADES:
         if rank <= bound:
             return grade
-    return None
+    return BOTTOM_RANK_GRADE
 
 
 async def _recent_daily_rate(club_id: UUID) -> Optional[int]:

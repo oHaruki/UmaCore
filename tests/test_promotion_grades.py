@@ -51,8 +51,9 @@ class TestGradeForRank:
     def test_band_edges(self, rank, grade):
         assert grade_for_rank(rank) == grade
 
-    def test_below_the_last_band_has_no_grade(self):
-        assert grade_for_rank(10_001) is None
+    def test_below_the_last_band_is_d_plus(self):
+        assert grade_for_rank(10_001) == "D+"
+        assert grade_for_rank(14_931) == "D+"
 
     def test_unknown_rank_has_no_grade(self):
         assert grade_for_rank(None) is None
