@@ -149,6 +149,10 @@ CLUB_RANK_GRADES = [
     (10_000, "C"),
 ]
 
+# Every rank past the last band. The game's circle_rank_data leaves this tier
+# open-ended (10,001 and below), so there is no bound to climb to.
+BOTTOM_RANK_GRADE = "D+"
+
 # The /promotion command and the daily report use these as the default "next
 # target" a club is climbing toward: the best milestone strictly above the club's
 # current rank. Editable — order doesn't matter.
