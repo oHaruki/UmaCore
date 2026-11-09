@@ -20,7 +20,7 @@ from datetime import datetime, date, timezone
 
 from scrapers.base_scraper import BaseScraper, StaleDataError
 from config.settings import (
-    UMAMOE_API_KEY, UMAMOE_SLOT_ERROR_FRACTION,
+    UMAMOE_API_KEY, UMAMOE_USER_AGENT, UMAMOE_SLOT_ERROR_FRACTION,
     UMAMOE_CHECKSUM_TOLERANCE, UMAMOE_CHECKSUM_MIN_ABS,
 )
 from utils.rate_limiter import umamoe_limiter, PRIORITY_BACKGROUND
@@ -195,7 +195,7 @@ class UmaMoeAPIScraper(BaseScraper):
                 return data
 
     def _session(self) -> aiohttp.ClientSession:
-        headers = {"Accept-Encoding": "gzip, deflate"}
+        headers = {"Accept-Encoding": "gzip, deflate", "User-Agent": UMAMOE_USER_AGENT}
         if UMAMOE_API_KEY:
             headers["X-API-Key"] = UMAMOE_API_KEY
         return aiohttp.ClientSession(headers=headers)

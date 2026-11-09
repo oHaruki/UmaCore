@@ -23,7 +23,7 @@ from typing import Optional
 
 import aiohttp
 
-from config.settings import UMAMOE_API_KEY
+from config.settings import UMAMOE_API_KEY, UMAMOE_USER_AGENT
 
 from .client import (
     GameEvent, PERMANENT_CUTOFF, PERMANENT_WINDOW,
@@ -110,7 +110,7 @@ class UmaMoeEventsClient:
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             headers = {
-                "User-Agent": "UmaCore-Bot/1.0",
+                "User-Agent": UMAMOE_USER_AGENT,
                 "Accept-Encoding": "gzip, deflate",
             }
             if UMAMOE_API_KEY:

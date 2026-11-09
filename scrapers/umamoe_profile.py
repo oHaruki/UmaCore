@@ -15,7 +15,7 @@ from typing import Dict, Optional
 import logging
 import aiohttp
 
-from config.settings import UMAMOE_API_KEY
+from config.settings import UMAMOE_API_KEY, UMAMOE_USER_AGENT
 from utils.rate_limiter import umamoe_limiter, PRIORITY_INTERACTIVE
 from utils.api_metrics import track_api_call
 
@@ -68,6 +68,7 @@ async def _request_profile(account_id: str) -> Optional[Dict]:
     url = _PROFILE_URL.format(account_id=account_id)
     headers = {
         "Accept-Encoding": "gzip, deflate",
+        "User-Agent": UMAMOE_USER_AGENT,
         "X-API-Key": UMAMOE_API_KEY,
     }
 

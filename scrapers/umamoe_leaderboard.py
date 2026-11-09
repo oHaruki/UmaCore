@@ -28,7 +28,7 @@ from datetime import datetime
 
 import aiohttp
 
-from config.settings import UMAMOE_API_KEY
+from config.settings import UMAMOE_API_KEY, UMAMOE_USER_AGENT
 from utils.rate_limiter import umamoe_limiter, PRIORITY_INTERACTIVE
 from utils.api_metrics import track_api_call
 
@@ -41,6 +41,7 @@ _CIRCLE_URL = "https://uma.moe/api/v4/circles"
 def _headers() -> Dict[str, str]:
     return {
         "Accept-Encoding": "gzip, deflate",
+        "User-Agent": UMAMOE_USER_AGENT,
         "X-API-Key": UMAMOE_API_KEY or "",
     }
 

@@ -35,6 +35,8 @@ SCRAPE_RETRY_DELAY = 1  # seconds
 # Uma.moe API Configuration
 USE_UMAMOE_API = os.getenv("USE_UMAMOE_API", "true").lower() == "true"
 UMAMOE_API_KEY = os.getenv("UMAMOE_API_KEY")
+# Sent on every uma.moe request so the owner can tell us apart from scrapers.
+UMAMOE_USER_AGENT = "UmaCore-Bot/1.0"
 
 # Uma.moe rate limiting (shared across ALL outbound API calls).
 # Kept under the API's 120/min circle-data limit with margin; raise once the
