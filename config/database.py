@@ -415,12 +415,14 @@ class Database:
 
         -- Indexes for performance
         CREATE INDEX IF NOT EXISTS idx_members_club_id ON members(club_id);
-        CREATE INDEX IF NOT EXISTS idx_quota_history_club_id ON quota_history(club_id);
+        -- club + date covers "latest day of a club" and "club on a day" lookups;
+        -- (member_id, date) is already indexed by the UNIQUE constraint.
+        CREATE INDEX IF NOT EXISTS idx_quota_history_club_date ON quota_history(club_id, date);
+        DROP INDEX IF EXISTS idx_quota_history_club_id;
+        DROP INDEX IF EXISTS idx_quota_history_member_date;
         CREATE INDEX IF NOT EXISTS idx_bombs_club_id ON bombs(club_id);
         CREATE INDEX IF NOT EXISTS idx_quota_requirements_club_id ON quota_requirements(club_id);
-        CREATE INDEX IF NOT EXISTS idx_quota_history_member_date 
-            ON quota_history(member_id, date DESC);
-        CREATE INDEX IF NOT EXISTS idx_bombs_active 
+        CREATE INDEX IF NOT EXISTS idx_bombs_active
             ON bombs(member_id) WHERE is_active = TRUE;
         CREATE INDEX IF NOT EXISTS idx_members_active 
             ON members(is_active) WHERE is_active = TRUE;
@@ -631,8 +633,7 @@ class Database:
             ON api_usage(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_api_usage_provider_created
             ON api_usage(provider, created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_api_usage_endpoint_created
-            ON api_usage(endpoint, created_at DESC);
+        DROP INDEX IF EXISTS idx_api_usage_endpoint_created;
 
         -- Channel name templates: rename a Discord channel (typically a locked
         -- voice channel used as a display board) to show a club's live figures.
