@@ -55,7 +55,7 @@ class TrainerIdentity:
         )
 
 
-async def _request_profile(account_id: str) -> Optional[Dict]:
+async def _request_profile(account_id: str, priority: int = PRIORITY_INTERACTIVE) -> Optional[Dict]:
     """GET one profile.
 
     Returns ``None`` when uma.moe answers that it has no such trainer, and raises
@@ -73,7 +73,7 @@ async def _request_profile(account_id: str) -> Optional[Dict]:
     }
 
     try:
-        await umamoe_limiter.acquire(PRIORITY_INTERACTIVE)
+        await umamoe_limiter.acquire(priority)
         async with aiohttp.ClientSession(headers=headers) as session:
             async with track_api_call("uma.moe", "profile", context=str(account_id)) as m:
                 async with session.get(
@@ -123,6 +123,16 @@ async def fetch_trainer_profile(account_id: Optional[str]) -> Optional[Dict]:
         return await _request_profile(account_id)
     except ProfileUnavailable:
         return None
+
+
+async def fetch_profile_checked(account_id: str,
+                                priority: int = PRIORITY_INTERACTIVE) -> Optional[Dict]:
+    """The full profile, keeping the two kinds of "no" apart like ``lookup_trainer``.
+
+    ``None`` means uma.moe knows no such trainer, ``ProfileUnavailable`` means it
+    could not be asked. Scheduled callers pass ``PRIORITY_BACKGROUND``.
+    """
+    return await _request_profile(account_id, priority)
 
 
 async def lookup_trainer(account_id: str) -> Optional[TrainerIdentity]:
