@@ -685,6 +685,64 @@ class Database:
 
         -- umapyoi keys carry the full notice title slug, longer than 64 chars.
         ALTER TABLE announced_events ALTER COLUMN event_key TYPE TEXT;
+
+        -- Recruiting board on the website. Images live in the DB so they ride
+        -- along with the daily backup and need no volume on the web container.
+        CREATE TABLE IF NOT EXISTS recruit_images (
+            image_id         UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+            owner_discord_id BIGINT      NOT NULL,
+            content_type     TEXT        NOT NULL,
+            data             BYTEA       NOT NULL,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        -- One listing per tracked club. Its stats are read live from the club's
+        -- own scrape data, so nothing about the numbers is stored here.
+        CREATE TABLE IF NOT EXISTS recruit_club_posts (
+            club_id          UUID        PRIMARY KEY REFERENCES clubs(club_id) ON DELETE CASCADE,
+            headline         TEXT        NOT NULL DEFAULT '',
+            description      TEXT        NOT NULL DEFAULT '',
+            discord_invite   TEXT,
+            discord_required BOOLEAN     NOT NULL DEFAULT FALSE,
+            min_daily_fans   BIGINT,
+            language         TEXT,
+            tags             TEXT[]      NOT NULL DEFAULT '{}',
+            accent           TEXT,
+            banner_image_id  UUID        REFERENCES recruit_images(image_id) ON DELETE SET NULL,
+            is_open          BOOLEAN     NOT NULL DEFAULT TRUE,
+            updated_by_id    BIGINT,
+            updated_by_name  TEXT,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            bumped_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        -- One LFC post per Discord account. stats is a snapshot of the trainer's
+        -- uma.moe profile, refreshed about daily by the recruit stats task.
+        CREATE TABLE IF NOT EXISTS recruit_player_posts (
+            post_id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+            discord_user_id  BIGINT      NOT NULL UNIQUE,
+            discord_name     TEXT        NOT NULL,
+            discord_avatar   TEXT,
+            trainer_id       TEXT        NOT NULL,
+            trainer_name     TEXT        NOT NULL,
+            min_grade        TEXT,
+            daily_fans       BIGINT,
+            description      TEXT        NOT NULL DEFAULT '',
+            language         TEXT,
+            tags             TEXT[]      NOT NULL DEFAULT '{}',
+            stats            JSONB,
+            stats_updated_at TIMESTAMPTZ,
+            is_open          BOOLEAN     NOT NULL DEFAULT TRUE,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            bumped_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_recruit_club_posts_bumped
+            ON recruit_club_posts(bumped_at DESC) WHERE is_open;
+        CREATE INDEX IF NOT EXISTS idx_recruit_player_posts_bumped
+            ON recruit_player_posts(bumped_at DESC) WHERE is_open;
         """
         
         try:

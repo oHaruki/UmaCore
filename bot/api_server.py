@@ -620,6 +620,28 @@ async def handle_transfer_decision(request: web.Request) -> web.StreamResponse:
     return await _send_json(request, result)
 
 
+async def handle_recruit_trainer(request: web.Request) -> web.StreamResponse:
+    """uma.moe stats for a trainer ID, for the website's LFC posts.
+
+    404 when uma.moe knows no such trainer, 503 when it can't be asked, so the
+    web never calls a typed ID wrong just because uma.moe was down.
+    """
+    from scrapers import ProfileUnavailable
+    from services import recruiting
+
+    account_id = request.rel_url.query.get('id', '').replace(' ', '')
+    if not (account_id.isdigit() and 9 <= len(account_id) <= 12):
+        return await _send_json(request, {'error': 'invalid_id'}, status=400)
+
+    try:
+        snap = await recruiting.lookup(account_id)
+    except ProfileUnavailable as e:
+        return await _send_json(request, {'error': 'unavailable', 'detail': str(e)}, status=503)
+    if snap is None:
+        return await _send_json(request, {'error': 'not_found'}, status=404)
+    return await _send_json(request, {'trainer': snap})
+
+
 async def handle_health(request: web.Request) -> web.StreamResponse:
     """Component health as JSON, for a prober running somewhere that isn't here.
 
@@ -684,6 +706,7 @@ def create_app(bot=None) -> web.Application:
     app.router.add_post('/embed_style/validate', handle_embed_style_validate)
     app.router.add_post('/transfer_decision', handle_transfer_decision)
     app.router.add_get('/bot_guilds', handle_bot_guilds)
+    app.router.add_get('/recruit/trainer', handle_recruit_trainer)
     app.router.add_get('/health', handle_health)
     app.router.add_get('/logs', handle_logs)
     return app

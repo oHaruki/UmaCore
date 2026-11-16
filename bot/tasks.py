@@ -31,6 +31,7 @@ from services.backup_service import create_backup, find_pg_dump
 from services.live_board import refresh as refresh_live_board
 from services.health_monitor import health
 from services import channel_names
+from services import recruiting
 from config.settings import (
     USE_UMAMOE_API, SCRAPE_ROLLOVER_GRACE_SEC, SCRAPE_MAX_FRESHNESS_RETRIES,
     SCRAPE_FRESHNESS_RETRY_DELAY_SEC, SCRAPE_MAX_CONCURRENCY,
@@ -165,6 +166,7 @@ class BotTasks:
         self.scrape_tick.start()
         self.live_board_tick.start()
         self.health_tick.start()
+        self.recruit_stats_tick.start()
         if DB_BACKUP_ENABLED:
             self.daily_backup.change_interval(time=self._backup_time)
             self.daily_backup.start()
@@ -191,6 +193,7 @@ class BotTasks:
         self.scrape_tick.cancel()
         self.live_board_tick.cancel()
         self.health_tick.cancel()
+        self.recruit_stats_tick.cancel()
         if self.daily_backup.is_running():
             self.daily_backup.cancel()
         self.scheduler.stop()
@@ -240,6 +243,18 @@ class BotTasks:
 
     @health_tick.before_loop
     async def before_health_tick(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=60)
+    async def recruit_stats_tick(self):
+        """Keep LFC posts' uma.moe stats about a day fresh, in small batches."""
+        try:
+            await recruiting.refresh_due_posts()
+        except Exception as e:
+            logger.error(f"recruit_stats_tick failed: {e}", exc_info=True)
+
+    @recruit_stats_tick.before_loop
+    async def before_recruit_stats_tick(self):
         await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=1)
