@@ -642,6 +642,26 @@ async def handle_recruit_trainer(request: web.Request) -> web.StreamResponse:
     return await _send_json(request, {'trainer': snap})
 
 
+async def handle_recruit_club(request: web.Request) -> web.StreamResponse:
+    """Refresh a club's recruiting board numbers from uma.moe right now.
+
+    The website calls this when a listing is saved, so it shows real figures
+    straight away instead of after the next scrape.
+    """
+    from services import recruiting
+
+    try:
+        club_id = UUID(str((await request.json()).get('club_id')))
+    except Exception:
+        return await _send_json(request, {'error': 'Invalid club_id'}, status=400)
+
+    try:
+        snap = await recruiting.refresh_club(club_id)
+    except recruiting.ClubStatsUnavailable as e:
+        return await _send_json(request, {'error': 'unavailable', 'detail': str(e)}, status=503)
+    return await _send_json(request, {'stats': snap})
+
+
 async def handle_health(request: web.Request) -> web.StreamResponse:
     """Component health as JSON, for a prober running somewhere that isn't here.
 
@@ -707,6 +727,7 @@ def create_app(bot=None) -> web.Application:
     app.router.add_post('/transfer_decision', handle_transfer_decision)
     app.router.add_get('/bot_guilds', handle_bot_guilds)
     app.router.add_get('/recruit/trainer', handle_recruit_trainer)
+    app.router.add_post('/recruit/club', handle_recruit_club)
     app.router.add_get('/health', handle_health)
     app.router.add_get('/logs', handle_logs)
     return app
