@@ -739,6 +739,18 @@ class Database:
             bumped_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
+        -- Board numbers for a club, straight from uma.moe. Filled when a listing
+        -- is saved and refreshed every few hours, so it never waits on the daily
+        -- check (which a club without a report channel may never get).
+        CREATE TABLE IF NOT EXISTS recruit_club_stats (
+            club_id     UUID        PRIMARY KEY REFERENCES clubs(club_id) ON DELETE CASCADE,
+            stats       JSONB,
+            checked_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at  TIMESTAMPTZ
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_recruit_player_posts_trainer
+            ON recruit_player_posts(trainer_id);
         CREATE INDEX IF NOT EXISTS idx_recruit_club_posts_bumped
             ON recruit_club_posts(bumped_at DESC) WHERE is_open;
         CREATE INDEX IF NOT EXISTS idx_recruit_player_posts_bumped

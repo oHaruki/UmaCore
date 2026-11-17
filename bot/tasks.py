@@ -247,11 +247,15 @@ class BotTasks:
 
     @tasks.loop(minutes=60)
     async def recruit_stats_tick(self):
-        """Keep LFC posts' uma.moe stats about a day fresh, in small batches."""
+        """Keep recruiting posts' uma.moe stats fresh, in small batches."""
         try:
             await recruiting.refresh_due_posts()
         except Exception as e:
             logger.error(f"recruit_stats_tick failed: {e}", exc_info=True)
+        try:
+            await recruiting.refresh_due_clubs()
+        except Exception as e:
+            logger.error(f"recruit_stats_tick (clubs) failed: {e}", exc_info=True)
 
     @recruit_stats_tick.before_loop
     async def before_recruit_stats_tick(self):
@@ -463,9 +467,12 @@ class BotTasks:
                 report_channel = self.bot.get_channel(club.report_channel_id)
                 alert_channel = self.bot.get_channel(club.alert_channel_id or club.report_channel_id)
 
+                # no channel still scrapes and saves; the posts just go nowhere
                 if not report_channel:
-                    logger.error(f"Report channel {club.report_channel_id} not found for {club.club_name}")
-                    return "failed"
+                    logger.warning(
+                        f"Report channel {club.report_channel_id} not found for {club.club_name}, "
+                        f"saving data without posting"
+                    )
 
                 if not alert_channel:
                     logger.warning(f"Alert channel not found for {club.club_name}, using report channel")
