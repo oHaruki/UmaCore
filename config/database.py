@@ -755,6 +755,30 @@ class Database:
             ON recruit_club_posts(bumped_at DESC) WHERE is_open;
         CREATE INDEX IF NOT EXISTS idx_recruit_player_posts_bumped
             ON recruit_player_posts(bumped_at DESC) WHERE is_open;
+
+        -- Alliances: sister clubs sharing one leaderboard. A club is in at most
+        -- one alliance. The owner club's managers rename it, kick clubs and
+        -- decide if the leaderboard is public; other clubs can only leave.
+        CREATE TABLE IF NOT EXISTS alliances (
+            alliance_id    UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+            name           TEXT        NOT NULL,
+            slug           TEXT        NOT NULL UNIQUE,
+            owner_club_id  UUID        REFERENCES clubs(club_id) ON DELETE SET NULL,
+            invite_code    TEXT        NOT NULL UNIQUE,
+            is_public      BOOLEAN     NOT NULL DEFAULT FALSE,
+            created_by_id  BIGINT,
+            created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS alliance_clubs (
+            club_id      UUID        PRIMARY KEY REFERENCES clubs(club_id) ON DELETE CASCADE,
+            alliance_id  UUID        NOT NULL REFERENCES alliances(alliance_id) ON DELETE CASCADE,
+            joined_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_alliance_clubs_alliance
+            ON alliance_clubs(alliance_id, joined_at);
         """
         
         try:
