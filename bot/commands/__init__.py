@@ -12,6 +12,7 @@ async def setup(bot):
     from .charts import ChartCommands
     from .promotion import PromotionCommands
     from .transfers import TransferCommands
+    from .alliance import AllianceCommands
 
     await bot.add_cog(SettingsCommands(bot))
     await bot.add_cog(AdminCommands(bot))
@@ -21,3 +22,4 @@ async def setup(bot):
     await bot.add_cog(ChartCommands(bot))
     await bot.add_cog(PromotionCommands(bot))
     await bot.add_cog(TransferCommands(bot))
+    await bot.add_cog(AllianceCommands(bot))
