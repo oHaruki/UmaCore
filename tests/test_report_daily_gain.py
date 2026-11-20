@@ -60,3 +60,32 @@ class TestDayGain:
     def test_no_row_today_is_zero(self):
         rows = [(date(2026, 10, 18), 300_000_000)]
         assert self.gain(rows, date(2026, 10, 19)) == 0
+
+
+class TestMissingDays:
+    def missing(self, histories, day):
+        return QuotaCalculator.missing_days(histories, day)
+
+    def test_no_gap(self):
+        rows = [[(date(2026, 11, 17), 1), (date(2026, 11, 18), 2), (date(2026, 11, 19), 3)]]
+        assert self.missing(rows, date(2026, 11, 19)) == []
+
+    def test_one_failed_scrape(self):
+        rows = [[(date(2026, 11, 17), 1), (date(2026, 11, 19), 3)]]
+        assert self.missing(rows, date(2026, 11, 19)) == [date(2026, 11, 18)]
+
+    def test_any_member_with_the_day_closes_the_gap(self):
+        rows = [[(date(2026, 11, 17), 1)], [(date(2026, 11, 18), 2)]]
+        assert self.missing(rows, date(2026, 11, 19)) == []
+
+    def test_first_of_month_never_warns(self):
+        rows = [[(date(2026, 10, 30), 1), (date(2026, 11, 1), 2)]]
+        assert self.missing(rows, date(2026, 11, 1)) == []
+
+    def test_line(self):
+        line = ReportGenerator._missing_line
+        assert line([]) is None
+        assert line([date(2026, 11, 18)]) == \
+            "**Missing data:** Nov 18 (scrape failed), so gains cover 2 days"
+        assert line([date(2026, 11, 17), date(2026, 11, 18)]) == \
+            "**Missing data:** Nov 17 to Nov 18 (scrape failed), so gains cover 3 days"

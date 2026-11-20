@@ -482,6 +482,21 @@ class QuotaCalculator:
             gain += max(0, cumulative - base)
         return gain
 
+    @staticmethod
+    def missing_days(histories: Iterable[Iterable[Tuple[date, int]]],
+                     current_date: date) -> List[date]:
+        """Days this month with no club data between the last scrape and ``current_date``.
+
+        A failed scrape (e.g. maintenance) leaves a hole, so the next gain spans
+        those days too.
+        """
+        month_start = current_date.replace(day=1)
+        earlier = [d for rows in histories for d, _ in rows if month_start <= d < current_date]
+        if not earlier:
+            return []
+        last = max(earlier)
+        return [last + timedelta(days=n) for n in range(1, (current_date - last).days)]
+
     async def get_member_status_summary(self, club_id: UUID, current_date: date,
                                         quota_period: str = 'daily',
                                         period_anchor: Optional[date] = None,
@@ -569,4 +584,5 @@ class QuotaCalculator:
             'behind': behind,
             'total_members': len(members),
             'period_info': period_info,
+            'missing_days': self.missing_days(history_rows.values(), current_date),
         }
