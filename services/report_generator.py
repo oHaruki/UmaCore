@@ -104,6 +104,10 @@ class ReportGenerator:
                 p_total = period_info['total_periods']
                 description += f"\n**Period:** {label} {p_num} of {p_total} ({p_start} – {p_end})"
 
+        gap = self._missing_line(status_summary.get('missing_days'))
+        if gap:
+            description += f"\n{gap}"
+
         values = self._summary_values(club_name, daily_quota, status_summary, bombs_data,
                                       report_date, rank_data, quota_period, decimals)
         note = embed_style.render(style['note'], values).strip()
@@ -224,6 +228,15 @@ class ReportGenerator:
                 ))
 
         return embeds
+
+    @staticmethod
+    def _missing_line(days: Optional[List[date]]) -> Optional[str]:
+        """Warns that gains span several days when scrapes failed in between."""
+        if not days:
+            return None
+        first, last = days[0].strftime('%b %d'), days[-1].strftime('%b %d')
+        span = first if len(days) == 1 else f"{first} to {last}"
+        return f"**Missing data:** {span} (scrape failed), so gains cover {len(days) + 1} days"
 
     def daily_report_message(self, club_name: str, daily_quota: int, status_summary: Dict,
                              bombs_data: List[Dict], report_date: date,
